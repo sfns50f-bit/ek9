@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}状態 - AI問題集{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>状態</h1>
+  <table class="kv">
+    <tr><th>Ollama</th><td>
+      {% if ollama_error %}<span class="badge ng">接続できません</span> {{ ollama_error }}
+      {% else %}<span class="badge ok">接続OK</span> {{ settings.ollama_base_url }}{% endif %}
+    </td></tr>
+    <tr><th>モデル</th><td>
+      {% for name, installed in models %}
+      <div>{{ name }} {% if installed %}<span class="badge ok">あり</span>{% else %}<span class="badge ng">未取得</span> <code>ollama pull {{ name }}</code>{% endif %}</div>
+      {% endfor %}
+      <div class="meta">作問 {{ settings.gen_model }} ／ 解答 {{ settings.solve_model }} ／ 審査 {{ settings.review_model if settings.review_enabled else "なし" }}</div>
+    </td></tr>
+    <tr><th>サンドボックス</th><td>{% if sandbox_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge ng">応答なし</span>{% endif %}</td></tr>
+    <tr><th>ワーカー</th><td>
+      {% if heartbeat_age is none %}<span class="badge ng">未起動</span>
+      {% elif heartbeat_age > 120 %}<span class="badge muted">{{ heartbeat_age }} 秒前から応答なし（作業中の可能性あり）</span>
+      {% else %}<span class="badge ok">稼働中</span>{% endif %}
+      {{ worker_status }}
+    </td></tr>
+    <tr><th>在庫の自動補充</th><td>
+      <form method="post" action="/status/refill" class="inline">
+        {% if refill_paused or not settings.refill_enabled %}
+        <span class="badge muted">停止中</span>
+        {% if settings.refill_enabled %}<input type="hidden" name="paused" value="0"><button type="submit">再開する</button>{% else %}<span class="meta">REFILL_ENABLED=false</span>{% endif %}
+        {% else %}
+        <span class="badge ok">動作中</span>（最近使った単元を {{ settings.pool_target }} 問ずつ）
+        <input type="hidden" name="paused" value="1"><button type="submit">一時停止する</button>
+        {% endif %}
+      </form>
+      <div class="meta">ゲームなどで GPU を使うときは一時停止してください。</div>
+    </td></tr>
+    <tr><th>問題数</th><td>出題可 {{ counts.get("ready", 0) }} ／ 報告あり {{ counts.get("reported", 0) }} ／ 不合格（破棄） {{ counts.get("rejected", 0) }}</td></tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>生成の依頼</h2>
+  {% if jobs %}
+  <ul class="list">
+    {% for job in jobs %}
+    {% set topic = get_topic(job.topic_id) %}
+    <li><a href="/jobs/{{ job.id }}">#{{ job.id }} {{ topic.label if topic else job.topic_id }} ・ {{ DIFFICULTIES.get(job.difficulty, "") }}</a>
+      <span class="meta">{{ "処理中" if job.status == "running" else "順番待ち" }} {{ job.progress }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">ありません。</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>在庫（すぐ出題できる問題）</h2>
+  {% if stock %}
+  <ul class="list">
+    {% for topic_id, difficulty, n in stock %}
+    {% set topic = get_topic(topic_id) %}
+    <li>{{ topic.label if topic else topic_id }} ・ {{ DIFFICULTIES.get(difficulty, "") }}：{{ n }} 問</li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">ありません。問題を解くと、その単元の在庫が自動で作られます。</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>最近の不合格（検証で破棄した問題）</h2>
+  {% if rejected %}
+  <ul class="list">
+    {% for p in rejected %}
+    {% set topic = get_topic(p.topic_id) %}
+    <li>
+      <span class="meta">{{ p.created_at | localtime }} ・ {{ topic.label if topic else p.topic_id }} ・ {{ p.subtopic }}</span>
+      <div>{{ p.reject_reason }}</div>
+      {% if p.question %}<details><summary>問題文</summary><div class="question">{{ p.question }}</div></details>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">ありません。</p>{% endif %}
+</section>
+{% endblock %}

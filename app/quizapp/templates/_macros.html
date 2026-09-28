@@ -1,0 +1,13 @@
+{% macro tex(latex, display=False) -%}
+<span class="tex{% if display %} display{% endif %}" data-tex="{{ latex }}">{{ latex }}</span>
+{%- endmacro %}
+
+{% macro result_badge(attempt) -%}
+{% if attempt.is_correct %}<span class="badge ok">正解</span>
+{% elif attempt.gave_up %}<span class="badge muted">ギブアップ</span>
+{% else %}<span class="badge ng">不正解</span>{% endif %}
+{%- endmacro %}
+
+{% macro topic_line(problem, topic) -%}
+<span class="meta">{{ topic.label if topic else problem.topic_id }} ・ {{ DIFFICULTIES.get(problem.difficulty, "") }}{% if problem.subtopic %} ・ {{ problem.subtopic }}{% endif %}</span>
+{%- endmacro %}

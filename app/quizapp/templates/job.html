@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}問題を作っています - AI問題集{% endblock %}
+{% block content %}
+<section class="card" id="job" data-job-id="{{ job.id }}">
+  <h1>問題を作っています</h1>
+  <p class="meta">{{ topic.label if topic else job.topic_id }} ・ {{ DIFFICULTIES.get(job.difficulty, "") }}</p>
+  <div class="spinner" aria-hidden="true"></div>
+  <p id="job-progress">{{ job.progress or "順番待ち" }}</p>
+  <p class="hint" id="job-elapsed"></p>
+  <p class="hint">作問 → Python で検算 → 別の解答者が解く → 審査 の順に確認し、合格した問題だけを出題します。
+    PC の性能によっては数分〜十数分かかります。この画面を閉じても作業は続き、できた問題は次に同じ単元・難易度を選んだときにすぐ出題されます。</p>
+  <div id="job-error" class="alert" hidden></div>
+  <div class="actions">
+    <form method="post" action="/jobs/{{ job.id }}/cancel"><button type="submit">キャンセル</button></form>
+    <form method="post" action="/generate" id="retry-form" hidden>
+      <input type="hidden" name="topic_id" value="{{ job.topic_id }}">
+      <input type="hidden" name="difficulty" value="{{ job.difficulty }}">
+      <button type="submit" class="primary">もう一度作る</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

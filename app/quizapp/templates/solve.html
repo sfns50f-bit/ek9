@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_macros.html" import result_badge, topic_line %}
+{% block title %}問題 #{{ problem.id }} - AI問題集{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    {{ topic_line(problem, topic) }}
+    {% if problem.attempts %}
+    <span class="meta">これまで {{ problem.attempts | length }} 回挑戦 ・ 前回 {{ result_badge(problem.attempts[-1]) }}</span>
+    {% endif %}
+  </div>
+  {% if problem.status == "reported" %}
+  <div class="alert">この問題には誤りの報告があります：{{ problem.report_note or "（メモなし）" }}</div>
+  {% endif %}
+  <div class="question">{{ problem.question }}</div>
+</section>
+
+<section class="card">
+  <form method="post" action="/problems/{{ problem.id }}/answer" autocomplete="off">
+    <label class="field" for="answer">答え <span class="meta">（{{ KIND_LABELS.get(problem.answer_kind, "") }}）</span></label>
+    <input id="answer" name="answer" type="text" inputmode="text" value="{{ value }}"
+           data-kind="{{ problem.answer_kind }}" data-var="{{ problem.answer_var }}" autofocus
+           autocapitalize="off" spellcheck="false">
+    <div class="keys" data-target="answer">
+      {% for key in ["√(", "π", "^", "/", "(", ")", "±", ",", "<", "<=", ">=", ";"] %}
+      <button type="button" data-insert="{{ key }}">{{ key }}</button>
+      {% endfor %}
+    </div>
+    <p class="hint">{{ KIND_HINTS.get(problem.answer_kind, "") }}</p>
+    <div class="preview" id="preview" aria-live="polite"></div>
+    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+    <div class="actions">
+      <button type="submit" class="primary">解答する</button>
+    </div>
+  </form>
+  <form method="post" action="/problems/{{ problem.id }}/giveup" class="actions">
+    <button type="submit" class="link">わからない（答えを見る）</button>
+  </form>
+</section>
+{% endblock %}

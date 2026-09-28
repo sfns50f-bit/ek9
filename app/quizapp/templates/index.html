@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import result_badge, topic_line %}
+{% block content %}
+<section class="card">
+  <h1>問題を解く</h1>
+  <form method="post" action="/generate" id="generate-form">
+    <label class="field">科目
+      <select id="course"></select>
+    </label>
+    <label class="field">単元
+      <select id="topic" name="topic_id"></select>
+    </label>
+    <fieldset class="field">
+      <legend>難易度</legend>
+      <div class="segmented">
+        {% for value, label in DIFFICULTIES.items() %}
+        <label><input type="radio" name="difficulty" value="{{ value }}" {% if value == 2 %}checked{% endif %}><span>{{ label }}</span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <p class="hint" id="stock-hint"></p>
+    <button type="submit" class="primary">出題する</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>これまでの成績</h2>
+  <div class="stats">
+    <div><strong>{{ total }}</strong><span>解答数</span></div>
+    <div><strong>{% if total %}{{ (100 * correct / total) | round | int }}%{% else %}-{% endif %}</strong><span>正答率</span></div>
+    <div><a href="/history?filter=wrong"><strong>{{ wrong }}</strong><span>復習待ち</span></a></div>
+  </div>
+  {% if recent %}
+  <ul class="list">
+    {% for row in recent %}
+    <li>
+      <a href="/problems/{{ row.problem.id }}/review">
+        {{ result_badge(row.latest) }}
+        {{ topic_line(row.problem, row.topic) }}
+        <div class="question clamp">{{ row.problem.question }}</div>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<script id="courses-data" type="application/json">{{ courses_json | safe }}</script>
+<script id="stock-data" type="application/json">{{ stock_json | safe }}</script>
+{% endblock %}

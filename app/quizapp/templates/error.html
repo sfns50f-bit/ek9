@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}エラー - AI問題集{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>エラー</h1>
+  <div class="alert">{{ message }}</div>
+  <p><a href="/">ホームに戻る</a> ／ <a href="/status">状態を確認する</a></p>
+</section>
+{% endblock %}
