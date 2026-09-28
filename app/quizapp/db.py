@@ -139,3 +139,8 @@ def kv_set(session: Session, key: str, value: str) -> None:
 def kv_updated_at(session: Session, key: str) -> datetime | None:
     row = session.execute(select(KV.updated_at).where(KV.key == key)).scalar_one_or_none()
     return row
+
+
+def model_overrides(session: Session) -> dict[str, str]:
+    """画面で選んだ役割ごとのモデル名（未設定は空文字）。"""
+    return {role: kv_get(session, f"model_{role}") for role in ("gen", "solve", "review")}

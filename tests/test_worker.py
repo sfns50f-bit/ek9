@@ -120,3 +120,21 @@ def test_refill_aborts_when_job_arrives(settings, sandbox):
     worker.refill(("m1-quad", 1))  # 依頼があるので作問前に中断する
     with sessions() as s:
         assert s.execute(select(Problem).where(Problem.served_at.is_(None))).first() is None
+
+
+def test_worker_uses_models_chosen_on_screen(settings, sandbox):
+    worker, sessions = make_worker(settings, sandbox, gen=[GOOD_GEN], solve=[GOOD_SOLVE], review=[GOOD_REVIEW])
+    with sessions.begin() as s:
+        kv_set(s, "model_gen", "gemma4:12b")
+    job_id = add_job(sessions)
+    worker.run_once()
+    roles = {role: model for role, model, _ in worker.pipeline.llm.calls}
+    assert roles == {"gen": "gemma4:12b", "solve": "gemma4:e4b", "review": "gemma4:e4b"}
+    with sessions() as s:
+        problem = s.get(Problem, s.get(Job, job_id).problem_id)
+        assert problem.models == "gemma4:12b, gemma4:e4b"
+    # 画面で「.env の設定」に戻すと元のモデルに戻る
+    with sessions.begin() as s:
+        kv_set(s, "model_gen", "")
+    worker.apply_model_settings()
+    assert worker.pipeline.settings.gen_model == "gemma4:e4b"

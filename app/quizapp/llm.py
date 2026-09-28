@@ -80,10 +80,23 @@ class OllamaClient:
         message = resp.json().get("message") or {}
         return extract_json(message.get("content", ""))
 
-    def list_models(self) -> list[str]:
+    def list_models(self) -> list[dict[str, Any]]:
+        """ダウンロード済みのモデル（埋め込み専用モデルは除く）。"""
         try:
             resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise LLMUnavailable(f"Ollama に接続できません（{self.base_url}）: {exc}") from exc
-        return [m.get("name", "") for m in resp.json().get("models", [])]
+        models = []
+        for m in resp.json().get("models", []):
+            name = m.get("name", "")
+            if not name or "embed" in name:
+                continue
+            details = m.get("details") or {}
+            models.append({
+                "name": name,
+                "size_gb": round((m.get("size") or 0) / 1e9, 1),
+                "parameter_size": details.get("parameter_size", ""),
+                "quantization": details.get("quantization_level", ""),
+            })
+        return sorted(models, key=lambda m: m["name"])

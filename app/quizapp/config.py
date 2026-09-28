@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 
@@ -66,3 +67,12 @@ class Settings:
     @property
     def models(self) -> list[str]:
         return list(dict.fromkeys([self.gen_model, self.solve_model, self.review_model]))
+
+
+MODEL_ROLES = {"gen": "作問", "solve": "解答", "review": "審査"}
+
+
+def with_model_overrides(settings: Settings, overrides: dict[str, str]) -> Settings:
+    """画面で選んだモデル（空なら .env の設定のまま）を反映した設定を返す。"""
+    changes = {f"{role}_model": name for role, name in overrides.items() if role in MODEL_ROLES and name}
+    return dataclasses.replace(settings, **changes) if changes else settings

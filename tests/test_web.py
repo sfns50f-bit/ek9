@@ -161,3 +161,22 @@ def test_status_page_and_refill_toggle(env):
     assert page.status_code == 200 and "一致しません" in page.text and "接続OK" in page.text
     client.post("/status/refill", data={"paused": "1"})
     assert "再開する" in client.get("/status").text
+
+
+def test_model_selection_from_downloaded_models(env):
+    client, sessions = env
+    page = client.get("/status").text
+    assert "gemma4:12b（8.1GB・12B・Q4_K_M）" in page
+    assert ".env の設定（gemma4:e4b）" in page
+    res = client.post("/status/models", data={"gen": "gemma4:12b", "solve": "", "review": ""},
+                      follow_redirects=False)
+    assert res.headers["location"] == "/status?saved=1"
+    page = client.get("/status?saved=1").text
+    assert "作問 gemma4:12b ／ 解答 gemma4:e4b" in page and "保存しました" in page
+    assert '<option value="gemma4:12b" selected>' in page
+
+
+def test_model_selection_rejects_unknown_model(env):
+    client, _ = env
+    res = client.post("/status/models", data={"gen": "nope:1b"})
+    assert res.status_code == 400 and "ダウンロードされていない" in res.text

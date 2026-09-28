@@ -16,8 +16,8 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from .config import Settings
-from .db import Attempt, Job, Problem, init_db, kv_get, kv_set, utcnow
+from .config import MODEL_ROLES, Settings, with_model_overrides
+from .db import Attempt, Job, Problem, init_db, kv_get, kv_set, model_overrides, utcnow
 from .llm import LLMUnavailable, OllamaClient
 from .prompts import KIND_LABELS
 from .sandbox_client import SandboxClient, SandboxUnavailable
@@ -265,14 +265,17 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     # --- 状態 ---------------------------------------------------------------
 
     @app.get("/status")
-    def status(request: Request) -> Response:
+    def status(request: Request, saved: int = 0) -> Response:
         try:
             installed = llm.list_models()
             ollama_error = ""
         except LLMUnavailable as exc:
             installed, ollama_error = [], str(exc)
-        installed_names = set(installed) | {m.removesuffix(":latest") for m in installed}
-        models = [(m, m in installed_names) for m in settings.models]
+        installed_names = {m["name"] for m in installed} | {m["name"].removesuffix(":latest") for m in installed}
+        with sessions() as s:
+            overrides = model_overrides(s)
+        current = with_model_overrides(settings, overrides)
+        missing = [m for m in current.models if m not in installed_names] if not ollama_error else []
         with sessions() as s:
             heartbeat = kv_get(s, "worker_heartbeat")
             worker_status = kv_get(s, "worker_status")
@@ -293,10 +296,27 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         if heartbeat:
             age = int((utcnow() - datetime.fromisoformat(heartbeat)).total_seconds())
         return render(
-            request, "status.html", settings=settings, models=models, ollama_error=ollama_error,
+            request, "status.html", settings=settings, current=current, overrides=overrides,
+            roles=MODEL_ROLES, installed=installed, missing=missing, saved=saved, ollama_error=ollama_error,
             sandbox_ok=sandbox.healthy(), heartbeat_age=age, worker_status=worker_status,
             refill_paused=refill_paused, jobs=jobs, stock=stock, rejected=rejected, counts=counts,
         )
+
+    @app.post("/status/models")
+    def save_models(request: Request, gen: str = Form(""), solve: str = Form(""),
+                    review: str = Form("")) -> Response:
+        chosen = {"gen": gen.strip(), "solve": solve.strip(), "review": review.strip()}
+        try:
+            names = {m["name"] for m in llm.list_models()}
+        except LLMUnavailable as exc:
+            return error_page(request, f"モデルを変更できません。{exc}", 503)
+        unknown = [name for name in chosen.values() if name and name not in names]
+        if unknown:
+            return error_page(request, f"ダウンロードされていないモデルです: {', '.join(unknown)}", 400)
+        with sessions.begin() as s:
+            for role, name in chosen.items():
+                kv_set(s, f"model_{role}", name)
+        return redirect("/status?saved=1")
 
     @app.post("/status/refill")
     def toggle_refill(paused: str = Form("0")) -> Response:

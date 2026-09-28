@@ -9,10 +9,11 @@
       {% else %}<span class="badge ok">接続OK</span> {{ settings.ollama_base_url }}{% endif %}
     </td></tr>
     <tr><th>モデル</th><td>
-      {% for name, installed in models %}
-      <div>{{ name }} {% if installed %}<span class="badge ok">あり</span>{% else %}<span class="badge ng">未取得</span> <code>ollama pull {{ name }}</code>{% endif %}</div>
+      <div>作問 {{ current.gen_model }} ／ 解答 {{ current.solve_model }} ／ 審査 {{ current.review_model if settings.review_enabled else "なし" }}</div>
+      {% for name in missing %}
+      <div><span class="badge ng">未取得</span> {{ name }} <code>ollama pull {{ name }}</code></div>
       {% endfor %}
-      <div class="meta">作問 {{ settings.gen_model }} ／ 解答 {{ settings.solve_model }} ／ 審査 {{ settings.review_model if settings.review_enabled else "なし" }}</div>
+      <div class="meta"><a href="#models">変更する</a></div>
     </td></tr>
     <tr><th>サンドボックス</th><td>{% if sandbox_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge ng">応答なし</span>{% endif %}</td></tr>
     <tr><th>ワーカー</th><td>
@@ -35,6 +36,33 @@
     </td></tr>
     <tr><th>問題数</th><td>出題可 {{ counts.get("ready", 0) }} ／ 報告あり {{ counts.get("reported", 0) }} ／ 不合格（破棄） {{ counts.get("rejected", 0) }}</td></tr>
   </table>
+</section>
+
+<section class="card" id="models">
+  <h2>モデルの設定</h2>
+  {% if saved %}<div class="alert">保存しました。次の生成から使われます（作業中の問題は元のモデルのまま続きます）。</div>{% endif %}
+  {% if ollama_error %}
+  <p class="hint">Ollama に接続できないため、モデルを選べません。</p>
+  {% elif not installed %}
+  <p class="hint">ダウンロード済みのモデルがありません。PC で <code>ollama pull gemma4:e4b</code> などを実行してください。</p>
+  {% else %}
+  <form method="post" action="/status/models">
+    {% for role, label in roles.items() %}
+    <label class="field">{{ label }}{% if role == "review" and not settings.review_enabled %} <span class="meta">（REVIEW_ENABLED=false のため使われません）</span>{% endif %}
+      <select name="{{ role }}">
+        <option value="" {% if not overrides[role] %}selected{% endif %}>.env の設定（{{ settings[role ~ "_model"] }}）</option>
+        {% for m in installed %}
+        <option value="{{ m.name }}" {% if overrides[role] == m.name %}selected{% endif %}>{{ m.name }}（{{ m.size_gb }}GB{% if m.parameter_size %}・{{ m.parameter_size }}{% endif %}{% if m.quantization %}・{{ m.quantization }}{% endif %}）</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endfor %}
+    <p class="hint">ダウンロード済みのモデルから選べます（新しいモデルは PC で <code>ollama pull モデル名</code> を実行すると一覧に出ます）。
+      VRAM 8GB の場合、サイズが 7GB を超えるモデルは一部が CPU で動くため遅くなります。
+      役割ごとに違うモデルを選ぶと、VRAM に同時に載らないときは切り替えのたびに読み込み直しが入ります。</p>
+    <button type="submit" class="primary">保存する</button>
+  </form>
+  {% endif %}
 </section>
 
 <section class="card">

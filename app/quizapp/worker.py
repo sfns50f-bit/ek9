@@ -14,8 +14,8 @@ from datetime import timedelta
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from .config import Settings
-from .db import Job, Problem, init_db, kv_get, kv_set, utcnow
+from .config import Settings, with_model_overrides
+from .db import Job, Problem, init_db, kv_get, kv_set, model_overrides, utcnow
 from .llm import LLMUnavailable, OllamaClient
 from .pipeline import Aborted, Candidate, Pipeline, Rejection
 from .sandbox_client import SandboxClient, SandboxUnavailable
@@ -113,6 +113,12 @@ class Worker:
 
     # --- 処理 ---------------------------------------------------------------
 
+    def apply_model_settings(self) -> None:
+        """画面で選んだモデルを次の生成から使う。"""
+        with self.sessions() as s:
+            overrides = model_overrides(s)
+        self.pipeline.settings = with_model_overrides(self.settings, overrides)
+
     def handle_job(self, job: Job) -> None:
         topic = get_topic(job.topic_id)
         if topic is None:
@@ -124,6 +130,7 @@ class Worker:
             self._update_job(job.id, progress=text)
             self.set_status(f"依頼 #{job.id} {label} — {text}")
 
+        self.apply_model_settings()
         try:
             cand, rejections = self.pipeline.run(
                 topic, job.difficulty, self.recent_questions(topic.id),
@@ -193,6 +200,7 @@ class Worker:
     def refill(self, target: tuple[str, int]) -> None:
         topic = get_topic(target[0])
         label = f"在庫補充 {topic.label}（難易度{target[1]}）"
+        self.apply_model_settings()
         try:
             cand, rejections = self.pipeline.run(
                 topic, target[1], self.recent_questions(topic.id),

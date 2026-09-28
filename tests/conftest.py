@@ -47,7 +47,10 @@ class ScriptedLLM:
         return item
 
     def list_models(self):
-        return ["gemma4:e4b"]
+        return [
+            {"name": "gemma4:e4b", "size_gb": 3.1, "parameter_size": "8B", "quantization": "Q4_K_M"},
+            {"name": "gemma4:12b", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4_K_M"},
+        ]
 
 
 @pytest.fixture
