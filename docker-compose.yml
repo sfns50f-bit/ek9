@@ -1,87 +1,120 @@
-# AI問題集
-#   web     : 画面（http://<PCのIPアドレス>:8000）
-#   worker  : 問題の生成と検証（Ollama を使う）
-#   sandbox : LLM が書いた Python と解答の判定を実行する隔離環境（ネットワーク遮断）
-# Ollama はコンテナではなく Windows に直接インストールしたものを使う
-# （Docker Desktop のコンテナからは AMD GPU を使えないため）。
+# AI問題集（ai-quiz）
+#   web     : 画面（http://<PiのIPアドレス>:8000）。LLM は呼ばない
+#   worker  : 作成依頼の処理と検証（デスクトップPCの Ollama を LAN 経由で使う）、定期バックアップ
+#   sandbox : 答えの読み取りと sympy での同値判定をする隔離環境（外部ネットワークなし）
+#
+# Raspberry Pi 4（arm64）でも x86 のミニPCでも、その場でビルドすればそのまま動く。
+# Pi は OpenMediaVault・Open WebUI と共用なので、全コンテナにメモリの上限を付けている。
+# 設定は .env に書く（.env.example をコピーして作る）。
 
 name: ai-quiz
 
 x-app-env: &app-env
-  DATABASE_PATH: /data/quiz.db
+  DATA_DIR: /data
   SANDBOX_URL: http://sandbox:8080
-  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-  OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
-  GEN_MODEL: ${GEN_MODEL:-}
-  SOLVE_MODEL: ${SOLVE_MODEL:-}
-  REVIEW_MODEL: ${REVIEW_MODEL:-}
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?.env に OLLAMA_BASE_URL を書いてください}
+  GEN_MODEL: ${GEN_MODEL:-gemma4:12b-it-qat}
+  VERIFY_MODEL: ${VERIFY_MODEL:-gemma4:e4b}
+  VERIFY_COUNT: ${VERIFY_COUNT:-2}
+  VERIFY_MODEL_2: ${VERIFY_MODEL_2:-}
   OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
   OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-6144}
-  OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-15m}
+  OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
   OLLAMA_THINK: ${OLLAMA_THINK:-}
   LLM_TIMEOUT: ${LLM_TIMEOUT:-900}
-  MAX_ATTEMPTS: ${MAX_ATTEMPTS:-4}
-  REVIEW_ENABLED: ${REVIEW_ENABLED:-true}
-  POOL_TARGET: ${POOL_TARGET:-2}
-  REFILL_ENABLED: ${REFILL_ENABLED:-true}
-  REFILL_DAYS: ${REFILL_DAYS:-14}
+  MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
+  OLLAMA_RETRY_SECONDS: ${OLLAMA_RETRY_SECONDS:-60}
+  BACKUP_KEEP: ${BACKUP_KEEP:-14}
+  BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+  LOW_STOCK: ${LOW_STOCK:-40}
+  RETRY_PERCENT: ${RETRY_PERCENT:-30}
   DISPLAY_TZ: ${DISPLAY_TZ:-Asia/Tokyo}
+
+x-logging: &logging
+  # SD カードを傷めないよう、ログは小さく保つ
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "3"
 
 x-app: &app
   build: ./app
   image: ai-quiz-app:latest
   environment: *app-env
   volumes:
-    - quiz-data:/data
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-  networks:
-    - default
-    - sandbox
+    # データは NAS の HDD 上のフォルダ（DATA_PATH）。HDD がまだマウントされていないときは
+    # 目印ファイル .ai-quiz-data が見えないので、アプリは何も書かずに終了し、少し後に再起動される
+    - ${DATA_PATH:?.env に DATA_PATH（HDD 上のデータの場所）を書いてください}:/data
   depends_on:
     sandbox:
       condition: service_healthy
+  init: true
   restart: unless-stopped
+  logging: *logging
 
 services:
   web:
     <<: *app
-    command: ["uvicorn", "quizapp.web:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "quizapp.web:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
+              "--workers", "1", "--no-access-log"]
     ports:
+      # 家庭内 LAN だけで使う。ルーターでポート開放はしない
       - "${WEB_PORT:-8000}:8000"
+    networks:
+      - default
+      - sandbox
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   worker:
     <<: *app
     command: ["python", "-m", "quizapp.worker"]
+    networks:
+      - default   # Ollama（デスクトップPC）へ。後のフェーズで公共の資料取得にも使う
+      - sandbox
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1.0
 
   sandbox:
     build: ./sandbox
     image: ai-quiz-sandbox:latest
     networks:
-      - sandbox
+      - sandbox   # internal: true のネットワークだけ。外部にもホストにも出られない
+    # データのボリュームはマウントしない
     read_only: true
     tmpfs:
-      - /tmp:size=64m
-    mem_limit: 1g
-    pids_limit: 128
-    cpus: 2
+      - /tmp:size=32m
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    environment:
+      SANDBOX_MEMORY_MB: "384"       # 1 回の計算のメモリ上限
+      SANDBOX_COMPARE_TIMEOUT: "10"  # 1 回の計算の時間の上限（秒）
+      SANDBOX_DISTINCT_TIMEOUT: "20"
+      SANDBOX_CONCURRENCY: "2"
     init: true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
-      interval: 10s
+      interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
     restart: unless-stopped
+    logging: *logging
 
 networks:
-  # internal: インターネットにもホストにも出られない。web / worker からだけ届く。
   sandbox:
     internal: true
-
-volumes:
-  quiz-data:

@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 
-
 _CTRL_MAP = {"\x08": "b", "\x0c": "f", "\t": "t", "\r": "r", "\n": "n"}
 _CTRL_RE = re.compile(r"[\x08\x0c\t\r\n](?=[A-Za-z])")
 

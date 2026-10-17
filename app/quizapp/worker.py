@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 import random
 import time
-from datetime import datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker

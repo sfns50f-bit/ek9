@@ -90,3 +90,4 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.85rem; }
 .steps li.ng { color: var(--ng); }
 .dev summary { font-weight: 600; }
 .answer-label input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.choice .katex, .choice-review .katex { font-size: 1.3em; }

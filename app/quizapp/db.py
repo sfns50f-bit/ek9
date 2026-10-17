@@ -13,7 +13,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import (
-    Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, event, select,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    event,
+    select,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker

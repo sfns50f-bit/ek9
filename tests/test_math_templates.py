@@ -9,7 +9,6 @@ import random
 
 import pytest
 import sympy as sp
-
 from quizapp import textcheck
 from quizapp.subjects.base import GenContext
 from quizapp.subjects.math import MathSubject

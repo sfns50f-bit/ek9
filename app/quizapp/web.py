@@ -25,11 +25,20 @@ from . import backup, runtime, stock
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import (
-    DEFAULT_USER_ID, Attempt, Job, Problem, StudySession, dumps, init_db, kv_json, kv_updated_at, utcnow,
+    DEFAULT_USER_ID,
+    Attempt,
+    Job,
+    Problem,
+    StudySession,
+    dumps,
+    init_db,
+    kv_json,
+    kv_updated_at,
+    utcnow,
 )
 from .sandbox_client import SandboxClient
 from .subjects import all_subjects, get_subject
-from .subjects.base import DEVICES, FORMATS, Subject
+from .subjects.base import DEVICES, FORMATS, Grade, Subject
 
 BASE = Path(__file__).resolve().parent
 MAX_SESSION = 50
@@ -167,8 +176,6 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                               subject=get_subject(problem.subject), retry_message="", hint_viewed=0)
             attempts = list(s.execute(select(Attempt).where(Attempt.session_id == sid)
                                       .order_by(Attempt.id)).scalars())
-            for a in attempts:
-                _ = a.problem  # テンプレートで使う
         correct = sum(1 for a in attempts if a.is_correct)
         return render(request, "summary.html", session=row, attempts=attempts, correct=correct,
                       subject=get_subject(row.subject))
@@ -188,7 +195,6 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             subject = subject_or_404(problem.subject)
             gave_up = action == "giveup"
             if gave_up:
-                from .subjects.base import Grade
                 grade = Grade(False, response_display="（わからない）")
             else:
                 grade = subject.grade(sandbox, problem, response)
@@ -242,7 +248,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             q = (select(Attempt.problem_id, func.max(Attempt.id), func.count())
                  .where(Attempt.user_id == uid).group_by(Attempt.problem_id))
             rows = []
-            for pid, last_id, n in s.execute(q):
+            for _pid, last_id, n in s.execute(q):
                 last = s.get(Attempt, last_id)
                 problem = last.problem
                 if subject and problem.subject != subject:

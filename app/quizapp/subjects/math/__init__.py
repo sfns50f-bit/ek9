@@ -17,7 +17,7 @@ from typing import Any
 
 from ... import textcheck
 from ...llm import repair_latex
-from ..base import Draft, GenContext, Grade, LLM, Rejected, Sandbox, Subject, VerifyResult, Unit
+from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Unit, VerifyResult
 from . import prompts
 from .catalog import MISTAKES, UNITS
 
