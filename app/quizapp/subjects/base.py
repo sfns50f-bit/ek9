@@ -72,6 +72,9 @@ class Draft:
     params: dict[str, Any] = field(default_factory=dict)
     params_key: str = ""
     log: list[dict[str, Any]] = field(default_factory=list)
+    # 本文（英語の長文・公共の資料）。{"title", "body", "source_title", "source_url"}。
+    # 1 つの本文に複数の問題をつけるときは、generate() が同じ dict を持つ Draft のリストを返す
+    passage: dict[str, Any] | None = None
 
 
 @dataclass
@@ -137,8 +140,15 @@ class Subject:
 
     # --- 作成・検証（worker） ---------------------------------------------
 
-    def generate(self, ctx: GenContext, template: str, fmt: str) -> Draft:
-        """1 問の下書きを作る。使えなければ Rejected、Ollama につながらなければ LLMUnavailable。"""
+    # 検証のテスト（正解をわざとずらした問題を流す）に使う形式。空なら、この科目はテストに対応しない
+    test_format: str = ""
+
+    def generate(self, ctx: GenContext, template: str, fmt: str) -> Draft | list[Draft]:
+        """下書きを作る（1 問、または同じ本文の複数問）。
+
+        使えなければ Rejected、Ollama につながらなければ LLMUnavailable。
+        ctx.is_test のときは、正解をわざとずらした下書きを作る（test_format に対応する科目だけ）。
+        """
         raise NotImplementedError
 
     def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any) -> VerifyResult:

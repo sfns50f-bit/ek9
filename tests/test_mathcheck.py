@@ -93,6 +93,19 @@ def test_degree_sign_is_ignored():
     assert check("value", "60", "60°")["equal"]
 
 
+@pytest.mark.parametrize("expected,given", [
+    ("1/2", "sin(5*pi/6)"), ("3/2", "log(27)/log(9)"), ("120", "binomial(10,3)"),
+    ("9/2", "integrate(-(x-1)*(x-4),(x,1,4))"), ("1/2", "Rational(1,2)"),
+])
+def test_unevaluated_expressions_are_not_accepted(expected, given):
+    """問題の式を書き写しただけの答えは、計算した値とはみなさない（読み取りエラーにする）。"""
+    import sympy as sp
+
+    res = tasks.run("compare", {"kind": "value", "expected": {"srepr": sp.srepr(sp.sympify(expected))},
+                                "given": {"text": given}})
+    assert not res["ok"] and res["where"] == "given" and "計算した値" in res["error"]
+
+
 def test_distinct_finds_equal_pairs():
     import sympy as sp
 

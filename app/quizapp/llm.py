@@ -8,27 +8,6 @@ from typing import Any
 
 import httpx
 
-_CTRL_MAP = {"\x08": "b", "\x0c": "f", "\t": "t", "\r": "r", "\n": "n"}
-_CTRL_RE = re.compile(r"[\x08\x0c\t\r\n](?=[A-Za-z])")
-
-
-def repair_latex(text: str) -> str:
-    r"""JSON の "\frac" が改ページ文字 + "rac" になる、といった崩れを数式の中だけ直す。"""
-    out: list[str] = []
-    in_math, delim = False, ""
-    for part in re.split(r"(\$\$|\$)", text):
-        if part in ("$", "$$"):
-            if not in_math:
-                in_math, delim = True, part
-            elif part == delim:
-                in_math = False
-            out.append(part)
-        elif in_math:
-            out.append(_CTRL_RE.sub(lambda m: "\\" + _CTRL_MAP[m.group()], part))
-        else:
-            out.append(part)
-    return "".join(out)
-
 
 class LLMError(RuntimeError):
     """モデルの出力が使えない（JSON でない、項目が足りないなど）。"""
@@ -98,6 +77,9 @@ class OllamaClient:
             raise LLMUnavailable(f"Ollama に接続できません（{self.base_url}）: {exc}") from exc
         if resp.status_code == 404:
             raise LLMUnavailable(f"モデル {model} が見つかりません。`ollama pull {model}` を実行してください")
+        if resp.status_code >= 500:
+            # GPU のメモリ不足やモデルの読み込み失敗など。作り直しの回数を使わずに、後で再試行する
+            raise LLMUnavailable(f"Ollama がエラーを返しました（{resp.status_code}）: {resp.text[:300]}")
         if resp.status_code >= 400:
             raise LLMError(f"Ollama がエラーを返しました（{resp.status_code}）: {resp.text[:300]}")
         message = resp.json().get("message") or {}

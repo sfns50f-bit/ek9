@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 PREFIX = "quiz-"
 SUFFIX = ".db"
@@ -27,14 +27,19 @@ def list_backups(backup_dir: str) -> list[str]:
 
 
 def latest_time(backup_dir: str) -> datetime | None:
+    """最新のバックアップの時刻（UTC の naive datetime）。"""
     files = list_backups(backup_dir)
-    return datetime.fromtimestamp(os.path.getmtime(files[0])) if files else None
+    if not files:
+        return None
+    return datetime.fromtimestamp(os.path.getmtime(files[0]), tz=timezone.utc).replace(tzinfo=None)
 
 
-def make_backup(db_path: str, backup_dir: str, keep: int, now: datetime | None = None) -> str:
-    """バックアップを 1 つ作り、古いものを消す。作ったファイルのパスを返す。"""
+def make_backup(db_path: str, backup_dir: str, keep: int, now: datetime | None = None, tz: str = "Asia/Tokyo") -> str:
+    """バックアップを 1 つ作り、古いものを消す。作ったファイルのパスを返す。ファイル名の時刻は tz（日本時間）。"""
+    from zoneinfo import ZoneInfo
+
     os.makedirs(backup_dir, exist_ok=True)
-    now = now or datetime.now()
+    now = now or datetime.now(ZoneInfo(tz))
     dest = os.path.join(backup_dir, f"{PREFIX}{now:%Y%m%d-%H%M%S}{SUFFIX}")
     tmp = dest + ".tmp"
     src = sqlite3.connect(db_path, timeout=30)
@@ -58,7 +63,7 @@ def make_backup(db_path: str, backup_dir: str, keep: int, now: datetime | None =
 
 def due(backup_dir: str, interval_hours: int, now: datetime | None = None) -> bool:
     last = latest_time(backup_dir)
-    now = now or datetime.now()
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     return last is None or now - last >= timedelta(hours=interval_hours)
 
 
@@ -75,7 +80,7 @@ def main() -> None:
         for path in list_backups(settings.backup_dir):
             print(path)
         return
-    print(make_backup(settings.database_path, settings.backup_dir, settings.backup_keep))
+    print(make_backup(settings.database_path, settings.backup_dir, settings.backup_keep, tz=settings.timezone))
 
 
 if __name__ == "__main__":

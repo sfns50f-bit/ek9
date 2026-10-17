@@ -83,7 +83,7 @@ def build_session(s: Session, user_id: int, subject: Subject, scope: str, device
                                  Problem.format.in_(formats), Problem.id.not_in(_seen_ids(user_id)))
     ).scalars())
     rng.shuffle(fresh)
-    n_retry = min(len(wrong), count * retry_percent // 100 or (1 if retry_percent else 0))
+    n_retry = min(len(wrong), count * retry_percent // 100)
     picked = wrong[:n_retry] + fresh[:count - n_retry]
     if len(picked) < count:
         picked += wrong[n_retry:n_retry + count - len(picked)]

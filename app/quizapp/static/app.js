@@ -91,6 +91,10 @@ function setupPlay() {
   if (hint && flag) hint.addEventListener("toggle", () => { if (hint.open) flag.value = "1"; });
 
   const form = document.getElementById("answer-form");
+  // 「戻る」で表示し直したときや送信に失敗したときに、ボタンが押せないまま残らないようにする
+  window.addEventListener("pageshow", () => {
+    document.querySelectorAll("button[disabled]").forEach((b) => { b.disabled = false; });
+  });
   if (form) {
     // 2 回押しで二重に送らないようにする（押したボタンの値は送る）
     form.addEventListener("submit", () => {

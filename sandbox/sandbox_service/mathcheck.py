@@ -138,9 +138,50 @@ def _expand_pm(text: str, depth: int = 0) -> list[str]:
     return [text]
 
 
+# 採点・検証の答え（given）で使ってよい関数の種類。None なら確認しない。
+# 「sin(5*pi/6)」「binomial(10, 3)」のように、計算せずに式を書き写しただけの答えを
+# 正解にしないため、正解に含まれない関数が答えに残っていたら読み取りエラーにする。
+ALLOWED_FUNCS: set[type] | None = None
+_UNEVALUATED = (sp.Integral, sp.Sum, sp.Product, sp.Derivative, sp.Limit)
+
+
+def function_types(obj: Any) -> set[type]:
+    if not isinstance(obj, sp.Basic):
+        return set()
+    return {type(f) for f in obj.atoms(sp.Function)} | {type(f) for f in obj.atoms(*_UNEVALUATED)}
+
+
+_BASE_NAMES = {"sqrt", "pi", "e", "i", "oo", "theta", "alpha", "beta", "C"}  # C は不定積分の積分定数
+_ALIASES = {"log": {"ln"}, "asin": {"arcsin"}, "acos": {"arccos"}, "atan": {"arctan"}}
+_VAR_LETTERS = set("xyztabnk")
+_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+
+
+def _check_functions(text: str) -> None:
+    if ALLOWED_FUNCS is None:
+        return
+    allowed = set(_BASE_NAMES)
+    for t in ALLOWED_FUNCS:
+        name = t.__name__.lower()
+        allowed |= {name} | _ALIASES.get(name, set())
+    for name in _NAME_RE.findall(text):
+        if name in allowed or set(name) <= _VAR_LETTERS:  # "2xy" のような文字の積は許す
+            continue
+        raise AnswerError(f"{name} などの関数や記号を使わずに、計算した値で答えてください")
+    try:
+        raw = parse_expr(text, local_dict=_local_dict(), transformations=_TRANSFORMS, evaluate=False)
+    except Exception:
+        return  # evaluate=False で読めない書き方は、下の通常の読み取りに任せる
+    extra = function_types(raw) - ALLOWED_FUNCS
+    if extra:
+        names = "、".join(sorted(getattr(t, "__name__", str(t)) for t in extra))
+        raise AnswerError(f"{names} などの関数や記号を使わずに、計算した値で答えてください")
+
+
 def _parse(text: str) -> Any:
     if not text or not text.strip():
         raise AnswerError("答えが空です")
+    _check_functions(text)
     try:
         return parse_expr(text, local_dict=_local_dict(), transformations=_TRANSFORMS)
     except Exception as exc:  # parse_expr は多種の例外を投げる

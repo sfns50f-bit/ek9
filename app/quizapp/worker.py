@@ -17,12 +17,12 @@ import random
 import time
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from . import backup
 from .config import Settings
 from .datadir import ensure_or_exit
-from .db import Job, Problem, dumps, init_db, kv_set, utcnow
+from .db import Job, Passage, Problem, dumps, init_db, kv_set, utcnow
 from .llm import LLMError, LLMUnavailable, OllamaClient
 from .runtime import ModelPlan, model_plan
 from .sandbox_client import SandboxClient, SandboxUnavailable
@@ -33,7 +33,9 @@ log = logging.getLogger("worker")
 
 OPEN_STATUSES = ("pending", "running", "waiting")
 OLLAMA_CHECK_SECONDS = 60
+HEARTBEAT_SECONDS = 60
 VERIFY_STEP = "検証"
+TEST_ATTEMPTS = 3  # 検証のテストで、検証の段階まで届く下書きを作るまでに試す回数
 
 
 class Cancelled(Exception):
@@ -51,10 +53,17 @@ class Worker:
         self.unavailable_until = 0.0
         self.last_ollama_check = -1e9
         self.last_backup_check = -1e9
+        self._last_status: tuple[str, int | None] | None = None
+        self._last_status_at = -1e9
 
     # --- 状態表示 -----------------------------------------------------------
 
     def set_status(self, text: str, job_id: int | None = None) -> None:
+        """状態を kv に書く。HDD への書き込みを減らすため、変わったときと 1 分ごとの生存確認だけ書く。"""
+        now = time.monotonic()
+        if (text, job_id) == self._last_status and now - self._last_status_at < HEARTBEAT_SECONDS:
+            return
+        self._last_status, self._last_status_at = (text, job_id), now
         with self.sessions.begin() as s:
             kv_set(s, "worker", dumps({"text": text, "job_id": job_id, "at": utcnow().isoformat()}))
 
@@ -88,7 +97,7 @@ class Worker:
             return
         try:
             path = backup.make_backup(self.settings.database_path, self.settings.backup_dir,
-                                      self.settings.backup_keep)
+                                      self.settings.backup_keep, tz=self.settings.timezone)
             log.info("backup written: %s", path)
             info = {"ok": True, "path": path, "error": ""}
         except Exception as exc:  # バックアップに失敗しても作成は続ける
@@ -135,7 +144,8 @@ class Worker:
 
     def _drafts(self, job_id: int) -> list[Problem]:
         with self.sessions() as s:
-            return list(s.execute(select(Problem).where(Problem.job_id == job_id, Problem.status == "draft")
+            return list(s.execute(select(Problem).options(selectinload(Problem.passage))
+                                  .where(Problem.job_id == job_id, Problem.status == "draft")
                                   .order_by(Problem.id)).scalars())
 
     def existing_keys(self, template: str) -> set[str]:
@@ -145,16 +155,32 @@ class Worker:
 
     # --- 保存 ---------------------------------------------------------------
 
-    def save_draft(self, job: Job, draft: Draft, plan: ModelPlan) -> None:
+    def save_drafts(self, job: Job, drafts: list[Draft], plan: ModelPlan) -> None:
         with self.sessions.begin() as s:
-            s.add(Problem(
-                subject=job.subject, unit=draft.unit, template=draft.template, format=draft.format,
-                status="draft", job_id=job.id, question=draft.question, choices_json=dumps(draft.choices),
-                answer_json=dumps(draft.answer), answer_display=draft.answer_display,
-                input_hint=draft.input_hint, explanation=draft.explanation, hint=draft.hint, source=draft.source,
-                params_json=dumps(draft.params), params_key=draft.params_key,
-                verification_json=dumps(draft.log), gen_model=plan.gen_model,
-            ))
+            passages: dict[int, Passage] = {}
+            for draft in drafts:
+                self._add_draft(s, job, draft, plan, passages)
+
+    def _add_draft(self, s: Session, job: Job, draft: Draft, plan: ModelPlan, passages: dict[int, Passage]) -> None:
+        passage = None
+        if draft.passage is not None:
+            # 同じ本文（同じ dict）の問題は 1 つの Passage にまとめる
+            passage = passages.get(id(draft.passage))
+            if passage is None:
+                p = draft.passage
+                passage = Passage(subject=job.subject, title=str(p.get("title", "")), body=str(p.get("body", "")),
+                                  source_title=str(p.get("source_title", "")),
+                                  source_url=str(p.get("source_url", "")))
+                s.add(passage)
+                passages[id(draft.passage)] = passage
+        s.add(Problem(
+            subject=job.subject, unit=draft.unit, template=draft.template, format=draft.format,
+            status="draft", job_id=job.id, passage=passage, question=draft.question,
+            choices_json=dumps(draft.choices), answer_json=dumps(draft.answer), answer_display=draft.answer_display,
+            input_hint=draft.input_hint, explanation=draft.explanation, hint=draft.hint, source=draft.source,
+            params_json=dumps(draft.params), params_key=draft.params_key,
+            verification_json=dumps(draft.log), gen_model=plan.gen_model,
+        ))
 
     def save_rejected(self, job: Job, subject: Subject, template: str, exc: Rejected, plan: ModelPlan) -> None:
         p = exc.partial
@@ -183,7 +209,7 @@ class Worker:
             return
         with self.sessions() as s:
             plan = model_plan(self.settings, s)
-        budget = job.count if job.is_test else job.count * self.settings.max_attempts
+        budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
         self._update_job(job_id, status="running", error="")
         label = f"依頼 #{job_id} {subject.scope_label(job.scope)}"
@@ -201,21 +227,34 @@ class Worker:
             made = self._count(job_id, done_statuses)
             self._update_job(job_id, made=made)
             job = self._job(job_id)
-            if made >= job.count or job.gen_attempts >= budget:
+            if made >= job.count or job.gen_attempts >= budget or (job.is_test and self._test_caught(job_id)):
                 break
 
         if job.is_test:
             if made:
                 self._finish(job_id, "failed", "検証のテスト：正解をずらした問題が検証に合格してしまいました。"
                                                "検証役のモデルや回数を見直してください")
-            else:
+            elif self._test_caught(job_id):
                 self._finish(job_id, "done", "検証のテスト：正解をずらした問題は、期待どおり検証で弾かれました")
+            else:
+                with self.sessions() as s:
+                    codes = sorted(set(s.execute(select(Problem.reject_code).where(Problem.job_id == job_id))
+                                       .scalars()))
+                self._finish(job_id, "failed", "検証のテスト：判定できませんでした。下書きが検証の段階まで届きませんでした"
+                                               f"（理由: {'、'.join(c for c in codes if c) or '不明'}）。もう一度流してください")
         elif made >= job.count:
             self._finish(job_id, "done", "")
         elif made:
             self._finish(job_id, "partial", f"{job.count} 問中 {made} 問だけ検証に合格しました（作り直しの上限に達しました）")
         else:
             self._finish(job_id, "failed", "検証に合格した問題がありませんでした。/status の不合格の理由を確認してください")
+
+    def _test_caught(self, job_id: int) -> bool:
+        """検証のテストの下書きが、検証役との突き合わせで弾かれたか（文章の確認などで落ちたものは数えない）。"""
+        with self.sessions() as s:
+            return s.execute(select(func.count()).select_from(Problem).where(
+                Problem.job_id == job_id, Problem.status == "rejected",
+                Problem.reject_code.in_(("solver_mismatch", "solver_unreadable")))).scalar_one() > 0
 
     def _finish(self, job_id: int, status: str, message: str) -> None:
         self._update_job(job_id, status=status, error=message, progress="", finished_at=utcnow())
@@ -226,7 +265,10 @@ class Worker:
                          is_test=job.is_test, existing_keys=self.existing_keys)
         order = list(templates)
         self.rng.shuffle(order)
+        produced = 0
         for i in range(n):
+            if produced >= n:  # 1 回で複数問（同じ本文の設問）を作る科目もある
+                break
             self._check_cancel(job.id)
             template = order[(job.gen_attempts + i) % len(order)]
             text = f"作成中 {i + 1}/{n}（{plan.gen_model}）"
@@ -236,7 +278,7 @@ class Worker:
             with self.sessions.begin() as s:
                 s.get(Job, job.id).gen_attempts += 1
             try:
-                draft = subject.generate(ctx, template, job.format)
+                made = subject.generate(ctx, template, job.format)
             except Rejected as exc:
                 self.save_rejected(job, subject, template, exc, plan)
                 continue
@@ -247,7 +289,9 @@ class Worker:
                 with self.sessions.begin() as s:  # 作れなかった分は数えない
                     s.get(Job, job.id).gen_attempts -= 1
                 raise
-            self.save_draft(job, draft, plan)
+            drafts = made if isinstance(made, list) else [made]
+            self.save_drafts(job, drafts, plan)
+            produced += len(drafts)
 
     def _verify_phase(self, job: Job, subject: Subject, drafts: list[Problem], plan: ModelPlan,
                       label: str) -> None:

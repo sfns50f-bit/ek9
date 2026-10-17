@@ -63,7 +63,22 @@ PC のターミナル（Windows なら PowerShell）から：
 ssh <Piのユーザー名>@<PiのIPアドレス>
 ```
 
-### 2. git が入っているか確認する
+### 2. git と Docker が使えるか確認する
+
+```
+docker compose version
+```
+
+`Docker Compose version v2.xx` と出れば OK です。`permission denied` と出たら、自分のユーザーを docker グループに入れて、ログインし直します。
+
+```
+sudo usermod -aG docker $USER
+exit
+```
+
+（`exit` のあと、もう一度 `ssh <Piのユーザー名>@<PiのIPアドレス>` でログインし、`docker compose version` をやり直します）
+
+次に git を確かめます。
 
 ```
 git --version
@@ -149,7 +164,7 @@ ls
    findmnt /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c
    ```
 
-   `SOURCE` が `/dev/sda1` と出れば OK です。何も出なければ HDD がマウントされていないので、OpenMediaVault の画面で確認してください。
+   `TARGET` と `SOURCE`（`/dev/sda1` など）が 1 行表示されれば OK です。何も出なければ HDD がマウントされていないので、OpenMediaVault の画面で確認してください。
 
 2. データのフォルダとバックアップのフォルダを作る
 
@@ -242,7 +257,7 @@ docker stats --no-stream
 4. **この問題おかしい？**：問題の下にあるボタンから報告できます。報告された問題は出題されず、記録の集計からも外れます。「状態」の画面に一覧が出るので、確認して問題なければ戻せます
 5. **状態**（「状態」）：Ollama・worker・sandbox の状態、ストック残数（少ないと赤くなります。ホームにも出ます）、作成の進み具合、バックアップ、検証で弾かれた割合と理由
    - **モデルと検証の回数**：作成・検証に使うモデルと、検証役に解かせる回数をここで変えられます。正しい問題まで弾かれすぎる（「検証役の答えが正解と一致しない」が多い）ときは、検証役を `gemma4:12b-it-qat` に変えてみてください
-   - **検証のテスト**：わざと正解をずらした問題を 1 問流して、検証で弾かれることを確かめられます（ストックには入りません）
+   - **検証のテスト**：わざと正解をずらした問題を流して、検証役との突き合わせで弾かれることを確かめられます（ストックには入りません）。「期待どおり検証で弾かれました」と出れば成功です。「判定できませんでした」と出たときは、もう一度流してください
 
 ---
 
@@ -298,13 +313,19 @@ docker compose logs --tail 20 web
    docker compose ps
    ```
 
+4. 古いイメージを消して、SD カードの空きを保つ（更新のたびに古いものがたまるため）
+
+   ```
+   docker image prune -f
+   ```
+
 `git status` でファイルが変更済み（`modified:`）と出たときは、Pi の上で直接ファイルを変えてしまっています。元に戻してよければ `git checkout -- <ファイル名>` を実行してから `git pull` します。分からなければ、そのまま開発者（Claude Code）に `git status` の結果を見せてください。
 
 ---
 
 ## バックアップ
 
-- worker が **1 日 1 回**、`/srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/backups/` に `quiz-年月日-時分秒.db` を作り、新しい **14 個**を残します（`.env` の `BACKUP_KEEP` / `BACKUP_INTERVAL_HOURS` で変更可）
+- worker が **1 日 1 回**、`/srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/backups/` に `quiz-年月日-時分秒.db`（日本時間）を作り、新しい **14 個**を残します（`.env` の `BACKUP_KEEP` / `BACKUP_INTERVAL_HOURS` で変更可）
 - 最新のバックアップの時刻は「状態」画面で確認できます
 
 いますぐ取るとき：
@@ -339,12 +360,15 @@ scp <Piのユーザー名>@<PiのIPアドレス>:/srv/dev-disk-by-uuid-df337903-
    docker compose down
    ```
 
-2. 今のデータベースを別名で残す（念のため）
+2. 今のデータベースを、関連するファイルごと `old` フォルダへ移して残す（念のため）
 
    ```
-   sudo mv /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/quiz.db /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/quiz.db.old
-   sudo rm -f /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/quiz.db-wal /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/quiz.db-shm
+   sudo mkdir -p /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/old
+   sudo mv /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/quiz.db* /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/old/
+   ls -la /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/old
    ```
+
+   `quiz.db`（あれば `quiz.db-wal` と `quiz.db-shm` も）が `old` に移っていれば OK です。
 
 3. バックアップをコピーして、アプリが書き込めるようにする
 
@@ -360,7 +384,7 @@ scp <Piのユーザー名>@<PiのIPアドレス>:/srv/dev-disk-by-uuid-df337903-
    docker compose ps
    ```
 
-問題なく動いたら、`quiz.db.old` は消して構いません（`sudo rm /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/quiz.db.old`）。
+問題なく動いたら、`old` フォルダは消して構いません（`sudo rm -r /srv/dev-disk-by-uuid-df337903-0195-4c8c-8237-49c1f271a27c/ai-quiz/old`）。
 
 ---
 

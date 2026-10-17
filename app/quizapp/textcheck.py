@@ -34,9 +34,55 @@ def normalize(text: str) -> str:
 
 
 def contains(text: str, snippet: str) -> bool:
-    return normalize(snippet) in normalize(text)
+    """snippet が text に入っているか。数字の途中での一致（"12人" の中の "2人" など）は数えない。"""
+    t, n = normalize(text), normalize(snippet)
+    if not n:
+        return True
+    start = 0
+    while (i := t.find(n, start)) >= 0:
+        before = t[i - 1] if i > 0 else ""
+        after = t[i + len(n)] if i + len(n) < len(t) else ""
+        if not (n[0].isdigit() and before.isdigit()) and not (n[-1].isdigit() and after.isdigit()):
+            return True
+        start = i + 1
+    return False
 
 
-def missing(text: str, snippets: list[str]) -> list[str]:
-    """text に入っていない snippet の一覧。"""
-    return [s for s in snippets if not contains(text, s)]
+Snippet = str | list[str] | tuple[str, ...]
+
+
+def first(snippet: Snippet) -> str:
+    """書き方の候補があるときは、最初の書き方（LLM に見せる書き方）。"""
+    return snippet if isinstance(snippet, str) else snippet[0]
+
+
+def missing(text: str, snippets: list[Snippet]) -> list[str]:
+    """text に入っていない snippet の一覧。候補のリストはどれか 1 つ入っていればよい。"""
+    out = []
+    for s in snippets:
+        options = [s] if isinstance(s, str) else list(s)
+        if not any(contains(text, o) for o in options):
+            out.append(first(s))
+    return out
+
+
+_CTRL_MAP = {"\x08": "b", "\x0c": "f", "\t": "t", "\r": "r", "\n": "n"}
+_CTRL_RE = re.compile(r"[\x08\x0c\t\r\n](?=[A-Za-z])")
+
+
+def repair_latex(text: str) -> str:
+    r"""JSON の "\frac" が改ページ文字 + "rac" になる、といった崩れを数式の中だけ直す。"""
+    out: list[str] = []
+    in_math, delim = False, ""
+    for part in re.split(r"(\$\$|\$)", text):
+        if part in ("$", "$$"):
+            if not in_math:
+                in_math, delim = True, part
+            elif part == delim:
+                in_math = False
+            out.append(part)
+        elif in_math:
+            out.append(_CTRL_RE.sub(lambda m: "\\" + _CTRL_MAP[m.group()], part))
+        else:
+            out.append(part)
+    return "".join(out)

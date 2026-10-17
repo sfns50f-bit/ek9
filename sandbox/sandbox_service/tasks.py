@@ -39,10 +39,16 @@ def task_compare(payload: dict[str, Any]) -> dict[str, Any]:
     """expected と given を比べる。どちらも {"srepr": ...} か {"text": ...} で渡す。"""
     kind = str(payload.get("kind") or "value")
     expected, exp_var = _load(payload.get("expected"), kind)
+    given_spec = payload.get("given")
+    if isinstance(given_spec, dict) and not given_spec.get("srepr"):
+        # 文字列の答え（子供の入力・検証役の答え）には、正解にない関数を使わせない
+        mc.ALLOWED_FUNCS = mc.function_types(expected)
     try:
-        given, giv_var = _load(payload.get("given"), kind)
+        given, giv_var = _load(given_spec, kind)
     except mc.AnswerError as exc:
         return {"ok": False, "error": str(exc), "where": "given"}
+    finally:
+        mc.ALLOWED_FUNCS = None
     var = str(payload.get("var") or exp_var or giv_var or "x")
     res = mc.compare(expected, given, kind, var=var, allow_float=bool(payload.get("allow_float")))
     return {

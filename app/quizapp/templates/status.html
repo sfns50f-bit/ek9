@@ -9,14 +9,14 @@
   <h1>状態</h1>
   <table class="compact">
     <tr><th>Ollama</th><td>{% if ollama.ok %}{{ mark(true) }} つながっています{% elif ollama %}{{ mark(false) }} つながりません（{{ ollama.error }}）{% else %}未確認{% endif %}
-      {% if ollama.checked_at %}<span class="muted small">確認 {{ ollama.checked_at[11:16] }}（UTC）</span>{% endif %}
+      {% if ollama.checked_at %}<span class="muted small">確認 {{ ollama.checked_at | isolocal }}</span>{% endif %}
       <div class="muted small">{{ settings.ollama_base_url or "OLLAMA_BASE_URL が未設定" }}</div></td></tr>
-    <tr><th>worker</th><td>{% if worker_alive %}{{ mark(true) }}{% else %}{{ mark(false) }} 3分以上応答がありません{% endif %}
+    <tr><th>worker</th><td>{% if worker_alive %}{{ mark(true) }}{% else %}{{ mark(false) }} しばらく応答がありません（{{ worker_at | localtime if worker_at else "記録なし" }}）{% endif %}
       {{ worker.text or "" }}</td></tr>
     <tr><th>sandbox</th><td>{{ mark(sandbox_ok) }} {{ "動いています" if sandbox_ok else "つながりません（キーボード入力の採点ができません）" }}</td></tr>
     <tr><th>順番待ち</th><td>{{ jobs_open }} 件</td></tr>
     <tr><th>データ</th><td>{{ settings.database_path }}</td></tr>
-    <tr><th>バックアップ</th><td>{{ backup_count }} 個（最新 {{ backup_last[:16].replace("T", " ") if backup_last else "なし" }}）
+    <tr><th>バックアップ</th><td>{{ backup_count }} 個（最新 {{ backup_last or "なし" }}）
       {% if backup_info and not backup_info.ok %}<div class="notice warn">前回失敗: {{ backup_info.error }}</div>{% endif %}</td></tr>
   </table>
 </section>
@@ -94,11 +94,16 @@
 
 <section class="card" id="tests">
   <h2>検証のテスト</h2>
-  <p class="small">正解をわざと 1 ずらした問題を 1 問作り、検証で弾かれることを確かめます（ストックには入りません）。</p>
+  <p class="small">正解をわざとずらした問題を作り、検証役との突き合わせで弾かれることを確かめます（ストックには入りません）。
+    文章の確認など検証より前の段階で落ちたときは、最大 3 回まで作り直し、それでも届かなければ「判定できませんでした」と出ます。</p>
   <form method="post" action="/status/test">
-    <select name="template">
-      <option value="">小単元をおまかせ</option>
-      {% for t in templ %}<option value="{{ t.id }}">{{ t.unit }}／{{ t.label }}</option>{% endfor %}
+    <select name="target">
+      {% for sub in subjects() if sub.test_format %}
+      <option value="{{ sub.id }}">{{ sub.name }}（小単元をおまかせ）</option>
+      {% for unit in sub.units() %}{% for su in unit.subunits %}
+      <option value="{{ sub.id }}|{{ su.id }}">{{ sub.name }}：{{ unit.label }}／{{ su.label }}</option>
+      {% endfor %}{% endfor %}
+      {% endfor %}
     </select>
     <button type="submit" class="secondary">テストを流す</button>
   </form>

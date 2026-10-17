@@ -16,7 +16,6 @@ import random
 from typing import Any
 
 from ... import textcheck
-from ...llm import repair_latex
 from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Unit, VerifyResult
 from . import prompts
 from .catalog import MISTAKES, UNITS
@@ -35,6 +34,8 @@ class MathSubject(Subject):
     name = "数学"
     formats = ("choice", "input")
     mistakes = MISTAKES
+    reject_codes = {"answer_leak": "問題文・ヒントに正解が書かれている"}
+    test_format = "input"  # 検証のテスト（正解をずらした問題）に対応する
 
     def units(self) -> list[Unit]:
         return UNITS
@@ -106,14 +107,17 @@ class MathSubject(Subject):
                         "summary": f"誤答 3 つが正解とも互いとも一致しないことを sympy で確認（{mistakes}）"})
         partial = {"unit": unit, "template": template, "format": fmt, "params": inst.params, "params_key": key}
 
+        # 検証のテストでは、解き方の要点（本当の正解が入っている）を渡さない。
+        # 渡すと解説が本当の正解で書かれ、検証より前の「解説の確認」で落ちてしまい、テストにならない
+        steps = [] if ctx.is_test else inst.steps
         out = ctx.llm.chat_json(
             ctx.gen_model, prompts.GEN_SYSTEM,
-            prompts.gen_user(inst.task, inst.givens, answer_latex, inst.steps, fmt),
+            prompts.gen_user(inst.task, [textcheck.first(g) for g in inst.givens], answer_latex, steps, fmt),
             prompts.GEN_SCHEMA, temperature=0.7,
         )
-        question = repair_latex(str(out.get("question") or "").strip())
-        explanation = repair_latex(str(out.get("explanation") or "").strip())
-        hint = repair_latex(str(out.get("hint") or "").strip())
+        question = textcheck.repair_latex(str(out.get("question") or "").strip())
+        explanation = textcheck.repair_latex(str(out.get("explanation") or "").strip())
+        hint = textcheck.repair_latex(str(out.get("hint") or "").strip())
         partial.update(question=question, explanation=explanation, hint=hint)
         if not (question and explanation and hint):
             log.append({"step": "文章", "ok": False, "summary": "問題文・解説・ヒントのどれかが空です"})
@@ -125,6 +129,15 @@ class MathSubject(Subject):
             raise Rejected("text_givens", summary, log, partial)
         log.append({"step": "問題文の確認", "ok": True,
                     "summary": f"テンプレートの式・値 {len(inst.givens)} 個がそのまま入っている"})
+        # 問題文やヒントに正解が書かれていたら、検証役にも子供にも答えが見えてしまう
+        # （短い答え（"5" など）は問題文の数値と偶然重なるので、ある程度長いものだけ確かめる）
+        leaks = [c for c in inst.answer_checks() if len(textcheck.normalize(c)) >= 4
+                 and not any(textcheck.contains(textcheck.first(g), c) for g in inst.givens)]
+        for where, text in (("問題文", question), ("ヒント", hint)):
+            if leaks and len(textcheck.missing(text, leaks)) < len(leaks):
+                summary = f"{where}に正解 ${answer_latex}$ が書かれています"
+                log.append({"step": f"{where}の確認", "ok": False, "summary": summary})
+                raise Rejected("answer_leak", summary, log, partial)
         lost = textcheck.missing(explanation, inst.answer_checks())
         if lost:
             summary = f"解説に正解 ${answer_latex}$ が入っていません"

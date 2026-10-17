@@ -35,14 +35,14 @@ class Cand:
 @dataclass
 class Instance:
     task: str
-    givens: list[str]
+    givens: list[Any]  # 文字列、または同じ式の書き方の候補のリスト（最初のものを LLM に見せる）
     answer: Any
     candidates: list[Cand]
     steps: list[str]
     params: dict[str, Any]
     kind: str = "value"
     var: str = "x"
-    input_hint: str = "答えを入力（分数は 3/2、√ は sqrt(2) または √2）"
+    input_hint: str = "計算した値を入力"
     fmt: Callable[[Any], str] = L
     # 解説に入っていなければならない正解の書き方（省略時は fmt(answer)）
     checks: Callable[[Any], list[str]] | None = None
@@ -52,6 +52,11 @@ class Instance:
         value = self.answer if value is None else value
         return self.checks(value) if self.checks else [self.fmt(value)]
 
+
+# キーボード入力の答え方。例に具体的な値を書くと、正解と同じ値になって答えが見えてしまう
+# ことがあるので、文字（a/b など）で書く（tests/test_math_templates.py で確認）
+HINT_NUM = "計算した値を入力（分数は a/b、√ は sqrt(n) または √n、負の数は -a）"
+HINT_INT = "整数で入力（負の数は -a）"
 
 TEMPLATES: dict[str, Callable[[random.Random], Instance]] = {}
 
@@ -153,7 +158,7 @@ def quad_vertex(rng: random.Random) -> Instance:
         ],
         params={"a": a, "p": p, "q": q},
         fmt=tex_tuple,
-        input_hint="頂点の座標を (x座標, y座標) の形で入力（例: (1, -2)）",
+        input_hint="頂点の座標を (x座標, y座標) の形で入力（2つの数はカンマで区切る）",
     )
 
 
@@ -191,7 +196,7 @@ def quad_ineq(rng: random.Random) -> Instance:
         params={"al": al, "be": be, "rel": rel},
         fmt=tex_interval,
         checks=interval_checks,
-        input_hint="例: 1<x<3、または x<1, 3<x（「または」はカンマで区切る。≦ は <= と入力）",
+        input_hint="x の範囲を不等式で入力（a<x<b の形。「または」はカンマで区切って x<a, b<x のように。≦ は <=）",
     )
 
 
@@ -229,7 +234,7 @@ def trig_cosine(rng: random.Random) -> Instance:
             f"a > 0 より a = {L(ans)}",
         ],
         params={"A": A, "b": b, "c": c},
-        input_hint="辺の長さを入力（例: 2√7 は 2sqrt(7) または 2√7）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -254,7 +259,7 @@ def trig_area(rng: random.Random) -> Instance:
             f"\\sin {A}^\\circ = {L(sin)} なので S = \\frac{{1}}{{2}} \\cdot {b} \\cdot {c} \\cdot {L(sin)} = {L(ans)}",
         ],
         params={"A": A, "b": b, "c": c},
-        input_hint="面積を入力（例: 6√3 は 6sqrt(3) または 6√3）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -284,7 +289,7 @@ def case_comb(rng: random.Random) -> Instance:
             f"{{}}_{{{n}}}\\mathrm{{C}}_{{{r}}} = \\frac{{{L(sp.ff(n, r))}}}{{{L(sp.factorial(r))}}} = {L(ans)}",
         ],
         params={"n": n, "r": r, "what": what[1]},
-        input_hint="何通りかを数字で入力（例: 120）",
+        input_hint="何通りかを整数で入力",
     )
 
 
@@ -312,7 +317,7 @@ def case_repeat(rng: random.Random) -> Instance:
             f"\\left({L(q)}\\right)^{{{n - k}}} = {L(ans)}",
         ],
         params={"event": event, "n": n, "k": k},
-        input_hint="確率を分数で入力（例: 5/72）",
+        input_hint="確率を分数 a/b の形で入力",
     )
 
 
@@ -350,7 +355,7 @@ def poly_vieta(rng: random.Random) -> Instance:
         candidates=cands,
         steps=steps,
         params={"p": p, "q": q, "target": target},
-        input_hint="値を入力（分数は 3/2 のように）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -375,7 +380,7 @@ def poly_remainder(rng: random.Random) -> Instance:
             f"P({k}) = {L(ans)}",
         ],
         params={"a": a, "b": b, "c": c, "k": k},
-        input_hint="余りを入力（例: -7）",
+        input_hint=HINT_INT,
     )
 
 
@@ -396,6 +401,10 @@ def trig_value(rng: random.Random) -> Instance:
     other = "cos" if name == "sin" else "sin"
     num = r"\pi" if m == 1 else f"{m}\\pi"
     expr = f"\\{name} \\frac{{{num}}}{{{d}}}"
+    # 括弧つきや「π を分数の外に出す」書き方も、同じ式として認める
+    pi_out = r"\pi" if m == 1 else f"\\frac{{{m}}}{{{d}}}\\pi"
+    expr_alts = [expr, f"\\{name}\\left(\\frac{{{num}}}{{{d}}}\\right)",
+                 f"\\{name} {pi_out}" if m != 1 else expr, f"\\{name}\\left({pi_out}\\right)"]
     cands = [Cand(-ans, "sign"), Cand(_TRIG[other](theta), "swap"), Cand(-_TRIG[other](theta), "swap"),
              Cand(sp.tan(theta), "formula"), Cand(1 / ans, "reciprocal")]
     if name == "tan":
@@ -403,7 +412,7 @@ def trig_value(rng: random.Random) -> Instance:
                  Cand(sp.sin(theta), "formula"), Cand(sp.cos(theta), "formula")]
     return Instance(
         task="弧度法で表された角の三角関数の値を求める問題",
-        givens=[expr],
+        givens=[expr_alts],
         answer=ans,
         candidates=cands,
         steps=[
@@ -411,7 +420,7 @@ def trig_value(rng: random.Random) -> Instance:
             f"単位円で考えると {expr} = {L(ans)}",
         ],
         params={"name": name, "m": m, "d": d},
-        input_hint="値を入力（例: -√3/2 は -sqrt(3)/2 または -√3/2）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -457,7 +466,7 @@ def trig_addition(rng: random.Random) -> Instance:
             f"代入すると {target} = {L(ans)}",
         ],
         params={"sa": str(sa), "cb": str(cb), "kind": kind},
-        input_hint="値を分数で入力（例: -16/65）",
+        input_hint="値を分数 a/b の形で入力（負なら -a/b）",
     )
 
 
@@ -491,7 +500,7 @@ def trig_double(rng: random.Random) -> Instance:
             f"{target} = {L(ans)}",
         ],
         params={"s": str(s), "obtuse": obtuse, "target": target},
-        input_hint="値を分数で入力（例: -7/25）",
+        input_hint="値を分数 a/b の形で入力（負なら -a/b）",
     )
 
 
@@ -525,7 +534,7 @@ def trig_synth(rng: random.Random) -> Instance:
             f"-1 \\leqq \\sin(\\theta + \\alpha) \\leqq 1 より、{word}は {L(ans)}",
         ],
         params={"a": str(a), "b": str(b), "max": want_max},
-        input_hint="値を入力（例: 2、√2 は sqrt(2) または √2）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -558,7 +567,7 @@ def explog_base(rng: random.Random) -> Instance:
             + ("" if ans.q == m else f" = {L(ans)}"),
         ],
         params={"c": c, "m": m, "n": n},
-        input_hint="値を入力（分数は 3/2 のように）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -599,7 +608,7 @@ def explog_equation(rng: random.Random) -> Instance:
         ],
         params={"c": c, "p": p, "q": q, "r": r, "k": k},
         fmt=fmt,
-        input_hint="x の値を入力（例: 5。答えが2つ以上あるときはカンマで区切る）",
+        input_hint="x の値を入力（答えが2つ以上あるときはカンマで区切る）",
     )
 
 
@@ -635,7 +644,7 @@ def diff_tangent(rng: random.Random) -> Instance:
         ],
         params={"f": str(f), "t": t},
         fmt=fmt,
-        input_hint="y = の右辺を入力（例: 3x-2）",
+        input_hint="y = の右辺を x の式で入力（かけ算の * は省略してよい）",
     )
 
 
@@ -667,7 +676,7 @@ def diff_extremum(rng: random.Random) -> Instance:
             f"増減表より x = {al} で極大値 {L(fmax)}、x = {be} で極小値 {L(fmin)}",
         ],
         params={"al": al, "be": be, "d": d, "max": want_max},
-        input_hint="値を入力（例: -5）",
+        input_hint=HINT_INT,
     )
 
 
@@ -703,7 +712,7 @@ def int_definite(rng: random.Random) -> Instance:
             f"\\left[{poly(F)}\\right]_{{{a}}}^{{{b}}} = {L(F.subs(x, b))} - \\left({L(F.subs(x, a))}\\right) = {L(ans)}",
         ],
         params={"p": p, "q": q, "r": r, "a": a, "b": b},
-        input_hint="値を入力（分数は 3/2 のように）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -739,7 +748,7 @@ def int_area(rng: random.Random) -> Instance:
             f"= \\frac{{1}}{{6}}\\left({be} - \\left({al}\\right)\\right)^3 = {L(ans)}",
         ],
         params={"al": al, "be": be, "line": str(line) if givens[0] == "y = x^2" else ""},
-        input_hint="面積を入力（分数は 9/2 のように）",
+        input_hint=HINT_NUM,
     )
 
 
@@ -770,7 +779,7 @@ def seq_arith(rng: random.Random) -> Instance:
             f"S_{{{n}}} = \\frac{{{n}\\left({a} + \\left({an}\\right)\\right)}}{{2}} = {L(ans)}",
         ],
         params={"a": a, "d": d, "n": n},
-        input_hint="和を入力（例: 230）",
+        input_hint=HINT_INT,
     )
 
 
@@ -783,10 +792,9 @@ _STD_ANGLES = {sp.Rational(1, 2): 60, -sp.Rational(1, 2): 120, sp.sqrt(2) / 2: 4
 
 
 def _vector_pairs() -> list[tuple[tuple[int, int], tuple[int, int], int]]:
-    """なす角が 30°, 45°, 60°, 120°, 135°, 150° になる整数成分のベクトルの組。"""
+    """なす角が 45° か 135° になる整数成分のベクトルの組（整数成分では 30°・60° などは作れない）。"""
     from fractions import Fraction
 
-    cos2 = {Fraction(3, 4): (30, 150), Fraction(1, 2): (45, 135), Fraction(1, 4): (60, 120)}
     found = []
     comps = [(i, j) for i in range(-4, 5) for j in range(-4, 5) if (i, j) != (0, 0)]
     for a in comps:
@@ -794,12 +802,16 @@ def _vector_pairs() -> list[tuple[tuple[int, int], tuple[int, int], int]]:
             if a >= b:
                 continue
             dot = a[0] * b[0] + a[1] * b[1]
-            if dot == 0:
-                continue
-            c2 = Fraction(dot * dot, (a[0] ** 2 + a[1] ** 2) * (b[0] ** 2 + b[1] ** 2))
-            if c2 in cos2:
-                found.append((a, b, cos2[c2][0 if dot > 0 else 1]))
+            if dot != 0 and Fraction(dot * dot, (a[0] ** 2 + a[1] ** 2) * (b[0] ** 2 + b[1] ** 2)) == Fraction(1, 2):
+                found.append((a, b, 45 if dot > 0 else 135))
     return found
+
+
+def _sqrt3_vector(rng: random.Random, direction: int) -> tuple[Any, Any]:
+    """向きが 30° の倍数のベクトル。成分は整数か √3 を含む（例: (√3, 1), (-2, 0)）。"""
+    k = rng.choice([1, 2])
+    rad = sp.rad(direction)
+    return (sp.nsimplify(2 * k * sp.cos(rad)), sp.nsimplify(2 * k * sp.sin(rad)))
 
 
 _PAIRS: list[tuple[tuple[int, int], tuple[int, int], int]] = []
@@ -807,10 +819,16 @@ _PAIRS: list[tuple[tuple[int, int], tuple[int, int], int]] = []
 
 @template("mc-vec-angle")
 def vec_angle(rng: random.Random) -> Instance:
-    if not _PAIRS:
-        _PAIRS.extend(_vector_pairs())
-    a, b, theta = rng.choice(_PAIRS)
-    dot = a[0] * b[0] + a[1] * b[1]
+    theta = rng.choice([30, 45, 60, 120, 135, 150])
+    if theta in (45, 135):
+        if not _PAIRS:
+            _PAIRS.extend(_vector_pairs())
+        a, b, _ = rng.choice([p for p in _PAIRS if p[2] == theta])
+    else:
+        d1 = rng.choice(range(0, 360, 30))
+        d2 = (d1 + rng.choice([theta, -theta])) % 360
+        a, b = _sqrt3_vector(rng, d1), _sqrt3_vector(rng, d2)
+    dot = sp.simplify(a[0] * b[0] + a[1] * b[1])
     na, nb = sp.sqrt(a[0] ** 2 + a[1] ** 2), sp.sqrt(b[0] ** 2 + b[1] ** 2)
     angles = sorted(_STD_ANGLES.values())
     neighbor = angles[(angles.index(theta) + 1) % len(angles)]
@@ -825,12 +843,12 @@ def vec_angle(rng: random.Random) -> Instance:
             Cand(sp.Integer(180 - neighbor), "calc"),
         ],
         steps=[
-            f"\\vec{{a}} \\cdot \\vec{{b}} = {dot}, |\\vec{{a}}| = {L(na)}, |\\vec{{b}}| = {L(nb)}",
+            f"\\vec{{a}} \\cdot \\vec{{b}} = {L(dot)}, |\\vec{{a}}| = {L(na)}, |\\vec{{b}}| = {L(nb)}",
             f"\\cos\\theta = \\frac{{\\vec{{a}} \\cdot \\vec{{b}}}}{{|\\vec{{a}}||\\vec{{b}}|}} = "
-            f"{L(sp.nsimplify(sp.Rational(dot) / (na * nb)))}",
+            f"{L(sp.nsimplify(dot / (na * nb)))}",
             f"0^\\circ \\leqq \\theta \\leqq 180^\\circ より \\theta = {theta}^\\circ",
         ],
-        params={"a": list(a), "b": list(b)},
+        params={"a": [str(v) for v in a], "b": [str(v) for v in b]},
         fmt=deg,
-        input_hint="角度を度数の数字で入力（例: 60）",
+        input_hint="角度を度数の数字だけで入力（° は付けなくてよい）",
     )

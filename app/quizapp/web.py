@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import backup, runtime, stock
@@ -44,6 +45,13 @@ BASE = Path(__file__).resolve().parent
 MAX_SESSION = 50
 MAX_JOB = 50
 MAX_DURATION_MS = 3 * 60 * 60 * 1000
+
+
+def _int(value: str, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return default
 
 
 def _ms(dt: datetime) -> int:
@@ -80,6 +88,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     templates.env.filters["localtime"] = localtime
     templates.env.filters["seconds"] = seconds
+    templates.env.filters["isolocal"] = lambda text: localtime(datetime.fromisoformat(text)) if text else ""
     templates.env.globals.update(FORMATS=FORMATS, DEVICES=DEVICES, subjects=all_subjects,
                                  get_subject=get_subject)
 
@@ -130,17 +139,17 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.post("/start")
     def start(request: Request, subject: str = Form(...), scope: str = Form(""), device: str = Form("phone"),
-              count: int = Form(20)) -> Response:
+              count: str = Form("20")) -> Response:
         sub = subject_or_404(subject)
         if device not in DEVICES or not scope_valid(sub, scope):
             raise HTTPException(400, "選び方が正しくありません")
-        count = max(1, min(MAX_SESSION, count))
+        count_n = max(1, min(MAX_SESSION, _int(count, 20)))
         with sessions.begin() as s:
-            ids = stock.build_session(s, user_id(request), sub, scope, device, count, settings.retry_percent)
+            ids = stock.build_session(s, user_id(request), sub, scope, device, count_n, settings.retry_percent)
             if not ids:
                 return redirect("/?msg=empty")
             row = StudySession(user_id=user_id(request), subject=sub.id, scope=scope, device=device,
-                               problem_ids_json=dumps(ids), requested=count)
+                               problem_ids_json=dumps(ids), requested=count_n)
             s.add(row)
             s.flush()
             sid = row.id
@@ -161,7 +170,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.get("/play/{sid}")
     def play(request: Request, sid: int, msg: str = "") -> Response:
-        with sessions() as s:
+        with sessions.begin() as s:
             row = load_session(s, sid)
             done = answered_ids(s, sid)
             ids = row.problem_ids
@@ -171,8 +180,11 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                 problem = s.get(Problem, pid)
                 if problem is None or problem.reported or problem.status != "ready":
                     continue  # 「おかしい？」が押された問題は飛ばす
+                if row.current_problem_id != pid:  # 初めて表示した時刻を残す（読み込み直しでは更新しない）
+                    row.current_problem_id, row.current_shown_at = pid, utcnow()
+                _ = problem.passage
                 return render(request, "play.html", session=row, problem=problem, pos=pos + 1,
-                              total=len(ids), shown_at=_ms(utcnow()), msg=msg, value="",
+                              total=len(ids), shown_at=_ms(row.current_shown_at), msg=msg, value="",
                               subject=get_subject(problem.subject), retry_message="", hint_viewed=0)
             attempts = list(s.execute(select(Attempt).where(Attempt.session_id == sid)
                                       .order_by(Attempt.id)).scalars())
@@ -206,11 +218,27 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                               hint_viewed=hint_viewed)
             prev = s.execute(select(func.count()).select_from(Attempt).where(
                 Attempt.user_id == uid, Attempt.problem_id == problem_id)).scalar_one()
-        shown = _from_ms(shown_at) if shown_at > 0 else None
+        # かかった時間はサーバーの時計で測る（最初に表示した時刻から）。古いページから送られたときは画面の値を使う
+        if row.current_problem_id == problem_id and row.current_shown_at is not None:
+            shown = row.current_shown_at
+        else:
+            shown = _from_ms(shown_at) if shown_at > 0 else None
         duration = None
         if shown is not None:
             duration = int((now - shown).total_seconds() * 1000)
             duration = duration if 0 <= duration <= MAX_DURATION_MS else None
+        try:
+            aid = save_attempt(uid, problem, sid, row, prev, grade, gave_up, hint_viewed, response, shown,
+                               duration, now)
+        except IntegrityError:  # 二重送信。最初の回答の結果を見せる
+            with sessions() as s:
+                aid = s.execute(select(Attempt.id).where(Attempt.session_id == sid,
+                                                         Attempt.problem_id == problem_id)).scalar_one()
+        return redirect(f"/play/{sid}/result/{aid}")
+
+    def save_attempt(uid: int, problem: Problem, sid: int, row: StudySession, prev: int, grade: Grade,
+                     gave_up: bool, hint_viewed: int, response: str, shown: datetime | None,
+                     duration: int | None, now: datetime) -> int:
         with sessions.begin() as s:
             att = Attempt(
                 user_id=uid, problem_id=problem.id, session_id=sid, subject=problem.subject, unit=problem.unit,
@@ -222,8 +250,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             )
             s.add(att)
             s.flush()
-            aid = att.id
-        return redirect(f"/play/{sid}/result/{aid}")
+            return att.id
 
     @app.get("/play/{sid}/result/{aid}")
     def result(request: Request, sid: int, aid: int, msg: str = "") -> Response:
@@ -371,13 +398,15 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         last_backup = backup.latest_time(settings.backup_dir)
         return {
             "worker": worker,
-            "worker_alive": bool(worker_at and utcnow() - worker_at < timedelta(minutes=3)),
+            # LLM の 1 回の呼び出しは最大 LLM_TIMEOUT 秒かかるので、処理中はその分だけ待つ
+            "worker_alive": bool(worker_at and utcnow() - worker_at < timedelta(
+                seconds=180 + (settings.llm_timeout if worker.get("job_id") else 0))),
             "worker_at": worker_at,
             "ollama": ollama,
             "stock": stock.stock_summary(s, uid, settings.low_stock),
             "jobs_open": s.execute(select(func.count()).select_from(Job)
                                    .where(Job.status.in_(("pending", "running", "waiting")))).scalar_one(),
-            "backup_last": last_backup.isoformat() if last_backup else None,
+            "backup_last": localtime(last_backup, "%Y/%m/%d %H:%M") if last_backup else None,
             "backup_count": len(backup.list_backups(settings.backup_dir)),
             "backup_info": kv_json(s, "backup", {}) or {},
         }
@@ -428,14 +457,18 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return redirect("/status?msg=saved#models")
 
     @app.post("/status/test")
-    def verify_test(template: str = Form("")) -> Response:
-        """検証のテスト：わざと正解をずらした問題を 1 問流す（ストックには入らない）。"""
-        sub = get_subject("math")
+    def verify_test(target: str = Form("")) -> Response:
+        """検証のテスト：わざと正解をずらした問題を 1 問流す（ストックには入らない）。
+
+        target は "<科目ID>" か "<科目ID>|<小単元ID>"。テストに対応する科目（test_format あり）だけ。
+        """
+        subject_id, _, template = target.partition("|")
+        sub = get_subject(subject_id)
         scope = f"tmpl:{template}" if template else ""
-        if sub is None or not scope_valid(sub, scope):
+        if sub is None or not sub.test_format or not scope_valid(sub, scope):
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
-            s.add(Job(subject=sub.id, scope=scope, format="input", count=1, is_test=True))
+            s.add(Job(subject=sub.id, scope=scope, format=sub.test_format, count=1, is_test=True))
         return redirect("/status?msg=test#tests")
 
     @app.get("/healthz")

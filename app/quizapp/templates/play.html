@@ -3,6 +3,7 @@
 {% block title %}{{ pos }}/{{ total }} - AI問題集{% endblock %}
 {% block content %}
 {% if msg == "reported" %}<p class="notice">報告しました。この問題は飛ばします。</p>{% endif %}
+{% if pos == 1 and session.requested > total %}<p class="notice warn">ストックが足りないので、{{ session.requested }} 問のところ {{ total }} 問で行います。</p>{% endif %}
 <div class="progress">
   <span>{{ pos }} / {{ total }}</span>
   <span class="muted">{{ subject.label_of(problem.template) }}</span>

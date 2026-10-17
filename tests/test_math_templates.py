@@ -27,6 +27,20 @@ def test_catalog_matches_templates():
     assert 15 <= len(IDS) <= 20
 
 
+def test_givens_check_ignores_digits_inside_numbers():
+    assert not textcheck.contains("12人の中から", "2人")
+    assert textcheck.contains("12人の中から 2人 を選ぶ", "2人")
+    assert textcheck.contains("$b = 3$ とする", "b = 3")
+    assert not textcheck.contains("$b = 30$", "b = 3")
+    assert textcheck.missing("$\\sin\\left(\\frac{5\\pi}{6}\\right)$", [["\\sin \\frac{5\\pi}{6}",
+                                                                      "\\sin\\left(\\frac{5\\pi}{6}\\right)"]]) == []
+
+
+def test_vector_angles_cover_all_standard_angles():
+    seen = {int(TEMPLATES["mc-vec-angle"](random.Random(seed)).answer) for seed in range(300)}
+    assert seen == {30, 45, 60, 120, 135, 150}
+
+
 def test_mistake_tags_are_known():
     for tid, build in TEMPLATES.items():
         for seed in SEEDS:
@@ -51,6 +65,15 @@ def test_choices_are_distinct_from_answer_and_each_other(tid, sandbox):
         assert res["ok"] and res["equal_pairs"] == [], (tid, [c["text"] for c in choices])
 
 
+def test_input_hints_show_no_values():
+    """入力の例に具体的な数値を書かない（正解と同じ値になると答えが見えてしまう）。"""
+    import re
+
+    for tid, build in TEMPLATES.items():
+        hint = build(random.Random(0)).input_hint.replace("2つ", "")
+        assert not re.search(r"\d", hint), (tid, hint)
+
+
 @pytest.mark.parametrize("tid", IDS)
 def test_keyboard_answer_is_graded_correct(tid, sandbox):
     for seed in range(10):
@@ -64,7 +87,7 @@ def test_keyboard_answer_is_graded_correct(tid, sandbox):
 def test_givens_and_answer_survive_normalization(tid):
     for seed in range(10):
         inst = TEMPLATES[tid](random.Random(seed))
-        q = "問題文 " + "、".join(f"$ {g} $" for g in inst.givens)
+        q = "問題文 " + "、".join(f"$ {textcheck.first(g)} $" for g in inst.givens)
         assert textcheck.missing(q, inst.givens) == []
         assert textcheck.missing(f"答え: ${inst.fmt(inst.answer)}$", inst.answer_checks()) == []
 
@@ -227,7 +250,8 @@ def check_arith(inst):
 def check_vec(inst):
     import math
 
-    a, b = inst.params["a"], inst.params["b"]
+    a = [float(sp.sympify(v)) for v in inst.params["a"]]
+    b = [float(sp.sympify(v)) for v in inst.params["b"]]
     cos = (a[0] * b[0] + a[1] * b[1]) / (math.hypot(*a) * math.hypot(*b))
     assert abs(math.degrees(math.acos(cos)) - float(inst.answer)) < 1e-9
 

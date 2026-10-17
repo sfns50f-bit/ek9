@@ -19,6 +19,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     event,
     select,
@@ -178,6 +179,9 @@ class StudySession(Base):
     kind: Mapped[str] = mapped_column(String(16), default="normal")
     problem_ids_json: Mapped[str] = mapped_column("problem_ids", Text, default="[]")
     requested: Mapped[int] = mapped_column(Integer, default=0)
+    # いま表示している問題と、最初に表示した時刻（読み込み直しても、かかった時間を最初から数える）
+    current_problem_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    current_shown_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     @property
@@ -199,6 +203,8 @@ class Attempt(Base):
     """
 
     __tablename__ = "attempts"
+    # 同じセットの同じ問題には 1 回だけ答える（二重送信で記録が 2 件にならないように）
+    __table_args__ = (UniqueConstraint("session_id", "problem_id", name="uq_attempt_session_problem"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)

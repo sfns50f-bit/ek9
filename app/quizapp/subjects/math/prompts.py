@@ -52,7 +52,8 @@ def gen_user(task: str, givens: list[str], answer_latex: str, steps: list[str], 
 
 SOLVE_SYSTEM = """あなたは数学が得意な高校生です。与えられた問題を解いてください。
 途中の考え方を work に短く書き、最終的な答えだけを answer に書きます。
-answer は指定された答え方に従い、数式は Python / SymPy で読める形で書きます（例: 3/2, -sqrt(3)/2, 2*sqrt(7), pi/6）。
+answer は指定された答え方に従い、数式は Python / SymPy で読める形で書きます（分数は a/b、平方根は sqrt(n)、円周率は pi）。
+問題の式を書き写すのではなく、計算した結果の値を書きます（sin や log、binomial などの関数を答えに残さない）。
 単位や「x =」などの説明は付けません（答え方に書かれている場合を除く）。出力は指定された JSON だけにしてください。"""
 
 SOLVE_SCHEMA: dict[str, Any] = {
@@ -67,8 +68,8 @@ SOLVE_SCHEMA: dict[str, Any] = {
 ANSWER_FORMS = {
     "value": "1つの数または式",
     "tuple": "座標などの組を (a, b) の形で",
-    "set": "答えをすべてカンマ区切りで（例: 2, 5）",
-    "interval": "x の範囲を不等式で（例: 1<x<3、x<1, 3<x。≦ は <=）",
+    "set": "答えをすべてカンマ区切りで",
+    "interval": "x の範囲を不等式で（a<x<b の形。「または」はカンマで区切る。≦ は <=）",
 }
 
 

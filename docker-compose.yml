@@ -104,7 +104,7 @@ services:
       SANDBOX_MEMORY_MB: "384"       # 1 回の計算のメモリ上限
       SANDBOX_COMPARE_TIMEOUT: "10"  # 1 回の計算の時間の上限（秒）
       SANDBOX_DISTINCT_TIMEOUT: "20"
-      SANDBOX_CONCURRENCY: "2"
+      SANDBOX_CONCURRENCY: "1"       # 同時に 1 つだけ計算する（384MB × 1 がコンテナの上限 512MB に収まる）
     init: true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]

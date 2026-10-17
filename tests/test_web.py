@@ -56,6 +56,31 @@ def test_web_never_uses_the_llm():
     assert "OllamaClient" not in used
 
 
+def test_web_process_does_not_load_the_llm_client():
+    """画面の処理の中で、Ollama のクライアント（quizapp.llm）が読み込まれない。"""
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    code = ("import sys; sys.path[:0]=['app']; import quizapp.web, quizapp.stock;"
+            " print('quizapp.llm' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"
+
+
+def test_blank_count_uses_default(client, settings, sessions, sandbox):
+    stock_up(settings, sessions, sandbox, count=2)
+    r = client.post("/start", data={"subject": "math", "scope": "", "device": "phone", "count": ""},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/play/")
+
+
+def test_short_stock_is_announced_on_first_question(client, settings, sessions, sandbox):
+    stock_up(settings, sessions, sandbox, count=2)
+    r = client.get(start(client, count="20"))
+    assert "20 問のところ 2 問で行います" in r.text
+
+
 def test_home_without_stock_shows_low_stock(client):
     r = client.get("/")
     assert r.status_code == 200
@@ -80,18 +105,29 @@ def test_phone_session_answer_and_records(client, settings, sessions, sandbox):
 
     pid = current_problem_id(r.text)
     shown = int(re.search(r'name="shown_at" value="(\d+)"', r.text).group(1))
+    # 読み込み直しても、最初に表示した時刻は変わらない
+    assert int(re.search(r'name="shown_at" value="(\d+)"', client.get(loc).text).group(1)) == shown
+    with sessions.begin() as s:  # 4.2 秒前に表示したことにする
+        from datetime import timedelta
+        row = s.get(StudySession, sid)
+        row.current_shown_at = row.current_shown_at - timedelta(milliseconds=4200)
     with sessions() as s:
         choices = s.get(Problem, pid).choices
     wrong = next(i for i, c in enumerate(choices) if not c["correct"])
-    r = client.post(f"/play/{sid}/answer", data={"problem_id": pid, "response": wrong, "shown_at": shown - 4200,
+    r = client.post(f"/play/{sid}/answer", data={"problem_id": pid, "response": wrong, "shown_at": shown,
                                                   "hint_viewed": "1"}, follow_redirects=False)
     assert r.status_code == 303
+    # 二重送信しても記録は 1 件だけ
+    r2 = client.post(f"/play/{sid}/answer", data={"problem_id": pid, "response": wrong, "shown_at": shown},
+                     follow_redirects=False)
+    assert r2.headers["location"] == f"/play/{sid}"
+    assert len(all_rows(sessions, Attempt)) == 1
     r = client.get(r.headers["location"])
     assert "不正解" in r.text and "解説" in r.text
     att = all_rows(sessions, Attempt)[-1]
     assert not att.is_correct and att.attempt_no == 1 and att.hint_viewed and not att.explanation_viewed
     assert att.chosen_index == wrong and att.chosen_mistake == choices[wrong]["mistake"]
-    assert att.duration_ms is not None and att.duration_ms >= 4200
+    assert att.duration_ms is not None and 4200 <= att.duration_ms < 60000
     assert att.subject == "math" and att.unit and att.template and att.format == "choice" and att.user_id == 1
     assert att.device == "phone"
 
@@ -223,7 +259,7 @@ def test_status_without_ollama_and_settings(client, settings, sessions, sandbox)
     r = client.post("/status/models", data={"gen_model": "gemma4:26b-a4b-it-qat", "verify_model": "gemma4:12b-it-qat",
                                             "verify_count": "3", "verify_model_2": "-"}, follow_redirects=True)
     assert "保存しました" in r.text and "gemma4:12b-it-qat ×3" in r.text
-    client.post("/status/test", data={"template": "m2-int-area"})
+    client.post("/status/test", data={"target": "math|m2-int-area"})
     job = all_rows(sessions, Job)[-1]
     assert job.is_test and job.scope == "tmpl:m2-int-area" and job.count == 1
 

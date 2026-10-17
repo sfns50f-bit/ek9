@@ -100,8 +100,19 @@ def test_tampered_answer_is_rejected_by_verification(settings, sessions, sandbox
     assert problems(sessions, status="test") == []
     assert problems(sessions, status="ready") == []
     rejected = problems(sessions, status="rejected")
-    assert len(rejected) == 1 and rejected[0].reject_code in ("solver_mismatch", "choices")
+    assert len(rejected) == 1 and rejected[0].reject_code == "solver_mismatch"
     assert rejected[0].params["test"] is True
+    # 検証役との突き合わせまで届いている
+    assert any(e["step"] == "検証" and not e["ok"] for e in rejected[0].verification)
+
+
+def test_verify_test_that_never_reaches_verification_is_not_reported_as_success(settings, sessions, sandbox):
+    llm = OracleLLM(sessions, alter_givens=True)  # 文章の確認で必ず落ちる
+    jid = add_job(sessions, format="input", count=1, is_test=True)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = job(sessions, jid)
+    assert j.status == "failed" and "判定できませんでした" in j.error and "text_givens" in j.error
+    assert len(problems(sessions, status="rejected")) == 3
 
 
 def test_tampered_answer_for_every_template_is_rejected(settings, sessions, sandbox):
@@ -197,6 +208,67 @@ def test_cancelled_job_stops(settings, sessions, sandbox):
     w.run_once()
     assert job(sessions, jid).status == "cancelled"
     assert len(llm.calls) == 1
+
+
+def test_answer_in_question_is_rejected(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    real = llm.chat_json
+
+    def leak(model, system, user, schema, **kw):
+        out = real(model, system, user, schema, **kw)
+        if "hint" in schema["properties"]:
+            import re
+            ans = re.search(r"^正解: \$(.*)\$$", user, re.M).group(1)
+            out["hint"] = f"答えは ${ans}$ になる。"
+        return out
+
+    llm.chat_json = leak
+    add_job(sessions, scope="tmpl:m2-trig-addition", format="input", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert {p.reject_code for p in problems(sessions, status="rejected")} == {"answer_leak"}
+
+
+def test_status_is_not_rewritten_every_loop(settings, sessions, sandbox):
+    w = make_worker(settings, sessions, sandbox, OracleLLM(sessions))
+    w.set_status("待機中")
+    with sessions() as s:
+        first = kv_json(s, "worker")["at"]
+    w.set_status("待機中")
+    with sessions() as s:
+        assert kv_json(s, "worker")["at"] == first
+
+
+def test_passages_from_a_subject_are_saved_and_shared(settings, sessions, sandbox):
+    """本文つきの科目（英語・公共）を、中心部分を変えずに足せることの確認。"""
+    from quizapp.subjects import REGISTRY
+    from quizapp.subjects.base import Draft, Subject, Subunit, Unit, VerifyResult
+
+    class Reading(Subject):
+        id, name, formats = "reading", "読解（テスト用）", ("choice",)
+
+        def units(self):
+            return [Unit("r", "読解", (Subunit("r-main", "内容一致", ("choice",)),))]
+
+        def generate(self, ctx, template, fmt):
+            passage = {"title": "T", "body": "A short text.", "source_title": "src", "source_url": "https://x"}
+            choices = [{"text": "a", "correct": True, "mistake": None}, {"text": "b", "correct": False,
+                                                                          "mistake": "detail"}]
+            return [Draft(unit="r", template="r-main", format=fmt, question=f"Q{i}", answer={"index": 0},
+                          answer_display="a", explanation="e", hint="h", choices=choices, passage=passage)
+                    for i in range(2)]
+
+        def verify(self, llm, sandbox, model, problem):
+            assert problem.passage.body == "A short text."  # 検証で本文を読める
+            return VerifyResult(True, "ok")
+
+    REGISTRY["reading"] = Reading()
+    try:
+        add_job(sessions, subject="reading", count=2)
+        make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+        ready = problems(sessions, status="ready")
+        assert len(ready) == 2 and ready[0].passage_id == ready[1].passage_id is not None
+    finally:
+        del REGISTRY["reading"]
 
 
 def test_no_duplicate_numbers(settings, sessions, sandbox):
