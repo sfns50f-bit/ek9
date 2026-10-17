@@ -9,6 +9,28 @@ from typing import Any
 import httpx
 
 
+_CTRL_MAP = {"\x08": "b", "\x0c": "f", "\t": "t", "\r": "r", "\n": "n"}
+_CTRL_RE = re.compile(r"[\x08\x0c\t\r\n](?=[A-Za-z])")
+
+
+def repair_latex(text: str) -> str:
+    r"""JSON の "\frac" が改ページ文字 + "rac" になる、といった崩れを数式の中だけ直す。"""
+    out: list[str] = []
+    in_math, delim = False, ""
+    for part in re.split(r"(\$\$|\$)", text):
+        if part in ("$", "$$"):
+            if not in_math:
+                in_math, delim = True, part
+            elif part == delim:
+                in_math = False
+            out.append(part)
+        elif in_math:
+            out.append(_CTRL_RE.sub(lambda m: "\\" + _CTRL_MAP[m.group()], part))
+        else:
+            out.append(part)
+    return "".join(out)
+
+
 class LLMError(RuntimeError):
     """モデルの出力が使えない（JSON でない、項目が足りないなど）。"""
 
@@ -69,6 +91,8 @@ class OllamaClient:
         # 既定では think を送らない。
         if self.think is not None:
             body["think"] = self.think
+        if not self.base_url:
+            raise LLMUnavailable("OLLAMA_BASE_URL が設定されていません（.env を確認してください）")
         try:
             resp = httpx.post(f"{self.base_url}/api/chat", json=body, timeout=self.timeout)
         except httpx.TransportError as exc:
@@ -82,8 +106,10 @@ class OllamaClient:
 
     def list_models(self) -> list[dict[str, Any]]:
         """ダウンロード済みのモデル（埋め込み専用モデルは除く）。"""
+        if not self.base_url:
+            raise LLMUnavailable("OLLAMA_BASE_URL が設定されていません（.env を確認してください）")
         try:
-            resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=3)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise LLMUnavailable(f"Ollama に接続できません（{self.base_url}）: {exc}") from exc

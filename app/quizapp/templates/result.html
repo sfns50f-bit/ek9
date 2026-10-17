@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_macros.html" import math, report_form %}
+{% block content %}
+{% if msg == "reported" %}<p class="notice">報告しました。ありがとう。</p>{% endif %}
+<div class="progress">
+  <span>{{ pos }} / {{ total }}</span>
+  <span class="muted">{{ subject.label_of(problem.template) }}</span>
+</div>
+<section class="card verdict {{ 'ok' if attempt.is_correct else 'ng' }}">
+  <p class="verdict-text">{% if attempt.is_correct %}○ 正解！{% elif attempt.gave_up %}解説を読もう{% else %}× 不正解{% endif %}</p>
+  <p class="muted small">かかった時間 {{ attempt.duration_ms | seconds }}</p>
+</section>
+<section class="card">
+  {{ math(problem.question, "question") }}
+  {% if problem.format == "choice" %}
+  <ul class="choice-review">
+    {% for c in problem.choices %}
+    <li class="{{ 'correct' if c.correct }} {{ 'chosen' if attempt.chosen_index == loop.index0 }}">
+      <span class="choice-no">{{ "ABCDEFGH"[loop.index0] }}</span>
+      <span class="mathtext">{{ c.text }}</span>
+      {% if c.correct %}<span class="tag ok">正解</span>{% endif %}
+      {% if attempt.chosen_index == loop.index0 and not c.correct %}<span class="tag ng">あなたの答え</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>あなたの答え: <span class="mathtext">{{ attempt.response_display or attempt.response }}</span></p>
+  <p>正解: <span class="mathtext">{{ problem.answer_display }}</span></p>
+  {% endif %}
+  <h2>解説</h2>
+  {{ math(problem.explanation, "explanation") }}
+</section>
+{% if remaining > 0 %}
+<a class="button primary big" href="/play/{{ session.id }}">次の問題へ（残り {{ remaining }} 問）</a>
+{% else %}
+<a class="button primary big" href="/play/{{ session.id }}">結果を見る</a>
+{% endif %}
+{{ report_form(problem, "/play/" ~ session.id ~ "/result/" ~ attempt.id) }}
+{% endblock %}

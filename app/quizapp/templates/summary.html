@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "_macros.html" import mark %}
+{% block content %}
+<section class="card">
+  <h1>おつかれさま</h1>
+  <p class="score">{{ correct }} / {{ attempts | length }} 問 正解</p>
+  {% if session.requested > session.problem_ids | length %}
+  <p class="notice warn">ストックが足りず、{{ session.requested }} 問のところ {{ session.problem_ids | length }} 問で行いました。</p>
+  {% endif %}
+  <ul class="list">
+    {% for a in attempts %}
+    <li><a href="/problems/{{ a.problem_id }}">{{ mark(a.is_correct) }}
+      {{ subject.label_of(a.template) }} <span class="muted small">{{ a.duration_ms | seconds }}{% if a.attempt_no > 1 %}・{{ a.attempt_no }}回目{% endif %}</span></a></li>
+    {% endfor %}
+  </ul>
+  <a class="button primary" href="/">もう一度解く</a>
+  <a class="button" href="/history?filter=wrong">まちがえた問題を見返す</a>
+</section>
+{% endblock %}

@@ -90,39 +90,30 @@ def test_srepr_round_trip():
     assert res["expected"]["latex"] == r"x < 1,\ 3 < x"
 
 
-@pytest.mark.parametrize("code,kind,latex", [
-    ("answer = solve(x**2 - 4*x + 3, x)", "set", r"1,\ 3"),
-    ("x = symbols('x', real=True)\nanswer = solve_univariate_inequality(x**2 - 4*x + 3 < 0, x, relational=False)",
-     "interval", "1 < x < 3"),
-    ("x = symbols('x', real=True)\nanswer = solve(x**2 - 4*x + 3 > 0, x)", "interval", r"x < 1,\ 3 < x"),
-    ("answer = integrate(x**2, (x, 0, 1))", "value", r"\frac{1}{3}"),
-    ("answer = Matrix([[1, 2], [3, 4]]).inv()", "matrix",
-     r"\left[\begin{matrix}-2 & 1\\\frac{3}{2} & - \frac{1}{2}\end{matrix}\right]"),
-    ("answer = 2.5", "value", r"\frac{5}{2}"),
-    ("answer = '3/2'", "value", r"\frac{3}{2}"),
-    ("import numpy as np\nanswer = np.linalg.det(np.array([[1, 2], [3, 4]]))", "value", "-2"),
-    ("answer = solve([x + y - 3, x - y - 1], [x, y])", "tuple", r"\left(2,\ 1\right)"),
-    ("answer = integrate(cos(x), x)", "antiderivative", r"\sin{\left(x \right)} + C"),
-])
-def test_evaluate(code, kind, latex):
-    res = tasks.run("evaluate", {"code": code, "kind": kind})
-    assert res["ok"], res
-    assert res["latex"] == latex
+def test_degree_sign_is_ignored():
+    assert check("value", "60", "60°")["equal"]
 
 
-def test_evaluate_float_result_is_marked():
-    res = tasks.run("evaluate", {"code": "import math\nanswer = math.sqrt(2)", "kind": "value"})
-    assert res["ok"] and res["has_float"]
+def test_distinct_finds_equal_pairs():
+    import sympy as sp
+
+    items = [sp.srepr(v) for v in (sp.sqrt(2) / 2, 1 / sp.sqrt(2), sp.Rational(1, 2), -sp.sqrt(2) / 2)]
+    res = tasks.run("distinct", {"kind": "value", "items": items})
+    assert res["ok"] and res["equal_pairs"] == [[0, 1]]
 
 
-@pytest.mark.parametrize("code,message", [
-    ("print('hi')", "answer"),
-    ("raise SystemExit(3)", "SystemExit"),
-    ("answer = [1, 2]", "1つの数や式"),
-])
-def test_evaluate_errors(code, message):
-    res = tasks.run("evaluate", {"code": code, "kind": "value"})
-    assert not res["ok"] and message in res["error"]
+def test_distinct_interval():
+    import sympy as sp
+
+    items = [sp.srepr(sp.Interval.open(1, 3)), sp.srepr(sp.Interval(1, 3)),
+             sp.srepr(sp.Union(sp.Interval.open(1, 2), sp.Interval.Ropen(2, 3)))]
+    res = tasks.run("distinct", {"kind": "interval", "items": items})
+    assert res["ok"] and res["equal_pairs"] == [[0, 2]]
+
+
+def test_evaluate_task_is_gone():
+    """LLM が書いたコードを実行する機能は持たない（数値はテンプレートの Python が作る）。"""
+    assert "evaluate" not in tasks.TASKS
 
 
 def test_preview():

@@ -1,36 +1,22 @@
 {% extends "base.html" %}
-{% from "_macros.html" import tex, result_badge, topic_line %}
-{% block title %}履歴 - AI問題集{% endblock %}
+{% from "_macros.html" import mark %}
 {% block content %}
 <section class="card">
-  <h1>{% if filter == "wrong" %}復習（最後に間違えた問題）{% elif filter == "reported" %}誤りを報告した問題{% else %}解答の履歴{% endif %}</h1>
+  <h1>履歴</h1>
   <div class="tabs">
-    <a href="/history" {% if filter == "all" %}class="active"{% endif %}>すべて</a>
-    <a href="/history?filter=wrong" {% if filter == "wrong" %}class="active"{% endif %}>復習</a>
-    <a href="/history?filter=reported" {% if filter == "reported" %}class="active"{% endif %}>報告済み</a>
+    <a href="/history" class="{{ 'active' if filter != 'wrong' }}">すべて</a>
+    <a href="/history?filter=wrong" class="{{ 'active' if filter == 'wrong' }}">まちがえたまま</a>
   </div>
-  {% if rows %}
+  {% if not rows %}<p class="muted">まだありません。</p>{% endif %}
   <ul class="list">
-    {% for row in rows %}
-    <li>
-      <div class="row-head">
-        {{ result_badge(row.latest) }}
-        <span class="meta">{{ row.latest.created_at | localtime }} ・ {{ row.count }} 回挑戦{% if row.ever_correct and not row.latest.is_correct %}（正解したことあり）{% endif %}</span>
-      </div>
-      {{ topic_line(row.problem, row.topic) }}
-      <div class="question clamp">{{ row.problem.question }}</div>
-      {% if not row.latest.gave_up and row.latest.user_input %}
-      <div class="meta">最後の回答：{{ tex(row.latest.user_latex or row.latest.user_input) }}</div>
-      {% endif %}
-      <div class="actions">
-        <a class="button primary" href="/problems/{{ row.problem.id }}">再挑戦</a>
-        <a class="button" href="/problems/{{ row.problem.id }}/review">答えと記録</a>
-      </div>
-    </li>
+    {% for r in rows %}
+    {% set sub = get_subject(r.problem.subject) %}
+    <li><a href="/problems/{{ r.problem.id }}">
+      {{ mark(r.last.is_correct) }}
+      <span>{{ sub.label_of(r.problem.template) if sub else r.problem.template }}</span>
+      <span class="muted small">{{ r.last.created_at | localtime }}・{{ r.count }}回{% if r.problem.reported %}・報告済み{% endif %}</span>
+    </a></li>
     {% endfor %}
   </ul>
-  {% else %}
-  <p class="hint">{% if filter == "wrong" %}復習が必要な問題はありません。{% else %}まだ記録がありません。{% endif %}</p>
-  {% endif %}
 </section>
 {% endblock %}

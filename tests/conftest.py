@@ -1,3 +1,5 @@
+import random
+import re
 import sys
 from pathlib import Path
 
@@ -7,50 +9,112 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "app"), str(ROOT / "sandbox")]
 
 from quizapp.config import Settings  # noqa: E402
+from quizapp.datadir import MARKER  # noqa: E402
+from quizapp.db import Problem, init_db  # noqa: E402
+from quizapp.llm import LLMUnavailable  # noqa: E402
 from sandbox_service import tasks  # noqa: E402
 
 
 class InProcessSandbox:
     """サンドボックスの HTTP を通さずに同じ処理を呼ぶ（テスト用。資源制限はかからない）。"""
 
-    def evaluate(self, code, kind):
-        return tasks.run("evaluate", {"code": code, "kind": kind})
+    def __init__(self):
+        self.up = True
+
+    def _run(self, name, payload):
+        if not self.up:
+            from quizapp.sandbox_client import SandboxUnavailable
+            raise SandboxUnavailable("down")
+        return tasks.run(name, payload)
 
     def compare(self, kind, expected, given, *, var="x", allow_float=False):
-        return tasks.run("compare", {"kind": kind, "expected": expected, "given": given,
+        return self._run("compare", {"kind": kind, "expected": expected, "given": given,
                                      "var": var, "allow_float": allow_float})
 
+    def distinct(self, kind, items, var="x"):
+        return self._run("distinct", {"kind": kind, "items": items, "var": var})
+
     def preview(self, text, kind, var="x"):
-        return tasks.run("preview", {"text": text, "kind": kind, "var": var})
+        return self._run("preview", {"text": text, "kind": kind, "var": var})
 
     def healthy(self):
-        return True
+        return self.up
 
 
-class ScriptedLLM:
-    """役割（作問・解答・審査）ごとに用意した応答を順に返す。"""
+def answer_text(value, kind):
+    """sympy の答えを、検証役やキーボード入力が書く文字列にする。"""
+    import sympy as sp
 
-    def __init__(self, gen=(), solve=(), review=()):
-        self.queues = {"gen": list(gen), "solve": list(solve), "review": list(review)}
+    if kind == "tuple":
+        return "(" + ", ".join(str(v) for v in value) + ")"
+    if kind == "set":
+        return ", ".join(str(v) for v in value)
+    if kind == "interval":
+        pieces = list(value.args) if isinstance(value, sp.Union) else [value]
+        out = []
+        for p in pieces:
+            lo = "<" if p.left_open else "<="
+            hi = "<" if p.right_open else "<="
+            if p.start == -sp.oo:
+                out.append(f"x {hi} {p.end}")
+            elif p.end == sp.oo:
+                out.append(f"{p.start} {lo} x")
+            else:
+                out.append(f"{p.start} {lo} x {hi} {p.end}")
+        return ", ".join(out)
+    return str(value)
+
+
+def true_answer(problem):
+    """問題の params（seed）からテンプレートを作り直して、本当の正解を得る（ずらす前の値）。"""
+    from quizapp.subjects.math.templates import TEMPLATES
+
+    inst = TEMPLATES[problem.template](random.Random(problem.params["seed"]))
+    return answer_text(inst.answer, inst.kind)
+
+
+class OracleLLM:
+    """テスト用の LLM。
+
+    作成役：与えられた式・値をそのまま問題文に入れ、解説の最後に正解を書く
+    検証役：問題文からデータベースの問題を探し、テンプレートを作り直して本当の正解を答える
+    （solve_answer を渡すと、その答えを返す＝間違える検証役）
+    """
+
+    def __init__(self, sessions, *, solve_answer=None, alter_givens=False, down_calls=0):
+        self.sessions = sessions
+        self.solve_answer = solve_answer
+        self.alter_givens = alter_givens
+        self.down_calls = down_calls
         self.calls = []
+        self.n = 0
 
     def chat_json(self, model, system, user, schema, *, temperature=0.7):
-        props = schema["properties"]
-        role = "gen" if "verify_code" in props else "solve" if "work" in props else "review"
-        self.calls.append((role, model, user))
-        queue = self.queues[role]
-        if not queue:
-            raise AssertionError(f"no scripted response for {role}")
-        item = queue.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
+        role = "gen" if "hint" in schema["properties"] else "solve"
+        if self.down_calls > 0:
+            self.down_calls -= 1
+            raise LLMUnavailable("Ollama に接続できません（テスト）")
+        self.calls.append((role, model))
+        if role == "gen":
+            self.n += 1
+            givens = re.findall(r"^- \$(.*)\$$", user, re.M)
+            answer = re.search(r"^正解: \$(.*)\$$", user, re.M).group(1)
+            if self.alter_givens:
+                givens = [re.sub(r"\d", lambda m: str((int(m.group()) + 1) % 10), g) for g in givens]
+            question = f"（問{self.n}）" + "、".join(f"${g}$" for g in givens) + " のとき、答えを求めよ。"
+            return {"question": question, "hint": "公式を思い出そう。",
+                    "explanation": f"手順どおりに計算する。\n答え: ${answer}$"}
+        question = user.split("問題:\n", 1)[1].split("\n\n答え方", 1)[0]
+        if self.solve_answer is not None:
+            return {"work": "...", "answer": self.solve_answer}
+        with self.sessions() as s:
+            from sqlalchemy import select
+            problem = s.execute(select(Problem).where(Problem.question == question)).scalars().first()
+            return {"work": "テンプレートから計算", "answer": true_answer(problem)}
 
     def list_models(self):
-        return [
-            {"name": "gemma4:e4b", "size_gb": 3.1, "parameter_size": "8B", "quantization": "Q4_K_M"},
-            {"name": "gemma4:12b", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4_K_M"},
-        ]
+        return [{"name": "gemma4:12b-it-qat", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4"},
+                {"name": "gemma4:e4b", "size_gb": 3.1, "parameter_size": "8B", "quantization": "Q4"}]
 
 
 @pytest.fixture
@@ -60,20 +124,16 @@ def sandbox():
 
 @pytest.fixture
 def settings(tmp_path, monkeypatch):
-    for key in ("GEN_MODEL", "SOLVE_MODEL", "REVIEW_MODEL", "OLLAMA_THINK"):
+    for key in ("GEN_MODEL", "VERIFY_MODEL", "VERIFY_COUNT", "VERIFY_MODEL_2", "OLLAMA_THINK", "SKIP_DATA_CHECK"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "quiz.db"))
-    monkeypatch.setenv("OLLAMA_MODEL", "gemma4:e4b")
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / MARKER).write_text("ai-quiz\n")
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.test:11434")
     return Settings()
 
 
-GOOD_GEN = {
-    "question": "2次方程式 $x^2 - 4x + 3 = 0$ の解をすべて求めよ。",
-    "explanation": "因数分解すると $(x-1)(x-3)=0$ なので $x = 1, 3$。",
-    "answer_kind": "set",
-    "answer": "[1, 3]",
-    "verify_code": "answer = solve(x**2 - 4*x + 3, x)",
-}
-GOOD_SOLVE = {"work": "(x-1)(x-3)=0", "answer": "[3, 1]", "code": "answer = solve(x**2-4*x+3, x)"}
-GOOD_REVIEW = {"issues": [], "solvable": True, "unique": True, "answer_matches": True,
-               "explanation_ok": True, "level_ok": True}
+@pytest.fixture
+def sessions(settings):
+    return init_db(settings.database_path)

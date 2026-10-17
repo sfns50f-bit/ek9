@@ -1,188 +1,137 @@
 "use strict";
 
+// 数式（$…$）を KaTeX で表示する。KaTeX はアプリに同梱しているので、インターネットにつながらなくても動く
 function renderMath(root) {
-  root = root || document.body;
-  if (!window.katex) return;
-  root.querySelectorAll(".tex[data-tex]").forEach((el) => {
-    try {
-      katex.render(el.dataset.tex, el, { throwOnError: false, displayMode: el.classList.contains("display") });
-    } catch (e) { /* 元の文字列を表示したままにする */ }
+  if (!window.renderMathInElement) return;
+  renderMathInElement(root || document.body, {
+    delimiters: [
+      { left: "$$", right: "$$", display: true },
+      { left: "$", right: "$", display: false },
+      { left: "\\(", right: "\\)", display: false },
+      { left: "\\[", right: "\\]", display: true },
+    ],
+    throwOnError: false,
   });
-  if (window.renderMathInElement) {
-    renderMathInElement(root, {
-      delimiters: [
-        { left: "$$", right: "$$", display: true },
-        { left: "$", right: "$", display: false },
-        { left: "\\(", right: "\\)", display: false },
-        { left: "\\[", right: "\\]", display: true },
-      ],
-      ignoredClasses: ["tex", "katex"],
-      throwOnError: false,
-    });
-  }
 }
 
 function storageGet(key) {
   try { return window.localStorage.getItem(key); } catch (e) { return null; }
 }
-
 function storageSet(key, value) {
   try { window.localStorage.setItem(key, value); } catch (e) { /* 保存できなくても動作は続ける */ }
 }
 
-// --- ホーム：科目・単元・難易度の選択 ---------------------------------------
-function setupGenerateForm() {
-  const form = document.getElementById("generate-form");
-  if (!form) return;
-  const courses = JSON.parse(document.getElementById("courses-data").textContent);
-  const stock = JSON.parse(document.getElementById("stock-data").textContent);
-  const courseSel = document.getElementById("course");
-  const topicSel = document.getElementById("topic");
-  const hint = document.getElementById("stock-hint");
+// --- 解き始め・作成依頼：科目ごとの範囲の切り替えと、残りの問題数の表示 -----------
+function setupScopeForm(form, mode) {
+  const subjectSel = form.querySelector("#subject");
+  const dataEl = document.getElementById("home-data");
+  const hint = form.querySelector("#stock-hint");
+  if (!subjectSel || !dataEl) return;
+  const data = JSON.parse(dataEl.textContent);
+  const scopes = form.querySelectorAll("select.scope");
+  const devices = { phone: ["choice"], keyboard: ["input", "choice"] };
+  const key = "quiz." + mode;
 
-  courses.forEach((c, i) => courseSel.add(new Option(c.course, String(i))));
-
-  function fillTopics() {
-    const course = courses[Number(courseSel.value)] || courses[0];
-    topicSel.innerHTML = "";
-    course.topics.forEach((t) => topicSel.add(new Option(`${t.unit}（${t.level}）`, t.id)));
+  function currentScope() {
+    const sel = form.querySelector(`select.scope[data-subject="${subjectSel.value}"]`);
+    return sel ? sel.value : "";
   }
-
-  function difficulty() {
-    const checked = form.querySelector("input[name=difficulty]:checked");
-    return checked ? checked.value : "2";
+  function formats() {
+    if (mode === "start") {
+      const d = form.querySelector("input[name=device]:checked");
+      return devices[d ? d.value : "phone"];
+    }
+    const f = form.querySelector("input[name=format]:checked");
+    return [f ? f.value : "choice"];
   }
-
-  function updateHint() {
-    const n = stock[`${topicSel.value}|${difficulty()}`] || 0;
-    hint.textContent = n > 0
-      ? `在庫 ${n} 問：すぐに出題できます。`
-      : "在庫なし：これから作問して検証します（数分〜十数分）。";
-    storageSet("quiz.last", JSON.stringify({ course: courseSel.value, topic: topicSel.value, difficulty: difficulty() }));
+  function templatesOf(subject, scope) {
+    const out = [];
+    subject.units.forEach((u) => u.subunits.forEach((su) => {
+      if (scope.startsWith("unit:") && u.id !== scope.slice(5)) return;
+      if (scope.startsWith("tmpl:") && su.id !== scope.slice(5)) return;
+      out.push(su.id);
+    }));
+    return out;
   }
-
+  function update() {
+    scopes.forEach((sel) => {
+      const on = sel.dataset.subject === subjectSel.value;
+      sel.hidden = !on;
+      sel.disabled = !on;
+    });
+    const subject = data[subjectSel.value];
+    if (subject && hint) {
+      let n = 0;
+      templatesOf(subject, currentScope()).forEach((t) => formats().forEach((f) => { n += subject.counts[`${t}|${f}`] || 0; }));
+      hint.textContent = mode === "start"
+        ? `この範囲でまだ解いていない問題：${n} 問`
+        : `この範囲・形式のストック（まだ解いていない問題）：${n} 問`;
+    }
+    storageSet(key, JSON.stringify({ subject: subjectSel.value, scope: currentScope() }));
+  }
   let last = null;
-  try { last = JSON.parse(storageGet("quiz.last") || "null"); } catch (e) { last = null; }
-  if (last && courses[Number(last.course)]) courseSel.value = last.course;
-  fillTopics();
-  if (last && last.topic) topicSel.value = last.topic;
-  if (!topicSel.value && topicSel.options.length) topicSel.selectedIndex = 0;
-  if (last && last.difficulty) {
-    const radio = form.querySelector(`input[name=difficulty][value="${last.difficulty}"]`);
-    if (radio) radio.checked = true;
+  try { last = JSON.parse(storageGet(key) || "null"); } catch (e) { last = null; }
+  if (last && data[last.subject]) {
+    subjectSel.value = last.subject;
+    const sel = form.querySelector(`select.scope[data-subject="${last.subject}"]`);
+    if (sel && [...sel.options].some((o) => o.value === last.scope)) sel.value = last.scope;
   }
-
-  courseSel.addEventListener("change", () => { fillTopics(); updateHint(); });
-  topicSel.addEventListener("change", updateHint);
-  form.querySelectorAll("input[name=difficulty]").forEach((r) => r.addEventListener("change", updateHint));
+  form.addEventListener("change", update);
+  update();
   form.addEventListener("submit", () => {
     const button = form.querySelector("button[type=submit]");
-    button.disabled = true;
-    button.textContent = "準備中…";
+    if (button) setTimeout(() => { button.disabled = true; }, 0);
   });
-  updateHint();
 }
 
-// --- 生成待ち ---------------------------------------------------------------
-function setupJobPage() {
-  const box = document.getElementById("job");
-  if (!box) return;
-  const id = box.dataset.jobId;
-  const progress = document.getElementById("job-progress");
-  const elapsed = document.getElementById("job-elapsed");
-  const errorBox = document.getElementById("job-error");
-  const started = Date.now();
+// --- 解く画面：ヒントを開いたかを記録する、キーボード入力のプレビュー ------------
+function setupPlay() {
+  const hint = document.getElementById("hint");
+  const flag = document.getElementById("hint_viewed");
+  if (hint && flag) hint.addEventListener("toggle", () => { if (hint.open) flag.value = "1"; });
 
-  async function poll() {
-    let data;
-    try {
-      const res = await fetch(`/api/jobs/${id}`, { cache: "no-store" });
-      data = await res.json();
-    } catch (e) {
-      setTimeout(poll, 5000);
-      return;
-    }
-    const sec = Math.round((Date.now() - started) / 1000);
-    elapsed.textContent = `経過 ${Math.floor(sec / 60)}分${sec % 60}秒`;
-    if (data.status === "done") {
-      window.location.href = `/jobs/${id}`;
-      return;
-    }
-    if (data.status === "failed" || data.status === "cancelled") {
-      box.querySelector(".spinner").hidden = true;
-      progress.textContent = data.status === "cancelled" ? "キャンセルしました。" : "問題を作れませんでした。";
-      errorBox.textContent = data.error || "";
-      errorBox.hidden = !data.error;
-      document.getElementById("retry-form").hidden = false;
-      return;
-    }
-    if (data.status === "pending") {
-      progress.textContent = data.ahead > 0
-        ? `順番待ち（前に ${data.ahead} 件）`
-        : `順番待ち（ワーカー：${data.worker || "応答待ち"}）`;
-    } else {
-      progress.textContent = data.progress || "処理中";
-    }
-    setTimeout(poll, 3000);
+  const form = document.getElementById("answer-form");
+  if (form) {
+    // 2 回押しで二重に送らないようにする（押したボタンの値は送る）
+    form.addEventListener("submit", () => {
+      setTimeout(() => form.querySelectorAll("button").forEach((b) => { b.disabled = true; }), 0);
+    });
   }
-  poll();
-}
 
-// --- 解答入力：記号ボタンとプレビュー ---------------------------------------
-function setupAnswerInput() {
-  const input = document.getElementById("answer");
-  if (!input) return;
+  const input = document.getElementById("response");
   const preview = document.getElementById("preview");
+  if (!input || !preview) return;
+  input.focus();
   let timer = null;
-  let seq = 0;
-
-  async function updatePreview() {
-    const text = input.value.trim();
-    const mine = ++seq;
-    if (!text) { preview.innerHTML = ""; return; }
-    let data;
-    try {
-      const res = await fetch("/api/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, kind: input.dataset.kind, var: input.dataset.var }),
-      });
-      data = await res.json();
-    } catch (e) { return; }
-    if (mine !== seq) return;
-    if (data.ok && window.katex) {
-      preview.classList.remove("bad");
-      katex.render(data.latex, preview, { throwOnError: false, displayMode: true });
-    } else {
-      preview.classList.add("bad");
-      preview.textContent = data.error ? `読み取れません：${data.error}` : "";
-    }
-  }
-
   input.addEventListener("input", () => {
     clearTimeout(timer);
-    timer = setTimeout(updatePreview, 300);
+    timer = setTimeout(async () => {
+      const text = input.value.trim();
+      if (!text) { preview.textContent = ""; return; }
+      try {
+        const res = await fetch("/api/preview", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ problem_id: input.dataset.problem, text }),
+        });
+        const data = await res.json();
+        if (data.ok && window.katex) {
+          preview.textContent = "";
+          const span = document.createElement("span");
+          preview.append("読み取り: ", span);
+          katex.render(data.latex, span, { throwOnError: false });
+        } else {
+          preview.textContent = data.error || "";
+        }
+      } catch (e) { preview.textContent = ""; }
+    }, 400);
   });
-
-  document.querySelectorAll(".keys button[data-insert]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const text = btn.dataset.insert;
-      const start = input.selectionStart ?? input.value.length;
-      const end = input.selectionEnd ?? input.value.length;
-      input.value = input.value.slice(0, start) + text + input.value.slice(end);
-      const pos = start + text.length;
-      input.focus();
-      input.setSelectionRange(pos, pos);
-      input.dispatchEvent(new Event("input"));
-    });
-  });
-
-  if (input.value) updatePreview();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   renderMath();
-  setupGenerateForm();
-  setupJobPage();
-  setupAnswerInput();
+  const start = document.getElementById("start-form");
+  if (start) setupScopeForm(start, "start");
+  const gen = document.getElementById("generate-form");
+  if (gen) setupScopeForm(gen, "generate");
+  setupPlay();
 });

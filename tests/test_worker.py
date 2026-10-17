@@ -1,140 +1,207 @@
 import random
-from datetime import timedelta
 
 from sqlalchemy import select
 
-from quizapp.db import Job, Problem, init_db, kv_set, utcnow
-from quizapp.llm import LLMUnavailable
-from quizapp.pipeline import Pipeline
+from .conftest import OracleLLM
+from quizapp.db import Job, Problem, kv_json
+from quizapp.runtime import save_overrides
 from quizapp.worker import Worker
 
-from .conftest import GOOD_GEN, GOOD_REVIEW, GOOD_SOLVE, ScriptedLLM
+
+def make_worker(settings, sessions, sandbox, llm):
+    w = Worker(settings, sessions, llm, sandbox, rng=random.Random(7))
+    w.last_backup_check = 1e18  # バックアップはこのテストでは取らない
+    return w
 
 
-def make_worker(settings, sandbox, **script):
-    sessions = init_db(settings.database_path)
-    pipeline = Pipeline(ScriptedLLM(**script), sandbox, settings, rng=random.Random(0))
-    return Worker(settings, sessions, pipeline), sessions
-
-
-def add_job(sessions, topic_id="m1-quad", difficulty=2):
+def add_job(sessions, **kw):
+    values = {"subject": "math", "scope": "", "format": "choice", "count": 3, **kw}
     with sessions.begin() as s:
-        job = Job(topic_id=topic_id, difficulty=difficulty)
+        job = Job(**values)
         s.add(job)
         s.flush()
         return job.id
 
 
-def test_job_produces_verified_problem(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox, gen=[GOOD_GEN], solve=[GOOD_SOLVE], review=[GOOD_REVIEW])
-    job_id = add_job(sessions)
-    assert worker.run_once()
+def problems(sessions, **filters):
     with sessions() as s:
-        job = s.get(Job, job_id)
-        assert job.status == "done"
-        problem = s.get(Problem, job.problem_id)
-        assert problem.status == "ready" and problem.answer_latex == r"1,\ 3"
-        assert problem.served_at is None  # 画面で開いたときに出題済みになる
-        assert problem.verification_log["steps"][1]["name"] == "Python検算"
+        q = select(Problem)
+        for k, v in filters.items():
+            q = q.where(getattr(Problem, k) == v)
+        return list(s.execute(q.order_by(Problem.id)).scalars())
 
 
-def test_job_failure_keeps_rejections(settings, sandbox):
-    settings.max_attempts = 2
-    wrong = dict(GOOD_GEN, answer="[5]")
-    worker, sessions = make_worker(settings, sandbox, gen=[wrong, wrong])
-    job_id = add_job(sessions)
-    worker.run_once()
+def job(sessions, job_id):
     with sessions() as s:
-        job = s.get(Job, job_id)
-        assert job.status == "failed" and "2 回作り直しました" in job.error
-        rejected = s.execute(select(Problem).where(Problem.status == "rejected")).scalars().all()
-        assert len(rejected) == 2
+        return s.get(Job, job_id)
 
 
-def test_ollama_down_fails_job_with_message(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox, gen=[LLMUnavailable("Ollama に接続できません")])
-    job_id = add_job(sessions)
-    worker.run_once()
+def test_batch_generates_all_then_verifies(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, count=3)
+    assert make_worker(settings, sessions, sandbox, llm).run_once()
+    roles = [r for r, _ in llm.calls]
+    # 先に 3 問分の文章を全部作り、その後で検証（既定は e4b で 2 回）をまとめて行う
+    assert roles == ["gen"] * 3 + ["solve"] * 6
+    assert [m for r, m in llm.calls if r == "gen"] == ["gemma4:12b-it-qat"] * 3
+    assert {m for r, m in llm.calls if r == "solve"} == {"gemma4:e4b"}
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 3
+    j = job(sessions, jid)
+    assert j.status == "done" and j.made == 3
+    for p in ready:
+        assert p.format == "choice" and p.hint and p.explanation
+        choices = p.choices
+        assert len(choices) == 4 and sum(c["correct"] for c in choices) == 1
+        assert all(c["mistake"] for c in choices if not c["correct"])
+        assert len({c["text"] for c in choices}) == 4
+        steps = [e["step"] for e in p.verification]
+        assert steps.count("検証") == 2 and "問題文の確認" in steps
+
+
+def test_scope_by_template_and_input_format(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    add_job(sessions, scope="tmpl:m2-trig-addition", format="input", count=2)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 2
+    assert {p.template for p in ready} == {"m2-trig-addition"}
+    assert all(p.format == "input" and not p.choices and p.input_hint for p in ready)
+
+
+def test_wrong_verifier_rejects_everything(settings, sessions, sandbox):
+    llm = OracleLLM(sessions, solve_answer="123456")
+    jid = add_job(sessions, count=2)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert problems(sessions, status="ready") == []
+    rejected = problems(sessions, status="rejected")
+    assert len(rejected) == 2 * settings.max_attempts
+    assert {p.reject_code for p in rejected} == {"solver_mismatch"}
+    assert job(sessions, jid).status == "failed"
+
+
+def test_altered_numbers_in_question_are_rejected(settings, sessions, sandbox):
+    llm = OracleLLM(sessions, alter_givens=True)
+    add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    rejected = problems(sessions, status="rejected")
+    assert rejected and {p.reject_code for p in rejected} == {"text_givens"}
+    # 文章の確認で落ちた下書きは検証役に回さない
+    assert all(r == "gen" for r, _ in llm.calls)
+
+
+def test_tampered_answer_is_rejected_by_verification(settings, sessions, sandbox):
+    """完了の確認：わざと答えを間違えた問題を流すと、検証で弾かれる。"""
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, format="input", count=1, is_test=True)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = job(sessions, jid)
+    assert j.status == "done" and "期待どおり" in j.error
+    assert problems(sessions, status="test") == []
+    assert problems(sessions, status="ready") == []
+    rejected = problems(sessions, status="rejected")
+    assert len(rejected) == 1 and rejected[0].reject_code in ("solver_mismatch", "choices")
+    assert rejected[0].params["test"] is True
+
+
+def test_tampered_answer_for_every_template_is_rejected(settings, sessions, sandbox):
+    from quizapp.subjects.math.catalog import UNITS
+
+    llm = OracleLLM(sessions)
+    ids = [add_job(sessions, scope=f"tmpl:{su.id}", format="input", count=1, is_test=True)
+           for u in UNITS for su in u.subunits]
+    w = make_worker(settings, sessions, sandbox, llm)
+    for _ in ids:
+        w.run_once()
+    for jid in ids:
+        assert "期待どおり" in job(sessions, jid).error, job(sessions, jid).scope
+
+
+def test_ollama_down_waits_and_resumes(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, count=2)
+    w = make_worker(settings, sessions, sandbox, llm)
+    # 1 問目の文章を作った後、Ollama が落ちる
+    real = llm.chat_json
+    state = {"n": 0}
+
+    def flaky(*a, **kw):
+        state["n"] += 1
+        if state["n"] == 2:
+            from quizapp.llm import LLMUnavailable
+            raise LLMUnavailable("Ollama に接続できません（テスト）")
+        return real(*a, **kw)
+
+    llm.chat_json = flaky
+    assert w.run_once()  # 落ちずに戻る
+    j = job(sessions, jid)
+    assert j.status == "waiting" and "再試行" in j.progress
+    assert len(problems(sessions, status="draft")) == 1  # 作った下書きは残る
+    assert j.gen_attempts == 1
+    # 待ち時間の間は何もしない
+    assert not w.run_once()
+    # 待ち時間が過ぎたら続きから再開する
+    w.unavailable_until = 0
+    w.last_ollama_check = -1e9
+    assert w.run_once()
+    j = job(sessions, jid)
+    assert j.status == "done" and j.made == 2
+    assert len(problems(sessions, status="ready")) == 2
+
+
+def test_ollama_status_is_recorded_for_web(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    w = make_worker(settings, sessions, sandbox, llm)
+    w.check_ollama(force=True)
     with sessions() as s:
-        assert "Ollama" in s.get(Job, job_id).error
-    assert worker.run_once() is False  # しばらく待ってから再試行する
+        info = kv_json(s, "ollama")
+    assert info["ok"] and info["models"][0]["name"] == "gemma4:12b-it-qat"
+
+    def down():
+        from quizapp.llm import LLMUnavailable
+        raise LLMUnavailable("つながりません")
+
+    llm.list_models = down
+    add_job(sessions, count=1)
+    assert not w.check_ollama(force=True)
+    assert not w.run_once()  # Ollama が落ちていれば依頼に手をつけない
+    with sessions() as s:
+        assert kv_json(s, "ollama")["ok"] is False
 
 
-def test_cancelled_job_is_not_overwritten(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox, gen=[GOOD_GEN])
-    job_id = add_job(sessions)
-
-    job = worker.claim_job()
+def test_models_and_count_from_status_settings(settings, sessions, sandbox):
     with sessions.begin() as s:
-        s.get(Job, job_id).status = "cancelled"
-    worker.handle_job(job)
-    with sessions() as s:
-        assert s.get(Job, job_id).status == "cancelled"
+        save_overrides(s, {"gen_model": "gemma4:e4b", "verify_model": "gemma4:12b-it-qat",
+                           "verify_count": "3", "verify_model_2": "qwen2.5:7b"})
+    llm = OracleLLM(sessions)
+    add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.calls == [("gen", "gemma4:e4b")] + [("solve", "gemma4:12b-it-qat")] * 3 + [("solve", "qwen2.5:7b")]
+    p = problems(sessions, status="ready")[0]
+    assert "qwen2.5:7b" in p.verify_models
 
 
-def test_recover_resets_running_jobs(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox)
-    job_id = add_job(sessions)
-    worker.claim_job()
-    worker.recover()
-    with sessions() as s:
-        assert s.get(Job, job_id).status == "pending"
+def test_cancelled_job_stops(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, count=3)
+    w = make_worker(settings, sessions, sandbox, llm)
+    real = llm.chat_json
+
+    def cancel_after_first(*a, **kw):
+        out = real(*a, **kw)
+        with sessions.begin() as s:
+            s.get(Job, jid).status = "cancelled"
+        return out
+
+    llm.chat_json = cancel_after_first
+    w.run_once()
+    assert job(sessions, jid).status == "cancelled"
+    assert len(llm.calls) == 1
 
 
-def test_refill_targets_recently_used_topics(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox, gen=[GOOD_GEN], solve=[GOOD_SOLVE], review=[GOOD_REVIEW])
-    assert worker.pick_refill_target() is None
-    with sessions.begin() as s:
-        s.add(Problem(topic_id="m1-quad", difficulty=1, question="q", status="ready", served_at=utcnow()))
-        s.add(Problem(topic_id="m2-diff", difficulty=2, question="old", status="ready",
-                      served_at=utcnow() - timedelta(days=60)))
-    assert worker.pick_refill_target() == ("m1-quad", 1)
-    assert worker.run_once()
-    with sessions() as s:
-        stock = s.execute(select(Problem).where(Problem.served_at.is_(None))).scalars().all()
-        assert len(stock) == 1 and stock[0].difficulty == 1
-
-
-def test_refill_can_be_paused(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox)
-    with sessions.begin() as s:
-        s.add(Problem(topic_id="m1-quad", difficulty=1, question="q", status="ready", served_at=utcnow()))
-        kv_set(s, "refill_paused", "1")
-    assert worker.run_once() is False
-
-
-def test_refill_stops_when_stock_is_full(settings, sandbox):
-    settings.pool_target = 1
-    worker, sessions = make_worker(settings, sandbox)
-    with sessions.begin() as s:
-        s.add(Problem(topic_id="m1-quad", difficulty=1, question="q", status="ready", served_at=utcnow()))
-        s.add(Problem(topic_id="m1-quad", difficulty=1, question="stock", status="ready"))
-    assert worker.pick_refill_target() is None
-
-
-def test_refill_aborts_when_job_arrives(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox, gen=[GOOD_GEN])
-    with sessions.begin() as s:
-        s.add(Problem(topic_id="m1-quad", difficulty=1, question="q", status="ready", served_at=utcnow()))
-    add_job(sessions, difficulty=3)
-    worker.refill(("m1-quad", 1))  # 依頼があるので作問前に中断する
-    with sessions() as s:
-        assert s.execute(select(Problem).where(Problem.served_at.is_(None))).first() is None
-
-
-def test_worker_uses_models_chosen_on_screen(settings, sandbox):
-    worker, sessions = make_worker(settings, sandbox, gen=[GOOD_GEN], solve=[GOOD_SOLVE], review=[GOOD_REVIEW])
-    with sessions.begin() as s:
-        kv_set(s, "model_gen", "gemma4:12b")
-    job_id = add_job(sessions)
-    worker.run_once()
-    roles = {role: model for role, model, _ in worker.pipeline.llm.calls}
-    assert roles == {"gen": "gemma4:12b", "solve": "gemma4:e4b", "review": "gemma4:e4b"}
-    with sessions() as s:
-        problem = s.get(Problem, s.get(Job, job_id).problem_id)
-        assert problem.models == "gemma4:12b, gemma4:e4b"
-    # 画面で「.env の設定」に戻すと元のモデルに戻る
-    with sessions.begin() as s:
-        kv_set(s, "model_gen", "")
-    worker.apply_model_settings()
-    assert worker.pipeline.settings.gen_model == "gemma4:e4b"
+def test_no_duplicate_numbers(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=6)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    keys = [p.params_key for p in problems(sessions, status="ready")]
+    assert len(keys) == len(set(keys)) == 6

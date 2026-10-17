@@ -12,7 +12,7 @@ class SandboxUnavailable(RuntimeError):
 
 
 class SandboxClient:
-    def __init__(self, base_url: str, timeout: float = 60) -> None:
+    def __init__(self, base_url: str, timeout: float = 40) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -27,9 +27,9 @@ class SandboxClient:
             raise SandboxUnavailable("サンドボックスの応答が不正です")
         return data
 
-    def evaluate(self, code: str, kind: str) -> dict[str, Any]:
-        """検算コードを実行し、変数 answer の値を返す。"""
-        return self._post("evaluate", {"code": code, "kind": kind})
+    def distinct(self, kind: str, items: list[str], var: str = "x") -> dict[str, Any]:
+        """items（srepr の一覧）のうち同値な組を返す。{"ok", "equal_pairs": [[i, j], ...]}。"""
+        return self._post("distinct", {"kind": kind, "items": items, "var": var})
 
     def compare(self, kind: str, expected: dict[str, str], given: dict[str, str], *,
                 var: str = "x", allow_float: bool = False) -> dict[str, Any]:
