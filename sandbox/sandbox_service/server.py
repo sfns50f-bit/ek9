@@ -1,7 +1,7 @@
 """数式サンドボックスの HTTP API。
 
-POST /evaluate  {"code", "kind"}                        検算コードを実行
-POST /compare   {"kind", "expected", "given", ...}      2 つの答えを比較
+POST /compare   {"kind", "expected", "given", ...}      2 つの答えを比較（採点・検証）
+POST /distinct  {"kind", "items", "var"}                同値な組を探す（選択肢の確認）
 POST /preview   {"text", "kind"}                        入力のプレビュー
 GET  /healthz
 
@@ -24,8 +24,8 @@ from . import tasks
 log = logging.getLogger("sandbox")
 
 TIMEOUTS = {
-    "evaluate": float(os.environ.get("SANDBOX_EVAL_TIMEOUT", "20")),
     "compare": float(os.environ.get("SANDBOX_COMPARE_TIMEOUT", "10")),
+    "distinct": float(os.environ.get("SANDBOX_DISTINCT_TIMEOUT", "20")),
     "preview": 5.0,
 }
 MAX_BODY = 200_000
@@ -33,7 +33,7 @@ MAX_RESULT = 2_000_000
 
 _ctx = mp.get_context("forkserver")
 _ctx.set_forkserver_preload(["sandbox_service.tasks"])
-_slots = threading.BoundedSemaphore(int(os.environ.get("SANDBOX_CONCURRENCY", "4")))
+_slots = threading.BoundedSemaphore(int(os.environ.get("SANDBOX_CONCURRENCY", "2")))
 
 
 def run_task(name: str, payload: dict) -> dict:

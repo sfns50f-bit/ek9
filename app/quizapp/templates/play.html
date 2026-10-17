@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "_macros.html" import math, report_form %}
+{% block title %}{{ pos }}/{{ total }} - AI問題集{% endblock %}
+{% block content %}
+{% if msg == "reported" %}<p class="notice">報告しました。この問題は飛ばします。</p>{% endif %}
+{% if pos == 1 and session.requested > total %}<p class="notice warn">ストックが足りないので、{{ session.requested }} 問のところ {{ total }} 問で行います。</p>{% endif %}
+<div class="progress">
+  <span>{{ pos }} / {{ total }}</span>
+  <span class="muted">{{ subject.label_of(problem.template) }}</span>
+</div>
+<section class="card question-card">
+  {{ math(problem.question, "question") }}
+  {% if problem.passage %}{{ math(problem.passage.body, "passage") }}{% endif %}
+
+  <form method="post" action="/play/{{ session.id }}/answer" id="answer-form" autocomplete="off">
+    <input type="hidden" name="problem_id" value="{{ problem.id }}">
+    <input type="hidden" name="shown_at" value="{{ shown_at }}">
+    <input type="hidden" name="hint_viewed" id="hint_viewed" value="{{ hint_viewed }}">
+    {% if retry_message %}<p class="notice warn">{{ retry_message }}</p>{% endif %}
+
+    {% if problem.format == "choice" %}
+    <div class="choices">
+      {% for c in problem.choices %}
+      <button type="submit" name="response" value="{{ loop.index0 }}" class="choice">
+        <span class="choice-no">{{ "ABCDEFGH"[loop.index0] }}</span>
+        <span class="mathtext">{{ c.text }}</span>
+      </button>
+      {% endfor %}
+    </div>
+    {% else %}
+    <label class="answer-label">答え
+      <input type="text" name="response" id="response" value="{{ value }}" data-problem="{{ problem.id }}"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+             enterkeyhint="done" required>
+    </label>
+    {% if problem.input_hint %}<p class="muted small">{{ problem.input_hint }}</p>{% endif %}
+    <p class="preview muted" id="preview" aria-live="polite"></p>
+    <button type="submit" class="primary big">答える</button>
+    {% endif %}
+
+    <details class="hint" id="hint">
+      <summary>ヒントを見る</summary>
+      {{ math(problem.hint) }}
+    </details>
+    <button type="submit" name="action" value="giveup" class="secondary" formnovalidate>わからない（解説を見る）</button>
+  </form>
+</section>
+{{ report_form(problem, "/play/" ~ session.id) }}
+{% endblock %}

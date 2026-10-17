@@ -1,0 +1,217 @@
+"""数学の部品（テンプレート方式）。
+
+作成: テンプレート（Python）が数値・正解・誤答を作る → 誤答が正解・互いと一致しないことを
+      sandbox の sympy で確認 → LLM が問題文・解説・ヒントを書く → 問題文にテンプレートの
+      式・値が、解説に正解がそのまま入っているかを機械的に確認
+検証: 検証役に問題文だけを渡して解かせ（選択肢も正解も見せない）、答えを sandbox の sympy で
+      正解と同値判定する
+採点: 選択式は選んだ選択肢、キーボード入力は sandbox の sympy で同値判定（LLM は使わない）
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import random
+from typing import Any
+
+from ... import textcheck
+from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Unit, VerifyResult
+from . import prompts
+from .catalog import MISTAKES, UNITS
+
+N_DISTRACTORS = 3
+MAX_ROLLS = 30
+
+
+def _params_key(template: str, params: dict[str, Any]) -> str:
+    raw = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+    return template + ":" + hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+class MathSubject(Subject):
+    id = "math"
+    name = "数学"
+    formats = ("choice", "input")
+    mistakes = MISTAKES
+    reject_codes = {"answer_leak": "問題文・ヒントに正解が書かれている"}
+    test_format = "input"  # 検証のテスト（正解をずらした問題）に対応する
+
+    def units(self) -> list[Unit]:
+        return UNITS
+
+    # --- 作成 ---------------------------------------------------------------
+
+    def _instance(self, ctx: GenContext, template: str, fmt: str) -> tuple[Any, list[dict[str, Any]], str]:
+        """数値を選び、選択式なら誤答を 3 つ選ぶ。(Instance, 選択肢, params_key)。"""
+        import sympy as sp
+
+        from .templates import TEMPLATES
+
+        build = TEMPLATES[template]
+        existing = ctx.existing_keys(template)
+        last_error = "同じ数値の問題がすでにあります"
+        for _ in range(MAX_ROLLS):
+            seed = ctx.rng.randrange(1 << 30)
+            inst = build(random.Random(seed))
+            key = _params_key(template, inst.params)
+            if key in existing:
+                continue
+            if ctx.is_test:
+                inst.answer = _tamper(inst.answer, inst.kind)
+            inst.params = {**inst.params, "seed": seed, "test": ctx.is_test}
+            if fmt != "choice":
+                return inst, [], key
+            values = [inst.answer] + [c.value for c in inst.candidates]
+            res = ctx.sandbox.distinct(inst.kind, [sp.srepr(v) for v in values], inst.var)
+            if not res.get("ok"):
+                last_error = f"選択肢を確認できません: {res.get('error')}"
+                continue
+            equal = {tuple(sorted(p)) for p in res.get("equal_pairs", [])}
+            chosen: list[int] = []
+            texts = {textcheck.normalize(inst.fmt(inst.answer))}
+            for i in range(1, len(values)):
+                if (0, i) in equal or any((j, i) in equal for j in chosen):
+                    continue
+                text = textcheck.normalize(inst.fmt(values[i]))
+                if text in texts:  # 見た目が同じものも重複とみなす
+                    continue
+                texts.add(text)
+                chosen.append(i)
+                if len(chosen) == N_DISTRACTORS:
+                    break
+            if len(chosen) < N_DISTRACTORS:
+                last_error = "正解・互いと一致しない誤答を 3 つ作れません"
+                continue
+            choices = [{"text": f"${inst.fmt(inst.answer)}$", "correct": True, "mistake": None}]
+            choices += [{"text": f"${inst.fmt(values[i])}$", "correct": False,
+                         "mistake": inst.candidates[i - 1].mistake} for i in chosen]
+            ctx.rng.shuffle(choices)
+            return inst, choices, key
+        raise Rejected("choices" if "誤答" in last_error or "選択肢" in last_error else "duplicate", last_error)
+
+    def generate(self, ctx: GenContext, template: str, fmt: str) -> Draft:
+        import sympy as sp
+
+        unit = self.subunit_map()[template][0].id
+        inst, choices, key = self._instance(ctx, template, fmt)
+        answer_latex = inst.fmt(inst.answer)
+        log: list[dict[str, Any]] = [{
+            "step": "テンプレート", "ok": True,
+            "summary": f"Python で数値と正解を作成（正解 ${answer_latex}$）"
+                       + ("。検証のテストのため正解をわざとずらしています" if ctx.is_test else ""),
+        }]
+        if choices:
+            mistakes = "、".join(MISTAKES.get(c["mistake"], c["mistake"]) for c in choices if not c["correct"])
+            log.append({"step": "選択肢", "ok": True,
+                        "summary": f"誤答 3 つが正解とも互いとも一致しないことを sympy で確認（{mistakes}）"})
+        partial = {"unit": unit, "template": template, "format": fmt, "params": inst.params, "params_key": key}
+
+        # 検証のテストでは、解き方の要点（本当の正解が入っている）を渡さない。
+        # 渡すと解説が本当の正解で書かれ、検証より前の「解説の確認」で落ちてしまい、テストにならない
+        steps = [] if ctx.is_test else inst.steps
+        out = ctx.llm.chat_json(
+            ctx.gen_model, prompts.GEN_SYSTEM,
+            prompts.gen_user(inst.task, [textcheck.first(g) for g in inst.givens], answer_latex, steps, fmt),
+            prompts.GEN_SCHEMA, temperature=0.7,
+        )
+        question = textcheck.repair_latex(str(out.get("question") or "").strip())
+        explanation = textcheck.repair_latex(str(out.get("explanation") or "").strip())
+        hint = textcheck.repair_latex(str(out.get("hint") or "").strip())
+        partial.update(question=question, explanation=explanation, hint=hint)
+        if not (question and explanation and hint):
+            log.append({"step": "文章", "ok": False, "summary": "問題文・解説・ヒントのどれかが空です"})
+            raise Rejected("llm_output", "問題文・解説・ヒントのどれかが空です", log, partial)
+        lost = textcheck.missing(question, inst.givens)
+        if lost:
+            summary = "問題文にテンプレートの式・値がそのまま入っていません: " + "、".join(f"${g}$" for g in lost)
+            log.append({"step": "問題文の確認", "ok": False, "summary": summary})
+            raise Rejected("text_givens", summary, log, partial)
+        log.append({"step": "問題文の確認", "ok": True,
+                    "summary": f"テンプレートの式・値 {len(inst.givens)} 個がそのまま入っている"})
+        # 問題文やヒントに正解が書かれていたら、検証役にも子供にも答えが見えてしまう
+        # （短い答え（"5" など）は問題文の数値と偶然重なるので、ある程度長いものだけ確かめる）
+        leaks = [c for c in inst.answer_checks() if len(textcheck.normalize(c)) >= 4
+                 and not any(textcheck.contains(textcheck.first(g), c) for g in inst.givens)]
+        for where, text in (("問題文", question), ("ヒント", hint)):
+            if leaks and len(textcheck.missing(text, leaks)) < len(leaks):
+                summary = f"{where}に正解 ${answer_latex}$ が書かれています"
+                log.append({"step": f"{where}の確認", "ok": False, "summary": summary})
+                raise Rejected("answer_leak", summary, log, partial)
+        lost = textcheck.missing(explanation, inst.answer_checks())
+        if lost:
+            summary = f"解説に正解 ${answer_latex}$ が入っていません"
+            log.append({"step": "解説の確認", "ok": False, "summary": summary})
+            raise Rejected("text_answer", summary, log, partial)
+        log.append({"step": "解説の確認", "ok": True, "summary": "解説に正解が入っている"})
+
+        return Draft(
+            unit=unit, template=template, format=fmt, question=question,
+            answer={"kind": inst.kind, "srepr": sp.srepr(inst.answer), "latex": answer_latex, "var": inst.var},
+            answer_display=f"${answer_latex}$", explanation=explanation, hint=hint, choices=choices,
+            input_hint=inst.input_hint if fmt == "input" else "",
+            source=f"テンプレート {template}（数値と正解は Python で計算）",
+            params=inst.params, params_key=key, log=log,
+        )
+
+    # --- 検証 ---------------------------------------------------------------
+
+    def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any) -> VerifyResult:
+        ans = problem.answer
+        input_hint = problem.input_hint or _default_hint(ans.get("kind", "value"))
+        out = llm.chat_json(model, prompts.SOLVE_SYSTEM,
+                            prompts.solve_user(problem.question, ans.get("kind", "value"), input_hint),
+                            prompts.SOLVE_SCHEMA, temperature=0.6)
+        given = str(out.get("answer") or "").strip()
+        work = str(out.get("work") or "").strip()
+        if not given:
+            return VerifyResult(False, f"{model}: 答えがありません", work, "solver_unreadable")
+        res = sandbox.compare(ans["kind"], {"srepr": ans["srepr"]}, {"text": given}, var=ans.get("var", "x"))
+        if not res.get("ok"):
+            return VerifyResult(False, f"{model}: 答え「{given}」を読み取れません（{res.get('error')}）",
+                                work, "solver_unreadable")
+        shown = res.get("given", {}).get("latex", given)
+        if res.get("equal"):
+            return VerifyResult(True, f"{model}: ${shown}$（一致）", work)
+        return VerifyResult(False, f"{model}: ${shown}$（正解 ${ans['latex']}$ と不一致）", work, "solver_mismatch")
+
+    # --- 採点 ---------------------------------------------------------------
+
+    def grade(self, sandbox: Sandbox | None, problem: Any, response: str) -> Grade:
+        if problem.format == "choice":
+            return super().grade(sandbox, problem, response)
+        text = (response or "").strip()
+        if not text:
+            return Grade(False, retry_message="答えを入力してください")
+        if sandbox is None:
+            return Grade(False, retry_message="採点の仕組み（sandbox）につながりません。少し待ってからもう一度送ってください")
+        ans = problem.answer
+        try:
+            res = sandbox.compare(ans["kind"], {"srepr": ans["srepr"]}, {"text": text}, var=ans.get("var", "x"))
+        except Exception:  # SandboxUnavailable など
+            return Grade(False, retry_message="採点の仕組み（sandbox）につながりません。少し待ってからもう一度送ってください")
+        if not res.get("ok"):
+            if res.get("where") == "given":
+                return Grade(False, retry_message=f"答えを読み取れません: {res.get('error')}")
+            return Grade(False, retry_message=f"採点できませんでした: {res.get('error')}")
+        if res.get("approx"):
+            return Grade(False, retry_message="小数の近似値ではなく、分数や √ を使った正確な値で答えてください")
+        shown = res.get("given", {}).get("latex", "")
+        return Grade(bool(res.get("equal")), response_display=f"${shown}$" if shown else text)
+
+
+def _default_hint(kind: str) -> str:
+    return prompts.ANSWER_FORMS.get(kind, "")
+
+
+def _tamper(answer: Any, kind: str) -> Any:
+    """検証のテスト用に、正解をわざとずらす（+1）。"""
+    import sympy as sp
+
+    if kind == "interval":
+        return answer.xreplace({n: n + 1 for n in answer.atoms(sp.Number) if n.is_finite})
+    if kind in ("tuple", "set"):
+        items = list(answer.args)
+        items[0] = items[0] + 1
+        return sp.Tuple(*items) if kind == "tuple" else sp.FiniteSet(*items)
+    return answer + 1

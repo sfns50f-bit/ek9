@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_macros.html" import scope_select %}
+{% block content %}
+{% if msg == "empty" %}
+<p class="notice warn">この範囲・端末で出せる問題がまだありません。「作る」から作成を依頼してください。</p>
+{% endif %}
+{% for row in summary if row.low and row.device == device %}
+<p class="notice warn">{{ row.subject_name }}（{{ row.device_label }}向け）のストックが残り {{ row.count }} 問です。「作る」から作成を依頼してください。</p>
+{% endfor %}
+
+<form method="post" action="/start" class="card" id="start-form">
+  <h1>解く</h1>
+  <label>科目
+    <select name="subject" id="subject">
+      {% for sub in subjects() %}<option value="{{ sub.id }}">{{ sub.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>範囲
+    {% for sub in subjects() %}{{ scope_select(sub) }}{% endfor %}
+  </label>
+  <fieldset class="segmented">
+    <legend>使う端末</legend>
+    {% for key, (label, formats) in DEVICES.items() %}
+    <label><input type="radio" name="device" value="{{ key }}" {{ 'checked' if key == device }}>
+      <span>{{ label }}<small>{% for f in formats %}{{ FORMATS[f] }}{% if not loop.last %}・{% endif %}{% endfor %}</small></span></label>
+    {% endfor %}
+  </fieldset>
+  <label>問題数
+    <input type="number" name="count" value="20" min="1" max="50" inputmode="numeric">
+  </label>
+  <p class="muted" id="stock-hint"></p>
+  <button type="submit" class="primary big">はじめる</button>
+  <p class="muted small">間違えた問題も少し混ざります。</p>
+</form>
+
+<section class="card">
+  <h2>ストック（まだ解いていない問題）</h2>
+  <table class="compact">
+    <tr><th>科目</th><th>端末</th><th>残り</th></tr>
+    {% for row in summary %}
+    <tr class="{{ 'warn' if row.low }}"><td>{{ row.subject_name }}</td><td>{{ row.device_label }}</td>
+      <td>{{ row.count }} 問{% if row.low %}（少なめ）{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+<script type="application/json" id="home-data">{{ data | tojson }}</script>
+{% endblock %}

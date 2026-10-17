@@ -2,20 +2,23 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="format-detection" content="telephone=no">
   <title>{% block title %}AI問題集{% endblock %}</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="/static/katex/katex.min.css">
   <link rel="stylesheet" href="/static/style.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script defer src="/static/katex/katex.min.js"></script>
+  <script defer src="/static/katex/auto-render.min.js"></script>
   <script defer src="/static/app.js"></script>
+  {% block head %}{% endblock %}
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/">AI問題集</a>
     <nav>
+      <a href="/">解く</a>
       <a href="/history">履歴</a>
-      <a href="/history?filter=wrong">復習</a>
+      <a href="/generate">作る</a>
       <a href="/status">状態</a>
     </nav>
   </header>

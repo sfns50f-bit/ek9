@@ -1,108 +1,137 @@
 {% extends "base.html" %}
+{% from "_macros.html" import mark %}
 {% block title %}状態 - AI問題集{% endblock %}
 {% block content %}
+{% if msg == "saved" %}<p class="notice">設定を保存しました。次の依頼から使われます。</p>{% endif %}
+{% if msg == "test" %}<p class="notice">検証のテストを順番待ちに入れました。下の「検証のテスト」に結果が出ます。</p>{% endif %}
+
 <section class="card">
   <h1>状態</h1>
-  <table class="kv">
-    <tr><th>Ollama</th><td>
-      {% if ollama_error %}<span class="badge ng">接続できません</span> {{ ollama_error }}
-      {% else %}<span class="badge ok">接続OK</span> {{ settings.ollama_base_url }}{% endif %}
-    </td></tr>
-    <tr><th>モデル</th><td>
-      <div>作問 {{ current.gen_model }} ／ 解答 {{ current.solve_model }} ／ 審査 {{ current.review_model if settings.review_enabled else "なし" }}</div>
-      {% for name in missing %}
-      <div><span class="badge ng">未取得</span> {{ name }} <code>ollama pull {{ name }}</code></div>
-      {% endfor %}
-      <div class="meta"><a href="#models">変更する</a></div>
-    </td></tr>
-    <tr><th>サンドボックス</th><td>{% if sandbox_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge ng">応答なし</span>{% endif %}</td></tr>
-    <tr><th>ワーカー</th><td>
-      {% if heartbeat_age is none %}<span class="badge ng">未起動</span>
-      {% elif heartbeat_age > 120 %}<span class="badge muted">{{ heartbeat_age }} 秒前から応答なし（作業中の可能性あり）</span>
-      {% else %}<span class="badge ok">稼働中</span>{% endif %}
-      {{ worker_status }}
-    </td></tr>
-    <tr><th>在庫の自動補充</th><td>
-      <form method="post" action="/status/refill" class="inline">
-        {% if refill_paused or not settings.refill_enabled %}
-        <span class="badge muted">停止中</span>
-        {% if settings.refill_enabled %}<input type="hidden" name="paused" value="0"><button type="submit">再開する</button>{% else %}<span class="meta">REFILL_ENABLED=false</span>{% endif %}
-        {% else %}
-        <span class="badge ok">動作中</span>（最近使った単元を {{ settings.pool_target }} 問ずつ）
-        <input type="hidden" name="paused" value="1"><button type="submit">一時停止する</button>
-        {% endif %}
-      </form>
-      <div class="meta">ゲームなどで GPU を使うときは一時停止してください。</div>
-    </td></tr>
-    <tr><th>問題数</th><td>出題可 {{ counts.get("ready", 0) }} ／ 報告あり {{ counts.get("reported", 0) }} ／ 不合格（破棄） {{ counts.get("rejected", 0) }}</td></tr>
+  <table class="compact">
+    <tr><th>Ollama</th><td>{% if ollama.ok %}{{ mark(true) }} つながっています{% elif ollama %}{{ mark(false) }} つながりません（{{ ollama.error }}）{% else %}未確認{% endif %}
+      {% if ollama.checked_at %}<span class="muted small">確認 {{ ollama.checked_at | isolocal }}</span>{% endif %}
+      <div class="muted small">{{ settings.ollama_base_url or "OLLAMA_BASE_URL が未設定" }}</div></td></tr>
+    <tr><th>worker</th><td>{% if worker_alive %}{{ mark(true) }}{% else %}{{ mark(false) }} しばらく応答がありません（{{ worker_at | localtime if worker_at else "記録なし" }}）{% endif %}
+      {{ worker.text or "" }}</td></tr>
+    <tr><th>sandbox</th><td>{{ mark(sandbox_ok) }} {{ "動いています" if sandbox_ok else "つながりません（キーボード入力の採点ができません）" }}</td></tr>
+    <tr><th>順番待ち</th><td>{{ jobs_open }} 件</td></tr>
+    <tr><th>データ</th><td>{{ settings.database_path }}</td></tr>
+    <tr><th>バックアップ</th><td>{{ backup_count }} 個（最新 {{ backup_last or "なし" }}）
+      {% if backup_info and not backup_info.ok %}<div class="notice warn">前回失敗: {{ backup_info.error }}</div>{% endif %}</td></tr>
   </table>
 </section>
 
+<section class="card">
+  <h2>ストック（まだ解いていない問題）</h2>
+  <table class="compact">
+    <tr><th>科目</th><th>端末</th><th>残り</th></tr>
+    {% for row in stock %}
+    <tr class="{{ 'warn' if row.low }}"><td>{{ row.subject_name }}</td><td>{{ row.device_label }}</td>
+      <td>{{ row.count }} 問{% if row.low %}（少なめ：{{ settings.low_stock }} 問未満）{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <details><summary>小単元ごと</summary>
+    <table class="compact small">
+      <tr><th>小単元</th><th>選択式</th><th>入力</th><th>合格/不合格（30日）</th></tr>
+      {% for t in templ %}
+      {% set pt = per_template.get(t.id, {}) %}
+      <tr><td>{{ t.unit }}／{{ t.label }}</td><td>{{ t.choice_unseen }}</td><td>{{ t.input_unseen }}</td>
+        <td>{{ pt.get("ready", 0) }} / {{ pt.get("rejected", 0) }}</td></tr>
+      {% endfor %}
+    </table>
+  </details>
+</section>
+
 <section class="card" id="models">
-  <h2>モデルの設定</h2>
-  {% if saved %}<div class="alert">保存しました。次の生成から使われます（作業中の問題は元のモデルのまま続きます）。</div>{% endif %}
-  {% if ollama_error %}
-  <p class="hint">Ollama に接続できないため、モデルを選べません。</p>
-  {% elif not installed %}
-  <p class="hint">ダウンロード済みのモデルがありません。PC で <code>ollama pull gemma4:e4b</code> などを実行してください。</p>
-  {% else %}
+  <h2>モデルと検証の回数</h2>
+  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong></p>
   <form method="post" action="/status/models">
-    {% for role, label in roles.items() %}
-    <label class="field">{{ label }}{% if role == "review" and not settings.review_enabled %} <span class="meta">（REVIEW_ENABLED=false のため使われません）</span>{% endif %}
-      <select name="{{ role }}">
-        <option value="" {% if not overrides[role] %}selected{% endif %}>.env の設定（{{ settings[role ~ "_model"] }}）</option>
-        {% for m in installed %}
-        <option value="{{ m.name }}" {% if overrides[role] == m.name %}selected{% endif %}>{{ m.name }}（{{ m.size_gb }}GB{% if m.parameter_size %}・{{ m.parameter_size }}{% endif %}{% if m.quantization %}・{{ m.quantization }}{% endif %}）</option>
-        {% endfor %}
-      </select>
-    </label>
-    {% endfor %}
-    <p class="hint">ダウンロード済みのモデルから選べます（新しいモデルは PC で <code>ollama pull モデル名</code> を実行すると一覧に出ます）。
-      VRAM 8GB の場合、サイズが 7GB を超えるモデルは一部が CPU で動くため遅くなります。
-      役割ごとに違うモデルを選ぶと、VRAM に同時に載らないときは切り替えのたびに読み込み直しが入ります。</p>
-    <button type="submit" class="primary">保存する</button>
+    {% macro model_select(name, current, env_value, allow_none=false) %}
+    <select name="{{ name }}">
+      <option value="">.env の設定（{{ env_value or "使わない" }}）</option>
+      {% if allow_none %}<option value="-" {{ 'selected' if current == '-' }}>使わない</option>{% endif %}
+      {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if current == m }}>{{ m }}</option>{% endfor %}
+      {% if current and current != '-' and current not in model_names %}<option value="{{ current }}" selected>{{ current }}（Ollama に見当たらない）</option>{% endif %}
+    </select>
+    {% endmacro %}
+    <label>作成に使うモデル {{ model_select("gen_model", overrides.gen_model, settings.gen_model) }}</label>
+    <label>検証役のモデル {{ model_select("verify_model", overrides.verify_model, settings.verify_model) }}</label>
+    <label>検証役に解かせる回数（全部一致したら合格）
+      <select name="verify_count">
+        <option value="">.env の設定（{{ settings.verify_count }} 回）</option>
+        {% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if overrides.verify_count == n|string }}>{{ n }} 回</option>{% endfor %}
+      </select></label>
+    <label>別系統の検証役（1回だけ追加で解かせる） {{ model_select("verify_model_2", overrides.verify_model_2, settings.verify_model_2, true) }}</label>
+    {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルから選べます。</p>{% endif %}
+    <button type="submit" class="primary">保存</button>
   </form>
-  {% endif %}
 </section>
 
 <section class="card">
-  <h2>生成の依頼</h2>
-  {% if jobs %}
-  <ul class="list">
-    {% for job in jobs %}
-    {% set topic = get_topic(job.topic_id) %}
-    <li><a href="/jobs/{{ job.id }}">#{{ job.id }} {{ topic.label if topic else job.topic_id }} ・ {{ DIFFICULTIES.get(job.difficulty, "") }}</a>
-      <span class="meta">{{ "処理中" if job.status == "running" else "順番待ち" }} {{ job.progress }}</span></li>
+  <h2>検証の成績（直近 {{ stats.days }} 日）</h2>
+  <p>作成 {{ stats.total }} 問のうち合格 {{ stats.passed }} 問（{{ stats.pass_rate }}%）</p>
+  <table class="compact">
+    <tr><th>検証役のモデル</th><th>検証した数</th><th>弾いた数</th><th>弾いた割合</th></tr>
+    {% for m in stats.by_model %}
+    <tr><td>{{ m.model }}</td><td>{{ m.reached }}</td><td>{{ m.rejected }}</td><td>{{ m.rate }}%</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+  <table class="compact">
+    <tr><th>不合格の理由</th><th>数</th></tr>
+    {% for code, n in stats.by_code %}<tr><td>{{ codes.get(code, code) }}</td><td>{{ n }}</td></tr>
+    {% else %}<tr><td colspan="2" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+  <p class="muted small">検証役が正しい問題まで弾きすぎる（「検証役の答えが正解と一致しない」が多い）ときは、検証役を大きいモデルに変えてください。</p>
+  <details><summary>最近の不合格</summary>
+    <ul class="list small">
+      {% for p in rejected %}
+      <li><a href="/problems/{{ p.id }}">#{{ p.id }} {{ get_subject(p.subject).label_of(p.template) if get_subject(p.subject) else p.template }}</a>
+        — {{ codes.get(p.reject_code, p.reject_code) }}<div class="muted mathtext">{{ p.reject_reason }}</div></li>
+      {% else %}<li class="muted">ありません</li>{% endfor %}
+    </ul>
+  </details>
+</section>
+
+<section class="card" id="tests">
+  <h2>検証のテスト</h2>
+  <p class="small">正解をわざとずらした問題を作り、検証役との突き合わせで弾かれることを確かめます（ストックには入りません）。
+    文章の確認など検証より前の段階で落ちたときは、最大 3 回まで作り直し、それでも届かなければ「判定できませんでした」と出ます。</p>
+  <form method="post" action="/status/test">
+    <select name="target">
+      {% for sub in subjects() if sub.test_format %}
+      <option value="{{ sub.id }}">{{ sub.name }}（小単元をおまかせ）</option>
+      {% for unit in sub.units() %}{% for su in unit.subunits %}
+      <option value="{{ sub.id }}|{{ su.id }}">{{ sub.name }}：{{ unit.label }}／{{ su.label }}</option>
+      {% endfor %}{% endfor %}
+      {% endfor %}
+    </select>
+    <button type="submit" class="secondary">テストを流す</button>
+  </form>
+  <ul class="list small">
+    {% for j in tests %}
+    <li>#{{ j.id }} {{ {"pending": "順番待ち", "running": "処理中", "waiting": "Ollama を待っています", "done": "完了", "failed": "失敗", "cancelled": "取り消し"}.get(j.status, j.status) }}
+      {% if j.error %}— {{ j.error }}{% endif %}</li>
     {% endfor %}
   </ul>
-  {% else %}<p class="hint">ありません。</p>{% endif %}
+</section>
+
+<section class="card" id="reported">
+  <h2>「おかしい？」と報告された問題</h2>
+  <ul class="list small">
+    {% for p in reported %}
+    <li><a href="/problems/{{ p.id }}">#{{ p.id }} {{ get_subject(p.subject).label_of(p.template) if get_subject(p.subject) else p.template }}</a>
+      {{ p.reported_at | localtime }} {% if p.report_note %}「{{ p.report_note }}」{% endif %}
+      <form method="post" action="/problems/{{ p.id }}/unreport" class="inline"><button class="secondary small">問題なしに戻す</button></form></li>
+    {% else %}<li class="muted">ありません</li>{% endfor %}
+  </ul>
 </section>
 
 <section class="card">
-  <h2>在庫（すぐ出題できる問題）</h2>
-  {% if stock %}
-  <ul class="list">
-    {% for topic_id, difficulty, n in stock %}
-    {% set topic = get_topic(topic_id) %}
-    <li>{{ topic.label if topic else topic_id }} ・ {{ DIFFICULTIES.get(difficulty, "") }}：{{ n }} 問</li>
-    {% endfor %}
+  <h2>最近の依頼</h2>
+  <ul class="list small">
+    {% for j in jobs %}
+    <li>#{{ j.id }} {{ j.status }}・{{ j.made }}/{{ j.count }}・{{ j.progress or j.error }}</li>
+    {% else %}<li class="muted">ありません</li>{% endfor %}
   </ul>
-  {% else %}<p class="hint">ありません。問題を解くと、その単元の在庫が自動で作られます。</p>{% endif %}
-</section>
-
-<section class="card">
-  <h2>最近の不合格（検証で破棄した問題）</h2>
-  {% if rejected %}
-  <ul class="list">
-    {% for p in rejected %}
-    {% set topic = get_topic(p.topic_id) %}
-    <li>
-      <span class="meta">{{ p.created_at | localtime }} ・ {{ topic.label if topic else p.topic_id }} ・ {{ p.subtopic }}</span>
-      <div>{{ p.reject_reason }}</div>
-      {% if p.question %}<details><summary>問題文</summary><div class="question">{{ p.question }}</div></details>{% endif %}
-    </li>
-    {% endfor %}
-  </ul>
-  {% else %}<p class="hint">ありません。</p>{% endif %}
 </section>
 {% endblock %}

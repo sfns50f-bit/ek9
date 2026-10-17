@@ -5,3 +5,4 @@ python-multipart==0.0.32
 sqlalchemy==2.1.1
 httpx==0.28.1
 tzdata==2026.4
+sympy==1.14.0

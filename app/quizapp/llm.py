@@ -69,12 +69,17 @@ class OllamaClient:
         # 既定では think を送らない。
         if self.think is not None:
             body["think"] = self.think
+        if not self.base_url:
+            raise LLMUnavailable("OLLAMA_BASE_URL が設定されていません（.env を確認してください）")
         try:
             resp = httpx.post(f"{self.base_url}/api/chat", json=body, timeout=self.timeout)
         except httpx.TransportError as exc:
             raise LLMUnavailable(f"Ollama に接続できません（{self.base_url}）: {exc}") from exc
         if resp.status_code == 404:
             raise LLMUnavailable(f"モデル {model} が見つかりません。`ollama pull {model}` を実行してください")
+        if resp.status_code >= 500:
+            # GPU のメモリ不足やモデルの読み込み失敗など。作り直しの回数を使わずに、後で再試行する
+            raise LLMUnavailable(f"Ollama がエラーを返しました（{resp.status_code}）: {resp.text[:300]}")
         if resp.status_code >= 400:
             raise LLMError(f"Ollama がエラーを返しました（{resp.status_code}）: {resp.text[:300]}")
         message = resp.json().get("message") or {}
@@ -82,8 +87,10 @@ class OllamaClient:
 
     def list_models(self) -> list[dict[str, Any]]:
         """ダウンロード済みのモデル（埋め込み専用モデルは除く）。"""
+        if not self.base_url:
+            raise LLMUnavailable("OLLAMA_BASE_URL が設定されていません（.env を確認してください）")
         try:
-            resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=3)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise LLMUnavailable(f"Ollama に接続できません（{self.base_url}）: {exc}") from exc
