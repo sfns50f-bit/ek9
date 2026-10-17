@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% from "_macros.html" import tex, result_badge, topic_line %}
+{% block title %}問題 #{{ problem.id }} の答え - AI問題集{% endblock %}
+{% block content %}
+{% if current %}
+<section class="card result {% if current.is_correct %}ok{% else %}ng{% endif %}">
+  <div class="verdict">{% if current.is_correct %}正解！{% elif current.gave_up %}答えを確認しましょう{% else %}不正解{% endif %}</div>
+  {% if not current.gave_up %}
+  <p>あなたの答え：{{ tex(current.user_latex or current.user_input) }}</p>
+  {% endif %}
+  {% if current.feedback and not current.gave_up %}<p class="hint">{{ current.feedback }}</p>{% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head">{{ topic_line(problem, topic) }}<span class="meta">#{{ problem.id }}</span></div>
+  <div class="question">{{ problem.question }}</div>
+  <h2>正解</h2>
+  <p class="answer">{{ tex(problem.answer_latex, display=True) }}</p>
+  <h2>解説</h2>
+  <div class="explanation">{{ problem.explanation }}</div>
+  <div class="actions">
+    <a class="button primary" href="/problems/{{ problem.id }}">もう一度解く</a>
+    <form method="post" action="/generate">
+      <input type="hidden" name="topic_id" value="{{ problem.topic_id }}">
+      <input type="hidden" name="difficulty" value="{{ problem.difficulty }}">
+      <button type="submit">同じ単元の次の問題</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>解答の記録</h2>
+  {% if problem.attempts %}
+  <table class="attempts">
+    <thead><tr><th>日時</th><th>結果</th><th>回答</th></tr></thead>
+    <tbody>
+      {% for a in problem.attempts | reverse %}
+      <tr {% if current and a.id == current.id %}class="current"{% endif %}>
+        <td>{{ a.created_at | localtime }}</td>
+        <td>{{ result_badge(a) }}</td>
+        <td>{% if a.gave_up %}—{% else %}{{ tex(a.user_latex or a.user_input) }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">まだ解答していません。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <details>
+    <summary>この問題の検証記録</summary>
+    <p class="hint">出題前に次の確認に合格しています（生成：{{ problem.created_at | localtime }}、モデル：{{ problem.models }}）。</p>
+    <ol class="steps">
+      {% for step in log.get("steps", []) %}
+      <li class="{{ 'ok' if step.ok else 'ng' }}">
+        <strong>{{ step.name }}</strong>：<span>{{ step.summary }}</span>
+        {% if step.detail %}<div class="detail">{{ step.detail }}</div>{% endif %}
+        {% if step.code %}<pre><code>{{ step.code }}</code></pre>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% if problem.status == "reported" %}
+  <div class="alert">誤りを報告済みです：{{ problem.report_note or "（メモなし）" }}</div>
+  <form method="post" action="/problems/{{ problem.id }}/unreport" class="actions">
+    <button type="submit">報告を取り消す</button>
+  </form>
+  {% else %}
+  <details>
+    <summary>問題の誤りを報告する</summary>
+    <form method="post" action="/problems/{{ problem.id }}/report">
+      <label class="field">どこがおかしいか（任意）
+        <textarea name="note" rows="3"></textarea>
+      </label>
+      <p class="hint">報告した問題は復習リストから外れます。</p>
+      <button type="submit">報告する</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+{% endblock %}

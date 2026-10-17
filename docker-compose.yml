@@ -1,0 +1,87 @@
+# AI問題集
+#   web     : 画面（http://<PCのIPアドレス>:8000）
+#   worker  : 問題の生成と検証（Ollama を使う）
+#   sandbox : LLM が書いた Python と解答の判定を実行する隔離環境（ネットワーク遮断）
+# Ollama はコンテナではなく Windows に直接インストールしたものを使う
+# （Docker Desktop のコンテナからは AMD GPU を使えないため）。
+
+name: ai-quiz
+
+x-app-env: &app-env
+  DATABASE_PATH: /data/quiz.db
+  SANDBOX_URL: http://sandbox:8080
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+  GEN_MODEL: ${GEN_MODEL:-}
+  SOLVE_MODEL: ${SOLVE_MODEL:-}
+  REVIEW_MODEL: ${REVIEW_MODEL:-}
+  OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+  OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-6144}
+  OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-15m}
+  OLLAMA_THINK: ${OLLAMA_THINK:-}
+  LLM_TIMEOUT: ${LLM_TIMEOUT:-900}
+  MAX_ATTEMPTS: ${MAX_ATTEMPTS:-4}
+  REVIEW_ENABLED: ${REVIEW_ENABLED:-true}
+  POOL_TARGET: ${POOL_TARGET:-2}
+  REFILL_ENABLED: ${REFILL_ENABLED:-true}
+  REFILL_DAYS: ${REFILL_DAYS:-14}
+  DISPLAY_TZ: ${DISPLAY_TZ:-Asia/Tokyo}
+
+x-app: &app
+  build: ./app
+  image: ai-quiz-app:latest
+  environment: *app-env
+  volumes:
+    - quiz-data:/data
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  networks:
+    - default
+    - sandbox
+  depends_on:
+    sandbox:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *app
+    command: ["uvicorn", "quizapp.web:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "quizapp.worker"]
+
+  sandbox:
+    build: ./sandbox
+    image: ai-quiz-sandbox:latest
+    networks:
+      - sandbox
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    mem_limit: 1g
+    pids_limit: 128
+    cpus: 2
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  # internal: インターネットにもホストにも出られない。web / worker からだけ届く。
+  sandbox:
+    internal: true
+
+volumes:
+  quiz-data:
