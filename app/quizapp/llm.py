@@ -15,7 +15,11 @@ import httpx
 
 
 class LLMError(RuntimeError):
-    """モデルの出力が使えない（JSON でない、項目が足りないなど）。"""
+    """モデルの出力が使えない（JSON でない、項目が足りないなど）。raw はモデルの生の出力。"""
+
+    def __init__(self, message: str, raw: str = "") -> None:
+        super().__init__(message)
+        self.raw = raw
 
 
 class LLMUnavailable(RuntimeError):
@@ -30,36 +34,64 @@ CONNECT_TIMEOUT = 10
 ABORT_CHECK_SECONDS = 0.5
 
 
-def _hang_up(conn: http.client.HTTPConnection) -> None:
+def _hang_up(sock: socket.socket) -> None:
     """読んでいる途中の接続を切る。shutdown しないと、別スレッドの recv が起きずに接続が残る。"""
-    sock = conn.sock
-    if sock is None:
-        return
     try:
         sock.shutdown(socket.SHUT_RDWR)
     except OSError:
         pass
 
 
+# JSON として正しくないバックスラッシュ（\sqrt の \s、\cdot の \c など）。直前のバックスラッシュの数が
+# 偶数（= エスケープされていない）ときだけ二重にする
+_BAD_ESCAPE_RE = re.compile(r'(?<!\\)((?:\\\\)*)\\(?![\\"/bfnrtu])')
+_THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+
+def _loads(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        # LaTeX の \sqrt などが 1 本のバックスラッシュのまま入っていると JSON として読めないので直して読む
+        return json.loads(_BAD_ESCAPE_RE.sub(lambda m: m.group(1) + "\\\\", text))
+
+
 def extract_json(text: str) -> dict[str, Any]:
-    """出力から JSON オブジェクトを取り出す。```json で囲まれていても読む。"""
-    text = (text or "").strip()
+    """出力から JSON オブジェクトを取り出す。```json で囲まれていても、思考（<think>）が混ざっていても読む。"""
+    raw = text or ""
+    text = _THINK_RE.sub("", raw).strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     if fenced:
         text = fenced.group(1)
     try:
-        data = json.loads(text)
+        data = _loads(text)
     except ValueError:
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
-            raise LLMError("モデルの出力に JSON が見つかりません") from None
+            raise LLMError("モデルの出力に JSON が見つかりません", raw=raw) from None
         try:
-            data = json.loads(text[start:end + 1])
+            data = _loads(text[start:end + 1])
         except ValueError as exc:
-            raise LLMError("モデルの出力の JSON が壊れています") from exc
+            raise LLMError("モデルの出力の JSON が壊れています", raw=raw) from exc
     if not isinstance(data, dict):
-        raise LLMError("モデルの出力が JSON オブジェクトではありません")
-    return data
+        raise LLMError("モデルの出力が JSON オブジェクトではありません", raw=raw)
+    return _fix_controls(data)
+
+
+# JSON では "\frac" が改ページ文字 + "rac"、"\times" がタブ + "imes" として正しく読めてしまう。
+# 後ろに英字が続く制御文字は LaTeX のバックスラッシュだったとみなして戻す（改行 \n は本当の改行が多いので除く）
+_CTRL_LETTER_RE = re.compile(r"[\x08\x0c\t\r](?=[A-Za-z])")
+_CTRL_NAMES = {"\x08": "b", "\x0c": "f", "\t": "t", "\r": "r"}
+
+
+def _fix_controls(value: Any) -> Any:
+    if isinstance(value, str):
+        return _CTRL_LETTER_RE.sub(lambda m: "\\" + _CTRL_NAMES[m.group()], value)
+    if isinstance(value, dict):
+        return {k: _fix_controls(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fix_controls(v) for v in value]
+    return value
 
 
 class OllamaClient:
@@ -75,6 +107,8 @@ class OllamaClient:
         self.calls: list[dict[str, Any]] = []
         # 真を返したら、呼び出し中でも接続を切って LLMCancelled を投げる（worker が依頼の取り消しを確かめる）
         self.should_abort: Callable[[], bool] | None = None
+        # モデル名 → 思考モード（True / False / None=送らない）。worker が /status の設定から決める
+        self.think_for: Callable[[str], bool | None] | None = None
 
     def chat_json(self, model: str, system: str, user: str, schema: dict[str, Any], *,
                   temperature: float = 0.7) -> dict[str, Any]:
@@ -99,10 +133,11 @@ class OllamaClient:
                 "num_predict": self.num_predict,
             },
         }
-        # gemma4 では think=false を送ると format（JSON スキーマ）が効かなくなる不具合があるため、
-        # 既定では think を送らない。
-        if self.think is not None:
-            body["think"] = self.think
+        # 思考モードはモデルごとに決める（runtime.think_for。qwen3 系は切る、gemma4 は切らない）。
+        # gemma4 では think=false を送ると format（JSON スキーマ）が効かなくなる不具合があったため。
+        think = self.think_for(model) if self.think_for is not None else self.think
+        if think is not None:
+            body["think"] = think
         if not self.base_url:
             raise LLMUnavailable("OLLAMA_BASE_URL が設定されていません（.env を確認してください）")
         started = time.monotonic()
@@ -117,8 +152,12 @@ class OllamaClient:
             raise LLMError(f"Ollama がエラーを返しました（{status}）: {state.get('text', '')[:300]}")
         if state.get("error"):
             raise LLMError(f"Ollama がエラーを返しました: {state['error'][:300]}")
-        self._record(model, time.monotonic() - started, state.get("final") or {})
-        return extract_json("".join(state.get("content", [])))
+        final = state.get("final") or {}
+        self._record(model, time.monotonic() - started, final)
+        raw = "".join(state.get("content", []))
+        if final.get("done_reason") == "length":
+            raise LLMError(f"出力の上限（num_predict={self.num_predict}）で途中で切れました", raw=raw)
+        return extract_json(raw)
 
     def _stream(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         """POST して、改行区切りの JSON の応答を読み切る。取り消し・時間切れのときは接続を切る。"""
@@ -129,8 +168,11 @@ class OllamaClient:
             conn.connect()
         except OSError as exc:
             raise LLMUnavailable(f"Ollama に接続できません（{self.base_url}）: {exc}") from exc
-        assert conn.sock is not None
-        conn.sock.settimeout(self.timeout)  # 応答が途切れてもこの秒数までは待つ
+        # 自分で持っておく（応答が Connection: close のとき、http.client は conn.sock を None にして
+        # ソケットを応答側に渡してしまい、conn.sock からは切れなくなるため）
+        sock = conn.sock
+        assert sock is not None
+        sock.settimeout(self.timeout)  # 応答が途切れてもこの秒数までは待つ
         state: dict[str, Any] = {"content": []}
 
         def read() -> None:
@@ -171,15 +213,37 @@ class OllamaClient:
                     raise LLMUnavailable(f"Ollama が {self.timeout:.0f} 秒以内に応答を終えませんでした")
         finally:
             if thread.is_alive():
-                _hang_up(conn)
+                _hang_up(sock)
                 thread.join(2)
             conn.close()
+            sock.close()
         exc = state.get("exc")
         if exc is not None:
             if isinstance(exc, (OSError, http.client.HTTPException)):
                 raise LLMUnavailable(f"Ollama との通信が切れました（{self.base_url}）: {exc}") from exc
             raise LLMError(f"Ollama の応答を読めません: {exc}") from exc
         return state
+
+    def _record(self, model: str, seconds: float, data: dict[str, Any]) -> None:
+        """1 回の呼び出しの時間の内訳を残す（/status の「最近の LLM 呼び出し」と依頼ごとの集計で使う）。
+
+        Ollama の応答には、モデルの読み込みにかかった時間（load_duration）、出力したトークン数
+        （eval_count、考えている分も含む）とその時間（eval_duration）が入っている（単位はナノ秒）。
+        """
+        ns = 1e9
+        eval_s = (data.get("eval_duration") or 0) / ns
+        tokens = int(data.get("eval_count") or 0)
+        self.calls.append({
+            "at": time.time(), "model": model, "label": self.label, "seconds": round(seconds, 1),
+            "load_s": round((data.get("load_duration") or 0) / ns, 2),
+            "prompt_tokens": int(data.get("prompt_eval_count") or 0), "tokens": tokens, "eval_s": round(eval_s, 2),
+            "tok_per_s": round(tokens / eval_s, 1) if eval_s > 0 else 0.0,
+            "cut_off": data.get("done_reason") == "length",
+        })
+
+    def pop_calls(self) -> list[dict[str, Any]]:
+        calls, self.calls = self.calls, []
+        return calls
 
     def list_models(self) -> list[dict[str, Any]]:
         """ダウンロード済みのモデル（埋め込み専用モデルは除く）。"""

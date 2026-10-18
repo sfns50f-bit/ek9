@@ -132,3 +132,34 @@ def test_preview():
     assert tasks.run("preview", {"text": "2x^2 - 3x + 1", "kind": "value"})["latex"] == "2 x^{2} - 3 x + 1"
     assert tasks.run("preview", {"text": "x<1, 3<x", "kind": "interval"})["latex"] == r"x < 1,\ 3 < x"
     assert not tasks.run("preview", {"text": "1 +", "kind": "value"})["ok"]
+
+
+@pytest.mark.parametrize("kind,expected,given", [
+    ("value", "1140", "1,140"),                      # 桁区切り
+    ("value", "1140", "１１４０"),                     # 全角数字
+    ("value", "3", "答えは3です"),                    # 日本語の書き添え
+    ("value", "3", "答え: 3"),
+    ("value", "3", "よって、答えは x = 3 である。"),
+    ("value", "3", "**3**"),                          # Markdown の太字
+    ("value", "3", "\\boxed{3}"),
+    ("value", "3/5", "\\frac{3}{5}"),                 # LaTeX
+    ("value", "3/5", "$\\dfrac{3}{5}$"),
+    ("value", "2*sqrt(21)", "2\\sqrt{21}"),
+    ("value", "2*sqrt(21)", "2√(21)"),
+    ("value", "-sqrt(3)/2", "-\\frac{\\sqrt{3}}{2}"),
+    ("value", "pi/3", "\\frac{\\pi}{3}"),
+    ("value", "60", "60^{\\circ}"),
+    ("value", "exp(2)", "e^{2}"),
+    ("interval", "1 <= x <= 3", "1 \\leq x \\leq 3"),
+    ("set", "5", "x=5です"),
+])
+def test_answers_written_in_many_styles_are_read(kind, expected, given):
+    """検証役（モデルごとに書き方が違う）やキーボード入力の答えを、同じ値として読める。"""
+    assert check(kind, expected, given)["equal"]
+
+
+@pytest.mark.parametrize("given", [",", "わかりません", "答えは三です", "x は求められない"])
+def test_reading_failure_is_not_a_wrong_value(given):
+    """「,」「わかりません」のように読めない答えは、「数値が違う」ではなく読み取りエラーにする。"""
+    res = tasks.run("compare", {"kind": "value", "expected": {"text": "3"}, "given": {"text": given}})
+    assert not res["ok"] and res["where"] == "given"

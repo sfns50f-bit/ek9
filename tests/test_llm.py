@@ -35,7 +35,7 @@ class FakeOllama:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
-                pieces = ['{"answer": ', '"42"}'] if outer.mode == "ok" else [" "] * 300
+                pieces = {"ok": ['{"answer": ', '"42"}'], "cut": ['{"answer": "4']}.get(outer.mode, [" "] * 300)
                 try:
                     for piece in pieces:
                         chunk = {"message": {"content": piece}, "done": False}
@@ -44,6 +44,7 @@ class FakeOllama:
                         if outer.mode == "slow":
                             time.sleep(0.1)
                     final = {"message": {"content": ""}, "done": True, "load_duration": 2_000_000_000,
+                             "done_reason": "length" if outer.mode == "cut" else "stop",
                              "eval_count": 10, "eval_duration": 500_000_000, "prompt_eval_count": 5}
                     self.wfile.write((json.dumps(final) + "\n").encode())
                 except (BrokenPipeError, ConnectionResetError):
@@ -101,3 +102,21 @@ def test_missing_model_and_unreachable(fake):
         OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA)
     with pytest.raises(LLMUnavailable, match="接続できません"):
         OllamaClient("http://127.0.0.1:9").chat_json("m", "sys", "user", SCHEMA)
+
+
+def test_output_cut_off_by_num_predict_is_reported(fake):
+    from quizapp.llm import LLMError
+
+    server = fake("cut")
+    with pytest.raises(LLMError, match="出力の上限") as exc:
+        OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA)
+    assert exc.value.raw == '{"answer": "4'
+
+
+def test_latex_backslashes_and_thinking_in_json_are_read():
+    from quizapp.llm import extract_json
+
+    raw = '{"answer": "2\\sqrt{21}", "work": "\\frac{1}{2} \\cdot x"}'.replace("\\\\", "\\")
+    assert extract_json(raw) == {"answer": "2\\sqrt{21}", "work": "\\frac{1}{2} \\cdot x"}
+    assert extract_json('<think>{maybe}</think>{"answer": "3"}') == {"answer": "3"}
+    assert extract_json('```json\n{"answer": "3"}\n```') == {"answer": "3"}

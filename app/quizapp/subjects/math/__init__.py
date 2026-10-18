@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 from typing import Any
 
 from ... import textcheck
@@ -119,7 +120,8 @@ class MathSubject(Subject):
             explanation = textcheck.repair_latex(str(out.get("explanation") or "").strip())
             hint = textcheck.repair_latex(str(out.get("hint") or "").strip())
             partial.update(question=question, explanation=explanation, hint=hint)
-            problem = _check_text(inst, answer_latex, question, explanation, hint)
+            problem = _check_text(inst, answer_latex, question, explanation, hint, ctx.sandbox,
+                                  sp.srepr(inst.answer))
             if problem is None:
                 break
             code, step, summary = problem
@@ -154,23 +156,38 @@ class MathSubject(Subject):
     # --- 検証 ---------------------------------------------------------------
 
     def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any) -> VerifyResult:
+        from ...llm import LLMError
+
         ans = problem.answer
         input_hint = problem.input_hint or _default_hint(ans.get("kind", "value"))
-        out = llm.chat_json(model, prompts.SOLVE_SYSTEM,
-                            prompts.solve_user(problem.question, ans.get("kind", "value"), input_hint),
-                            prompts.SOLVE_SCHEMA, temperature=0.6)
-        given = str(out.get("answer") or "").strip()
+        user = prompts.solve_user(problem.question, ans.get("kind", "value"), input_hint)
+        try:
+            out = llm.chat_json(model, prompts.SOLVE_SYSTEM, user, prompts.SOLVE_SCHEMA, temperature=0.6)
+        except LLMError:  # 出力が読めなかったときは 1 回だけ解かせ直す
+            try:
+                out = llm.chat_json(model, prompts.SOLVE_SYSTEM, user, prompts.SOLVE_SCHEMA, temperature=0.6)
+            except LLMError as exc:
+                return VerifyResult(False, f"{model}: 出力を読めません（{exc}）", "", "llm_output",
+                                    raw=getattr(exc, "raw", ""))
+        raw = json.dumps(out, ensure_ascii=False)
         work = str(out.get("work") or "").strip()
-        if not given:
-            return VerifyResult(False, f"{model}: 答えがありません", work, "solver_unreadable")
-        res = sandbox.compare(ans["kind"], {"srepr": ans["srepr"]}, {"text": given}, var=ans.get("var", "x"))
+        tried: list[str] = []
+        res: dict[str, Any] = {}
+        # answer 欄を読む。読めなければ、途中の考え方の最後にある答え（\boxed{…}、「答え: …」）も試す
+        for given in _answer_candidates(str(out.get("answer") or ""), work):
+            tried.append(given)
+            res = sandbox.compare(ans["kind"], {"srepr": ans["srepr"]}, {"text": given}, var=ans.get("var", "x"))
+            if res.get("ok"):
+                break
         if not res.get("ok"):
-            return VerifyResult(False, f"{model}: 答え「{given}」を読み取れません（{res.get('error')}）",
-                                work, "solver_unreadable")
-        shown = res.get("given", {}).get("latex", given)
+            shown = "」「".join(tried) or "（空）"
+            return VerifyResult(False, f"{model}: 答え「{shown}」を読み取れません（{res.get('error', '答えがありません')}）",
+                                work, "solver_unreadable", raw=raw)
+        shown = res.get("given", {}).get("latex", tried[-1])
         if res.get("equal"):
-            return VerifyResult(True, f"{model}: ${shown}$（一致）", work)
-        return VerifyResult(False, f"{model}: ${shown}$（正解 ${ans['latex']}$ と不一致）", work, "solver_mismatch")
+            return VerifyResult(True, f"{model}: ${shown}$（一致）", work, raw=raw)
+        return VerifyResult(False, f"{model}: ${shown}$（正解 ${ans['latex']}$ と不一致）", work, "solver_mismatch",
+                            raw=raw)
 
     # --- 採点 ---------------------------------------------------------------
 
@@ -197,8 +214,8 @@ class MathSubject(Subject):
         return Grade(bool(res.get("equal")), response_display=f"${shown}$" if shown else text)
 
 
-def _check_text(inst: Any, answer_latex: str, question: str, explanation: str,
-                hint: str) -> tuple[str, str, str] | None:
+def _check_text(inst: Any, answer_latex: str, question: str, explanation: str, hint: str,
+                sandbox: Any = None, answer_srepr: str = "") -> tuple[str, str, str] | None:
     """LLM が書いた文章の確認。問題があれば (理由の種類, 段階, 説明)、なければ None。"""
     if not (question and explanation and hint):
         return "llm_output", "文章", "問題文・解説・ヒントのどれかが空です"
@@ -213,9 +230,48 @@ def _check_text(inst: Any, answer_latex: str, question: str, explanation: str,
     for where, text in (("問題文", question), ("ヒント", hint)):
         if leaks and len(textcheck.missing(text, leaks)) < len(leaks):
             return "answer_leak", f"{where}の確認", f"{where}に正解 ${answer_latex}$ が書かれています"
-    if textcheck.missing(explanation, inst.answer_checks()):
+    if textcheck.missing(explanation, inst.answer_checks()) and (sandbox is None or not _explanation_has_value(
+            sandbox, inst, answer_srepr, explanation)):
         return "text_answer", "解説の確認", f"解説に正解 ${answer_latex}$ が入っていません"
     return None
+
+
+_MATH_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.S)
+
+
+def _explanation_has_value(sandbox: Any, inst: Any, answer_srepr: str, explanation: str) -> bool:
+    """表記をそろえても見つからないとき、解説の数式を sympy で正解と比べる（2√21 と 2\\sqrt{21} など）。"""
+    pieces: list[str] = []
+    for m in _MATH_RE.finditer(explanation):
+        math = (m.group(1) or m.group(2) or "").strip()
+        pieces.append(math)
+        if "=" in math:  # 「a = 2\sqrt{21}」の右辺
+            pieces.append(math.rsplit("=", 1)[1].strip())
+    pieces += [line.strip() for line in _ANSWER_LINE_RE.findall(explanation)]
+    for piece in list(dict.fromkeys(p for p in pieces if p))[-12:]:
+        try:
+            res = sandbox.compare(inst.kind, {"srepr": answer_srepr}, {"text": piece}, var=inst.var)
+        except Exception:
+            return False
+        if res.get("ok") and res.get("equal"):
+            return True
+    return False
+
+
+_BOXED_RE = re.compile(r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}")
+_ANSWER_LINE_RE = re.compile(r"(?:答え|答|解答|Answer)\s*[:：は]\s*(.+)$", re.M)
+
+
+def _answer_candidates(answer: str, work: str) -> list[str]:
+    """検証役の答えとして試す文字列（answer 欄 → work の \\boxed{…} → work の「答え: …」の行）。"""
+    out = [answer.strip()] if answer.strip() else []
+    boxed = _BOXED_RE.findall(work)
+    if boxed:
+        out.append(boxed[-1].strip())
+    lines = _ANSWER_LINE_RE.findall(work)
+    if lines:
+        out.append(lines[-1].strip())
+    return list(dict.fromkeys(c for c in out if c))
 
 
 def _default_hint(kind: str) -> str:

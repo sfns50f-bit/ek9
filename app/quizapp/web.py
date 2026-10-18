@@ -45,6 +45,18 @@ BASE = Path(__file__).resolve().parent
 MAX_SESSION = 50
 MAX_JOB = 50
 MAX_DURATION_MS = 3 * 60 * 60 * 1000
+JOB_STATUS = {
+    "pending": "順番待ち", "running": "処理中", "waiting": "Ollama を待っています", "done": "完了",
+    "partial": "一部完了", "failed": "失敗", "cancelling": "取り消し中", "cancelled": "取り消し済み",
+}
+
+
+def _failure(problem: Problem) -> dict[str, Any]:
+    """不合格の問題の、落ちた段階の記録（モデル名と生の出力を含む）。"""
+    for entry in reversed(problem.verification):
+        if not entry.get("ok"):
+            return entry
+    return {}
 
 
 def _int(value: str, default: int) -> int:
@@ -92,7 +104,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None), "%m/%d %H:%M:%S") if t else ""
     templates.env.filters["isolocal"] = lambda text: localtime(datetime.fromisoformat(text)) if text else ""
     templates.env.globals.update(FORMATS=FORMATS, DEVICES=DEVICES, subjects=all_subjects,
-                                 get_subject=get_subject)
+                                 get_subject=get_subject, JOB_STATUS=JOB_STATUS, failure=_failure)
 
     def render(request: Request, name: str, status_code: int = 200, **ctx: Any) -> Response:
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
@@ -376,18 +388,21 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return redirect("/generate?msg=queued")
 
     @app.post("/jobs/{job_id}/cancel")
-    def cancel(job_id: int) -> Response:
+    def cancel(job_id: int, back: str = Form("/generate")) -> Response:
         with sessions.begin() as s:
             job = s.get(Job, job_id)
-            if job and job.status in ("pending", "running", "waiting"):
-                job.status = "cancelled"
-                job.finished_at = utcnow()
-        return redirect("/generate")
+            if job and job.status in ("pending", "waiting"):  # まだ始まっていない（止まっている）依頼はすぐ取り消し済み
+                job.status, job.progress, job.error, job.finished_at = "cancelled", "", "取り消しました", utcnow()
+            elif job and job.status == "running":
+                # 処理中の依頼は worker が数秒以内に止める（Ollama への問い合わせも途中で切る）
+                job.status, job.progress = "cancelling", "取り消し中（worker が止まるのを待っています）"
+        return redirect(back if back.startswith("/") and not back.startswith("//") else "/generate")
 
     @app.get("/jobs.json")
     def jobs_json() -> dict[str, Any]:
         with sessions() as s:
-            jobs = s.execute(select(Job).where(Job.status.in_(("pending", "running", "waiting")))).scalars()
+            jobs = s.execute(select(Job).where(Job.status.in_(("pending", "running", "waiting", "cancelling"))))\
+                .scalars()
             return {"jobs": [{"id": j.id, "status": j.status, "progress": j.progress, "made": j.made,
                               "count": j.count} for j in jobs]}
 
@@ -407,7 +422,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             "ollama": ollama,
             "stock": stock.stock_summary(s, uid, settings.low_stock),
             "jobs_open": s.execute(select(func.count()).select_from(Job)
-                                   .where(Job.status.in_(("pending", "running", "waiting")))).scalar_one(),
+                                   .where(Job.status.in_(("pending", "running", "waiting", "cancelling"))))
+            .scalar_one(),
             "backup_last": localtime(last_backup, "%Y/%m/%d %H:%M") if last_backup else None,
             "backup_count": len(backup.list_backups(settings.backup_dir)),
             "backup_info": kv_json(s, "backup", {}) or {},
@@ -420,6 +436,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             data = status_data(s, uid)
             plan = runtime.model_plan(settings, s)
             overrides = runtime.overrides(s)
+            think_choices = runtime.think_settings(s)
             jobs = list(s.execute(select(Job).order_by(Job.id.desc()).limit(15)).scalars())
             stats = stock.verify_stats(s)
             per_template = stock.per_template_rejects(s)
@@ -433,12 +450,19 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             llm_calls = list(reversed(kv_json(s, "llm_calls", []) or []))
         sandbox_ok = sandbox.healthy()
         model_names = [m["name"] for m in data["ollama"].get("models", [])]
+        think_rows = []
+        for name in dict.fromkeys(model_names + list(think_choices) + [plan.gen_model, plan.verify_model]
+                                  + ([plan.verify_model_2] if plan.verify_model_2 else [])):
+            effective = runtime.resolve_think(name, think_choices, settings.think)
+            think_rows.append({"model": name, "choice": think_choices.get(name, "auto"),
+                               "effective": {True: "考えさせる", False: "切る", None: "モデルの既定のまま"}[effective]})
         codes = {}
         for sub in all_subjects():
             codes.update(sub.all_reject_codes())
         return render(request, "status.html", **data, plan=plan, overrides=overrides, jobs=jobs, stats=stats,
                       per_template=per_template, templ=templ, rejected=rejected, reported=reported,
-                      tests=tests, llm_calls=llm_calls, sandbox_ok=sandbox_ok, model_names=model_names, codes=codes,
+                      tests=tests, llm_calls=llm_calls, sandbox_ok=sandbox_ok, think_rows=think_rows,
+                      think_labels=runtime.THINK_CHOICES, model_names=model_names, codes=codes,
                       settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg)
 
     @app.get("/status.json")
@@ -458,6 +482,14 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             runtime.save_overrides(s, {"gen_model": gen_model, "verify_model": verify_model,
                                        "verify_count": verify_count, "verify_model_2": verify_model_2})
         return redirect("/status?msg=saved#models")
+
+    @app.post("/status/think")
+    def save_think(model: str = Form(...), choice: str = Form("auto")) -> Response:
+        if choice not in runtime.THINK_CHOICES:
+            raise HTTPException(400, "選び方が正しくありません")
+        with sessions.begin() as s:
+            runtime.save_think_setting(s, model.strip(), choice)
+        return redirect("/status?msg=think#think")
 
     @app.post("/status/test")
     def verify_test(target: str = Form("")) -> Response:

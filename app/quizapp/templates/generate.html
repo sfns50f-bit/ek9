@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import scope_select %}
-{% block head %}{% if jobs | selectattr("status", "in", ["pending", "running", "waiting"]) | list %}<meta http-equiv="refresh" content="20">{% endif %}{% endblock %}
+{% block head %}{% if jobs | selectattr("status", "in", ["pending", "running", "waiting", "cancelling"]) | list %}<meta http-equiv="refresh" content="{{ 5 if jobs | selectattr("status", "equalto", "cancelling") | list else 20 }}">{% endif %}{% endblock %}
 {% block content %}
 {% if msg == "queued" %}<p class="notice">作成依頼を順番待ちに入れました。デスクトップの Ollama につながると、順に作成と検証が進みます。</p>{% endif %}
 <form method="post" action="/generate" class="card" id="generate-form">
@@ -37,13 +37,14 @@
       <div><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}・{{ j.count }}問
         {% if j.is_test %}<span class="tag">検証のテスト</span>{% endif %}</div>
       <div class="small">
-        {{ {"pending": "順番待ち", "running": "処理中", "waiting": "Ollama を待っています", "done": "完了", "partial": "一部完了", "failed": "失敗", "cancelled": "取り消し"}.get(j.status, j.status) }}
+        {{ JOB_STATUS.get(j.status, j.status) }}
         ・合格 {{ j.made }} / {{ j.count }}・作成 {{ j.gen_attempts }} 回・{{ j.created_at | localtime }}
       </div>
       {% if j.progress %}<div class="small muted">{{ j.progress }}</div>{% endif %}
       {% if j.error %}<div class="small">{{ j.error }}</div>{% endif %}
       {% if j.status in ["pending", "running", "waiting"] %}
-      <form method="post" action="/jobs/{{ j.id }}/cancel"><button class="secondary small" type="submit">取り消す</button></form>
+      <form method="post" action="/jobs/{{ j.id }}/cancel"><input type="hidden" name="back" value="/generate">
+        <button class="secondary small" type="submit">取り消す</button></form>
       {% endif %}
     </li>
     {% endfor %}

@@ -92,6 +92,7 @@ class VerifyResult:
     summary: str
     detail: str = ""
     code: str = "solver_mismatch"  # 不合格の理由の種類（/status で集計する）
+    raw: str = ""  # 検証役の生の出力（原因を調べるために、そのまま残す）
 
 
 class Rejected(Exception):
@@ -111,8 +112,8 @@ REJECT_CODES = {
     "text_givens": "問題文の数値・式がテンプレートと違う",
     "text_answer": "解説に正解が入っていない",
     "choices": "選択肢が重複・正解と一致する誤答がある",
-    "solver_mismatch": "検証役の答えが正解と一致しない",
-    "solver_unreadable": "検証役の答えを読み取れない",
+    "solver_mismatch": "検証役の答えは読めたが、数値が正解と違う",
+    "solver_unreadable": "検証役の答えが読み取れなかった",
     "duplicate": "既存の問題と同じ数値",
 }
 

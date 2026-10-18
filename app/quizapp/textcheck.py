@@ -33,6 +33,17 @@ def normalize(text: str) -> str:
     s = s.replace("∠", r"\angle ")
     for src, dst in _REPLACE:
         s = s.replace(src, dst)
+    # √ の書き方の揺れ：2√21、2√(21)、2\sqrt{21}、2\sqrt 21、2sqrt(21) を「√21」にそろえる
+    s = re.sub(r"\\sqrt\s*\{([^{}]*)\}", r"√(\1)", s)
+    s = re.sub(r"\\sqrt\s*(\d+|[A-Za-z])", r"√\1", s)
+    s = re.sub(r"(?<![\\A-Za-z])sqrt\s*\(([^()]*)\)", r"√(\1)", s)
+    s = re.sub(r"√\s*\(([0-9A-Za-z.]+)\)", r"√\1", s)
+    # 分数：\frac{3}{5} と 3/5 をそろえる（中身がさらに分数でも内側から）
+    for _ in range(4):
+        s2 = re.sub(r"\\frac\{([^{}]*)\}\{([^{}]*)\}", r"\1/\2", s)
+        if s2 == s:
+            break
+        s = s2
     for token in _REMOVE:
         s = s.replace(token, "")
     s = re.sub(r"\s+", "", s)

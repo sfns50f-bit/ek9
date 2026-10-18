@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -23,8 +24,8 @@ from . import backup
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import Job, Passage, Problem, dumps, init_db, kv_json, kv_set, utcnow
-from .llm import LLMError, LLMUnavailable, OllamaClient
-from .runtime import ModelPlan, model_plan
+from .llm import LLMCancelled, LLMError, LLMUnavailable, OllamaClient
+from .runtime import ModelPlan, model_plan, resolve_think, think_settings
 from .sandbox_client import SandboxClient, SandboxUnavailable
 from .subjects import get_subject
 from .subjects.base import Draft, GenContext, Rejected, Subject
@@ -32,6 +33,7 @@ from .subjects.base import Draft, GenContext, Rejected, Subject
 log = logging.getLogger("worker")
 
 OPEN_STATUSES = ("pending", "running", "waiting")
+CANCEL_STATUSES = ("cancelling", "cancelled")
 OLLAMA_CHECK_SECONDS = 60
 HEARTBEAT_SECONDS = 60
 LLM_CALLS_KEEP = 40
@@ -112,21 +114,38 @@ class Worker:
         if hasattr(self.llm, "label"):
             self.llm.label = text
 
-    def _save_llm_calls(self) -> None:
-        """LLM の呼び出しの時間の内訳を、新しいものから LLM_CALLS_KEEP 件まで kv に残す。"""
+    def _save_llm_calls(self, job_id: int | None = None) -> None:
+        """LLM の呼び出しの時間の内訳を、新しいものから LLM_CALLS_KEEP 件まで kv に残す。
+
+        job_id があれば、その依頼の作成・検証の時間（出力 eval と読み込み load を分けて）にも足す。
+        """
         calls = self.llm.pop_calls() if hasattr(self.llm, "pop_calls") else []
         if not calls:
             return
         with self.sessions.begin() as s:
             kept = (kv_json(s, "llm_calls", []) or []) + calls
             kv_set(s, "llm_calls", dumps(kept[-LLM_CALLS_KEEP:]))
+            job = s.get(Job, job_id) if job_id is not None else None
+            if job is None:
+                return
+            for c in calls:
+                role = "verify" if c.get("label") == "検証" else "gen"
+                setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
+                setattr(job, f"{role}_eval_s", (getattr(job, f"{role}_eval_s") or 0.0) + float(c.get("eval_s") or 0))
+                setattr(job, f"{role}_load_s", (getattr(job, f"{role}_load_s") or 0.0) + float(c.get("load_s") or 0))
 
     # --- 依頼の読み書き ------------------------------------------------------
 
     def recover(self) -> None:
-        """前回の停止時に処理中だった依頼を順番待ちに戻す（下書きは残っているので続きから）。"""
+        """前回の停止時に処理中だった依頼を順番待ちに戻す（下書きは残っているので続きから）。
+
+        取り消し中のまま止まった依頼は、取り消し済みにする（検証待ちの下書きは捨てる）。
+        """
         with self.sessions.begin() as s:
             s.execute(update(Job).where(Job.status == "running").values(status="pending"))
+            for job in s.execute(select(Job).where(Job.status == "cancelling")).scalars():
+                self._discard_drafts(s, job.id)
+                job.status, job.progress, job.finished_at = "cancelled", "", utcnow()
 
     def next_job_id(self) -> int | None:
         with self.sessions() as s:
@@ -139,17 +158,43 @@ class Worker:
             return s.get(Job, job_id)
 
     def _update_job(self, job_id: int, **values: object) -> None:
+        """依頼を書き換える。取り消し中・取り消し済みの依頼の状態は変えない（進み具合などは書く）。"""
         with self.sessions.begin() as s:
             job = s.get(Job, job_id)
-            if job.status == "cancelled":
-                return
+            if job.status in CANCEL_STATUSES:
+                values.pop("status", None)
+                if job.status == "cancelled":
+                    return
             for key, value in values.items():
                 setattr(job, key, value)
 
-    def _check_cancel(self, job_id: int) -> None:
+    def is_cancelled(self, job_id: int) -> bool:
         with self.sessions() as s:
-            if s.get(Job, job_id).status == "cancelled":
-                raise Cancelled
+            job = s.get(Job, job_id)
+            return job is None or job.status in CANCEL_STATUSES
+
+    def _check_cancel(self, job_id: int) -> None:
+        if self.is_cancelled(job_id):
+            raise Cancelled
+
+    @staticmethod
+    def _discard_drafts(s: Session, job_id: int) -> int:
+        """検証が終わっていない下書きを捨てる（取り消したとき）。"""
+        drafts = list(s.execute(select(Problem).where(Problem.job_id == job_id, Problem.status == "draft")).scalars())
+        for p in drafts:
+            s.delete(p)
+        return len(drafts)
+
+    def finish_cancel(self, job_id: int) -> None:
+        """取り消しを終える。検証に合格した問題はストックに残し、検証待ちの下書きは捨てる。"""
+        with self.sessions.begin() as s:
+            self._discard_drafts(s, job_id)
+            job = s.get(Job, job_id)
+            made = s.execute(select(func.count()).select_from(Problem).where(
+                Problem.job_id == job_id, Problem.status == "ready")).scalar_one()
+            job.made = made
+            job.status, job.progress, job.finished_at = "cancelled", "", utcnow()
+            job.error = f"取り消しました（それまでに検証に合格した {made} 問はストックに残しました）" if made else "取り消しました"
 
     def _count(self, job_id: int, statuses: tuple[str, ...]) -> int:
         with self.sessions() as s:
@@ -223,8 +268,13 @@ class Worker:
             return
         with self.sessions() as s:
             plan = model_plan(self.settings, s)
+            choices = think_settings(s)
+        if hasattr(self.llm, "think_for"):
+            env_think = self.settings.think
+            self.llm.think_for = lambda m: resolve_think(m, choices, env_think)
         budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
+        self._check_cancel(job_id)
         self._update_job(job_id, status="running", error="")
         label = f"依頼 #{job_id} {subject.scope_label(job.scope)}"
 
@@ -236,6 +286,7 @@ class Worker:
             if need > 0 and job.gen_attempts < budget:
                 self._generate_phase(job, subject, templates, min(need, budget - job.gen_attempts), plan, label)
                 drafts = self._drafts(job_id)
+            self._check_cancel(job_id)  # 作成と検証の間でも確かめる
             if drafts:
                 self._verify_phase(job, subject, drafts, plan, label)
             made = self._count(job_id, done_statuses)
@@ -298,46 +349,63 @@ class Worker:
                 self.save_rejected(job, subject, template, exc, plan)
                 continue
             except LLMError as exc:
-                self.save_rejected(job, subject, template, Rejected("llm_output", str(exc)), plan)
+                entry = {"step": "文章", "ok": False, "summary": f"作成役の出力を読めません（{exc}）",
+                         "model": plan.gen_model, "raw": getattr(exc, "raw", "")[:4000]}
+                self.save_rejected(job, subject, template, Rejected("llm_output", str(exc), [entry]), plan)
                 continue
             except LLMUnavailable:
                 with self.sessions.begin() as s:  # 作れなかった分は数えない
                     s.get(Job, job.id).gen_attempts -= 1
                 raise
             finally:
-                self._save_llm_calls()
+                self._save_llm_calls(job.id)
             drafts = made if isinstance(made, list) else [made]
             self.save_drafts(job, drafts, plan)
             produced += len(drafts)
 
     def _verify_phase(self, job: Job, subject: Subject, drafts: list[Problem], plan: ModelPlan,
                       label: str) -> None:
+        """下書きをまとめて検証する。取り消し・Ollama の停止で途中で抜けても、
+        それまでに全回合格した下書きはストックに入れ、不合格が決まったものは不合格にする。"""
         logs = {d.id: [e for e in d.verification if e.get("step") != VERIFY_STEP] for d in drafts}
         alive = {d.id: d for d in drafts}
         failed: dict[int, tuple[str, str]] = {}
         runs = plan.verify_runs
-        for r, model in enumerate(runs, 1):
-            for k, (pid, problem) in enumerate(list(alive.items()), 1):
-                self._check_cancel(job.id)
-                text = f"検証中 {r}/{len(runs)} 回目 {k}/{len(alive)}（{model}）"
-                self._update_job(job.id, progress=text)
-                self.set_status(f"{label} — {text}", job.id)
-                self._label("検証")
-                try:
-                    res = subject.verify(self.llm, self.sandbox, model, problem)
-                    ok, summary, detail, code = res.ok, res.summary, res.detail, res.code
-                except LLMError as exc:
-                    ok, summary, detail, code = False, f"{model}: 出力を読めません（{exc}）", "", "llm_output"
-                finally:
-                    self._save_llm_calls()
-                logs[pid].append({"step": VERIFY_STEP, "ok": ok, "summary": summary, "detail": detail,
-                                  "model": model, "run": r})
-                if not ok:
-                    failed[pid] = (code, summary)
-                    del alive[pid]
+        done = {d.id: 0 for d in drafts}  # 終わった検証の回数
+        try:
+            for r, model in enumerate(runs, 1):
+                for k, (pid, problem) in enumerate(list(alive.items()), 1):
+                    self._check_cancel(job.id)
+                    text = f"検証中 {r}/{len(runs)} 回目 {k}/{len(alive)}（{model}）"
+                    self._update_job(job.id, progress=text)
+                    self.set_status(f"{label} — {text}", job.id)
+                    self._label("検証")
+                    try:
+                        res = subject.verify(self.llm, self.sandbox, model, problem)
+                        ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
+                    except LLMError as exc:
+                        ok, summary, detail, code = False, f"{model}: 出力を読めません（{exc}）", "", "llm_output"
+                        raw = getattr(exc, "raw", "")
+                    finally:
+                        self._save_llm_calls(job.id)
+                    logs[pid].append({"step": VERIFY_STEP, "ok": ok, "summary": summary, "detail": detail,
+                                      "model": model, "run": r, "code": "" if ok else code, "raw": raw[:4000]})
+                    done[pid] += 1
+                    if not ok:
+                        failed[pid] = (code, summary)
+                        del alive[pid]
+        finally:
+            self._finalize_verified(job, drafts, logs, failed, done, len(runs), plan)
+
+    def _finalize_verified(self, job: Job, drafts: list[Problem], logs: dict[int, list[dict[str, Any]]],
+                           failed: dict[int, tuple[str, str]], done: dict[int, int], n_runs: int,
+                           plan: ModelPlan) -> None:
         final = "test" if job.is_test else "ready"
         with self.sessions.begin() as s:
             for d in drafts:
+                passed = d.id not in failed and done[d.id] >= n_runs
+                if d.id not in failed and not passed:
+                    continue  # 検証の途中（取り消し・Ollama の停止）。下書きのまま残す
                 row = s.get(Problem, d.id)
                 row.verification_json = dumps(logs[d.id])
                 row.verify_models = plan.verify_label
@@ -345,8 +413,15 @@ class Worker:
                 if d.id in failed:
                     row.status = "rejected"
                     row.reject_code, row.reject_reason = failed[d.id]
+                elif final == "ready" and row.params_key and s.execute(select(func.count()).select_from(Problem).where(
+                        Problem.params_key == row.params_key, Problem.status == "ready",
+                        Problem.id != row.id)).scalar_one():
+                    # テンプレートと数値が同じ問題がすでにストックにある
+                    row.status, row.reject_code = "rejected", "duplicate"
+                    row.reject_reason = "テンプレートと数値が同じ問題がすでにストックにあります"
                 else:
                     row.status = final
+            s.get(Job, job.id).verified += sum(1 for d in drafts if d.id in failed or done[d.id] >= n_runs)
 
     def run_once(self) -> bool:
         """1 件の依頼を処理する。仕事がなければ False。"""
@@ -356,10 +431,15 @@ class Worker:
         job_id = self.next_job_id()
         if job_id is None:
             return False
+        if hasattr(self.llm, "should_abort"):
+            # 呼び出し中でも取り消しを確かめる（1 秒に 1 回まで。接続を切ると Ollama も生成をやめる）
+            self.llm.should_abort = self._throttled_cancel_check(job_id)
         try:
             self.process(job_id)
-        except Cancelled:
+        except (Cancelled, LLMCancelled):
             log.info("job %s cancelled", job_id)
+            self.finish_cancel(job_id)
+            self.set_status(f"依頼 #{job_id} を取り消しました", job_id)
         except (LLMUnavailable, SandboxUnavailable) as exc:
             log.warning("job %s waiting: %s", job_id, exc)
             self.unavailable_until = time.monotonic() + self.settings.retry_seconds
@@ -370,7 +450,21 @@ class Worker:
         except Exception as exc:  # 想定外の失敗でもワーカーは止めない
             log.exception("job %s failed", job_id)
             self._finish(job_id, "failed", f"内部エラー: {exc}")
+        finally:
+            if hasattr(self.llm, "should_abort"):
+                self.llm.should_abort = None
         return True
+
+    def _throttled_cancel_check(self, job_id: int):  # noqa: ANN202
+        last = {"at": 0.0, "value": False}
+
+        def check() -> bool:
+            now = time.monotonic()
+            if now - last["at"] >= 1.0:
+                last["at"], last["value"] = now, self.is_cancelled(job_id)
+            return last["value"]
+
+        return check
 
     def run_forever(self) -> None:
         self.recover()
