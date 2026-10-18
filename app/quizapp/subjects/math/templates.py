@@ -131,8 +131,10 @@ def triangle_givens(b: int, c: int, A: int) -> list[Any]:
     return [
         [f"b = {b}", f"CA = {b}", f"AC = {b}"],
         [f"c = {c}", f"AB = {c}", f"BA = {c}"],
-        [f"A = {A}^\\circ", f"\\angle A = {A}^\\circ", f"\\angle BAC = {A}^\\circ", f"\\angle CAB = {A}^\\circ",
-         f"{A}^\\circ"],
+        [f"A = {A}^\\circ", f"{A}^\\circ",
+         # 度の記号を書かない・弧度法で書く場合も、値が変わっていなければ認める
+         *(f"{name} = {v}" for name in ("A", "\\angle A", "\\angle BAC", "\\angle CAB")
+           for v in (str(A), L(sp.pi * A / 180)))],
     ]
 
 

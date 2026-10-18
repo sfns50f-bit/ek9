@@ -44,6 +44,10 @@ def test_triangle_givens_accept_common_ways_to_write_the_angle():
               "CA = 6、AB = 2、∠A = 30°", "辺 b=6、c=2、角Aは30度"):
         assert textcheck.missing(q, g) == [], q
     assert textcheck.missing("b=6, c=2, A=35°", g) == ["A = 30^\\circ"]
+    # 度の記号の書き方の揺れ、度の記号なし、弧度法も、値が同じなら認める
+    for angle in ("$A=30\\circ$", "$A=30^o$", "A=30º", "A=30˚", "$A=30∘$", "$\\angle A=30$",
+                  "$A=\\frac{\\pi}{6}$"):
+        assert textcheck.missing(f"$b=6$, $c=2$, {angle}", g) == [], angle
 
 
 def test_vector_angles_cover_all_standard_angles():
