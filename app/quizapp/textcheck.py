@@ -22,10 +22,15 @@ _REPLACE = [
 _REPLACE.sort(key=lambda kv: -len(kv[0]))
 
 
+# 数字のあとの度の記号の書き方の揺れ（30^\circ, 30\circ, 30^o, 30º, 30˚, 30∘, 30度 など）
+_DEGREE_RE = re.compile(r"(\d)\s*(?:\^\s*\{?\s*(?:\\circ|o|∘)\s*\}?|\\circ|\\degree|[°º˚∘]|度)")
+
+
 def normalize(text: str) -> str:
-    s = unicodedata.normalize("NFKC", str(text))
-    s = re.sub(r"(\d)\s*度", r"\1°", s)  # 「30度」も 30° と同じに扱う
-    s = s.replace("∠", r"\angle ").replace(r"\degree", "°")
+    s = _DEGREE_RE.sub(r"\1°", str(text))  # NFKC で º が o に変わる前に揃える
+    s = unicodedata.normalize("NFKC", s)
+    s = _DEGREE_RE.sub(r"\1°", s)
+    s = s.replace("∠", r"\angle ")
     for src, dst in _REPLACE:
         s = s.replace(src, dst)
     for token in _REMOVE:
