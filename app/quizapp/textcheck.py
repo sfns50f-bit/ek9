@@ -24,6 +24,8 @@ _REPLACE.sort(key=lambda kv: -len(kv[0]))
 
 def normalize(text: str) -> str:
     s = unicodedata.normalize("NFKC", str(text))
+    s = re.sub(r"(\d)\s*度", r"\1°", s)  # 「30度」も 30° と同じに扱う
+    s = s.replace("∠", r"\angle ").replace(r"\degree", "°")
     for src, dst in _REPLACE:
         s = s.replace(src, dst)
     for token in _REMOVE:

@@ -22,6 +22,7 @@ from .catalog import MISTAKES, UNITS
 
 N_DISTRACTORS = 3
 MAX_ROLLS = 30
+FIX_ROUNDS = 1  # 文章の確認で落ちたとき、直しを頼む回数
 
 
 def _params_key(template: str, params: dict[str, Any]) -> str:
@@ -110,40 +111,25 @@ class MathSubject(Subject):
         # 検証のテストでは、解き方の要点（本当の正解が入っている）を渡さない。
         # 渡すと解説が本当の正解で書かれ、検証より前の「解説の確認」で落ちてしまい、テストにならない
         steps = [] if ctx.is_test else inst.steps
-        out = ctx.llm.chat_json(
-            ctx.gen_model, prompts.GEN_SYSTEM,
-            prompts.gen_user(inst.task, [textcheck.first(g) for g in inst.givens], answer_latex, steps, fmt),
-            prompts.GEN_SCHEMA, temperature=0.7,
-        )
-        question = textcheck.repair_latex(str(out.get("question") or "").strip())
-        explanation = textcheck.repair_latex(str(out.get("explanation") or "").strip())
-        hint = textcheck.repair_latex(str(out.get("hint") or "").strip())
-        partial.update(question=question, explanation=explanation, hint=hint)
-        if not (question and explanation and hint):
-            log.append({"step": "文章", "ok": False, "summary": "問題文・解説・ヒントのどれかが空です"})
-            raise Rejected("llm_output", "問題文・解説・ヒントのどれかが空です", log, partial)
-        lost = textcheck.missing(question, inst.givens)
-        if lost:
-            summary = "問題文にテンプレートの式・値がそのまま入っていません: " + "、".join(f"${g}$" for g in lost)
-            log.append({"step": "問題文の確認", "ok": False, "summary": summary})
-            raise Rejected("text_givens", summary, log, partial)
+        user = prompts.gen_user(inst.task, [textcheck.first(g) for g in inst.givens], answer_latex, steps, fmt)
+        out = self._chat(ctx, prompts.GEN_SYSTEM, user)
+        # 文章の確認で落ちたら、同じ数値のまま、指摘した点だけを直させる（作り直しより速く、成功しやすい）
+        for round_no in range(FIX_ROUNDS + 1):
+            question = textcheck.repair_latex(str(out.get("question") or "").strip())
+            explanation = textcheck.repair_latex(str(out.get("explanation") or "").strip())
+            hint = textcheck.repair_latex(str(out.get("hint") or "").strip())
+            partial.update(question=question, explanation=explanation, hint=hint)
+            problem = _check_text(inst, answer_latex, question, explanation, hint)
+            if problem is None:
+                break
+            code, step, summary = problem
+            log.append({"step": step, "ok": False, "summary": summary + ("（直しを依頼します）" if round_no < FIX_ROUNDS else "")})
+            if round_no == FIX_ROUNDS:
+                raise Rejected(code, summary, log, partial)
+            out = self._chat(ctx, prompts.GEN_SYSTEM, prompts.fix_user(user, out, summary))
         log.append({"step": "問題文の確認", "ok": True,
                     "summary": f"テンプレートの式・値 {len(inst.givens)} 個がそのまま入っている"})
-        # 問題文やヒントに正解が書かれていたら、検証役にも子供にも答えが見えてしまう
-        # （短い答え（"5" など）は問題文の数値と偶然重なるので、ある程度長いものだけ確かめる）
-        leaks = [c for c in inst.answer_checks() if len(textcheck.normalize(c)) >= 4
-                 and not any(textcheck.contains(textcheck.first(g), c) for g in inst.givens)]
-        for where, text in (("問題文", question), ("ヒント", hint)):
-            if leaks and len(textcheck.missing(text, leaks)) < len(leaks):
-                summary = f"{where}に正解 ${answer_latex}$ が書かれています"
-                log.append({"step": f"{where}の確認", "ok": False, "summary": summary})
-                raise Rejected("answer_leak", summary, log, partial)
-        lost = textcheck.missing(explanation, inst.answer_checks())
-        if lost:
-            summary = f"解説に正解 ${answer_latex}$ が入っていません"
-            log.append({"step": "解説の確認", "ok": False, "summary": summary})
-            raise Rejected("text_answer", summary, log, partial)
-        log.append({"step": "解説の確認", "ok": True, "summary": "解説に正解が入っている"})
+        log.append({"step": "解説の確認", "ok": True, "summary": "解説に正解が入っている（問題文・ヒントには書かれていない）"})
 
         return Draft(
             unit=unit, template=template, format=fmt, question=question,
@@ -153,6 +139,15 @@ class MathSubject(Subject):
             source=f"テンプレート {template}（数値と正解は Python で計算）",
             params=inst.params, params_key=key, log=log,
         )
+
+    def _chat(self, ctx: GenContext, system: str, user: str) -> dict[str, Any]:
+        """作成役を呼ぶ。出力の JSON が壊れていたときは、作り直しの回数を使わずに 1 回だけ呼び直す。"""
+        from ...llm import LLMError
+
+        try:
+            return ctx.llm.chat_json(ctx.gen_model, system, user, prompts.GEN_SCHEMA, temperature=0.7)
+        except LLMError:
+            return ctx.llm.chat_json(ctx.gen_model, system, user, prompts.GEN_SCHEMA, temperature=0.7)
 
     # --- 検証 ---------------------------------------------------------------
 
@@ -198,6 +193,27 @@ class MathSubject(Subject):
             return Grade(False, retry_message="小数の近似値ではなく、分数や √ を使った正確な値で答えてください")
         shown = res.get("given", {}).get("latex", "")
         return Grade(bool(res.get("equal")), response_display=f"${shown}$" if shown else text)
+
+
+def _check_text(inst: Any, answer_latex: str, question: str, explanation: str,
+                hint: str) -> tuple[str, str, str] | None:
+    """LLM が書いた文章の確認。問題があれば (理由の種類, 段階, 説明)、なければ None。"""
+    if not (question and explanation and hint):
+        return "llm_output", "文章", "問題文・解説・ヒントのどれかが空です"
+    lost = textcheck.missing(question, inst.givens)
+    if lost:
+        return ("text_givens", "問題文の確認",
+                "問題文にテンプレートの式・値がそのまま入っていません: " + "、".join(f"${g}$" for g in lost))
+    # 問題文やヒントに正解が書かれていたら、検証役にも子供にも答えが見えてしまう
+    # （短い答え（"5" など）は問題文の数値と偶然重なるので、ある程度長いものだけ確かめる）
+    leaks = [c for c in inst.answer_checks() if len(textcheck.normalize(c)) >= 4
+             and not any(textcheck.contains(textcheck.first(g), c) for g in inst.givens)]
+    for where, text in (("問題文", question), ("ヒント", hint)):
+        if leaks and len(textcheck.missing(text, leaks)) < len(leaks):
+            return "answer_leak", f"{where}の確認", f"{where}に正解 ${answer_latex}$ が書かれています"
+    if textcheck.missing(explanation, inst.answer_checks()):
+        return "text_answer", "解説の確認", f"解説に正解 ${answer_latex}$ が入っていません"
+    return None
 
 
 def _default_hint(kind: str) -> str:

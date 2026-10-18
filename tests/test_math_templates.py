@@ -36,6 +36,16 @@ def test_givens_check_ignores_digits_inside_numbers():
                                                                       "\\sin\\left(\\frac{5\\pi}{6}\\right)"]]) == []
 
 
+def test_triangle_givens_accept_common_ways_to_write_the_angle():
+    from quizapp.subjects.math.templates import triangle_givens
+
+    g = triangle_givens(6, 2, 30)
+    for q in ("$b=6$, $c=2$, $A=30^\\circ$", "$AC=6$, $AB=2$, $\\angle BAC = 30^{\\circ}$",
+              "CA = 6、AB = 2、∠A = 30°", "辺 b=6、c=2、角Aは30度"):
+        assert textcheck.missing(q, g) == [], q
+    assert textcheck.missing("b=6, c=2, A=35°", g) == ["A = 30^\\circ"]
+
+
 def test_vector_angles_cover_all_standard_angles():
     seen = {int(TEMPLATES["mc-vec-angle"](random.Random(seed)).answer) for seed in range(300)}
     assert seen == {30, 45, 60, 120, 135, 150}

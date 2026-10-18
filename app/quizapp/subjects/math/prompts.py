@@ -50,6 +50,22 @@ def gen_user(task: str, givens: list[str], answer_latex: str, steps: list[str], 
     ])
 
 
+def fix_user(original: str, previous: dict[str, Any], problem: str) -> str:
+    """文章の確認で落ちたときに、指摘した点だけを直させる。"""
+    import json
+
+    return "\n".join([
+        original,
+        "",
+        "あなたの前回の出力:",
+        json.dumps(previous, ensure_ascii=False),
+        "",
+        f"直してほしい点: {problem}",
+        "上の指示をもう一度守り、この点を直した問題文（question）、ヒント（hint）、解説（explanation）を JSON で出力し直してください。"
+        "式・値は $…$ の中に一字一句そのまま書き写し、数値は変えないでください。",
+    ])
+
+
 SOLVE_SYSTEM = """あなたは数学が得意な高校生です。与えられた問題を解いてください。
 途中の考え方を work に短く書き、最終的な答えだけを answer に書きます。
 answer は指定された答え方に従い、数式は Python / SymPy で読める形で書きます（分数は a/b、平方根は sqrt(n)、円周率は pi）。
