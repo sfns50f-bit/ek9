@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 from . import backup
 from .config import Settings
 from .datadir import ensure_or_exit
-from .db import Job, Passage, Problem, dumps, init_db, kv_set, utcnow
+from .db import Job, Passage, Problem, dumps, init_db, kv_json, kv_set, utcnow
 from .llm import LLMError, LLMUnavailable, OllamaClient
 from .runtime import ModelPlan, model_plan
 from .sandbox_client import SandboxClient, SandboxUnavailable
@@ -34,6 +34,7 @@ log = logging.getLogger("worker")
 OPEN_STATUSES = ("pending", "running", "waiting")
 OLLAMA_CHECK_SECONDS = 60
 HEARTBEAT_SECONDS = 60
+LLM_CALLS_KEEP = 40
 VERIFY_STEP = "検証"
 TEST_ATTEMPTS = 3  # 検証のテストで、検証の段階まで届く下書きを作るまでに試す回数
 
@@ -106,6 +107,19 @@ class Worker:
         info["at"] = utcnow().isoformat()
         with self.sessions.begin() as s:
             kv_set(s, "backup", dumps(info))
+
+    def _label(self, text: str) -> None:
+        if hasattr(self.llm, "label"):
+            self.llm.label = text
+
+    def _save_llm_calls(self) -> None:
+        """LLM の呼び出しの時間の内訳を、新しいものから LLM_CALLS_KEEP 件まで kv に残す。"""
+        calls = self.llm.pop_calls() if hasattr(self.llm, "pop_calls") else []
+        if not calls:
+            return
+        with self.sessions.begin() as s:
+            kept = (kv_json(s, "llm_calls", []) or []) + calls
+            kv_set(s, "llm_calls", dumps(kept[-LLM_CALLS_KEEP:]))
 
     # --- 依頼の読み書き ------------------------------------------------------
 
@@ -277,6 +291,7 @@ class Worker:
             # 先に回数を数える（Ollama が落ちて再開しても、上限を超えて作り続けない）
             with self.sessions.begin() as s:
                 s.get(Job, job.id).gen_attempts += 1
+            self._label("作成")
             try:
                 made = subject.generate(ctx, template, job.format)
             except Rejected as exc:
@@ -289,6 +304,8 @@ class Worker:
                 with self.sessions.begin() as s:  # 作れなかった分は数えない
                     s.get(Job, job.id).gen_attempts -= 1
                 raise
+            finally:
+                self._save_llm_calls()
             drafts = made if isinstance(made, list) else [made]
             self.save_drafts(job, drafts, plan)
             produced += len(drafts)
@@ -305,11 +322,14 @@ class Worker:
                 text = f"検証中 {r}/{len(runs)} 回目 {k}/{len(alive)}（{model}）"
                 self._update_job(job.id, progress=text)
                 self.set_status(f"{label} — {text}", job.id)
+                self._label("検証")
                 try:
                     res = subject.verify(self.llm, self.sandbox, model, problem)
                     ok, summary, detail, code = res.ok, res.summary, res.detail, res.code
                 except LLMError as exc:
                     ok, summary, detail, code = False, f"{model}: 出力を読めません（{exc}）", "", "llm_output"
+                finally:
+                    self._save_llm_calls()
                 logs[pid].append({"step": VERIFY_STEP, "ok": ok, "summary": summary, "detail": detail,
                                   "model": model, "run": r})
                 if not ok:
