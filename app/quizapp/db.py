@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -78,8 +79,12 @@ class Job(Base):
     """作成依頼。
 
     status: pending（順番待ち）/ running（処理中）/ waiting（Ollama を待っている）/
-            done（全問できた）/ partial（一部だけできた）/ failed / cancelled
-    scope: "" は科目全体、"unit:<単元ID>" は単元、"tmpl:<小単元ID>" は小単元。
+            done（全問できた）/ partial（一部だけできた）/ failed /
+            cancelling（取り消し中：worker が止まるのを待っている）/ cancelled（取り消し済み）
+    scope: "" は科目全体。"unit:<単元ID>" と "tmpl:<小単元ID>" をカンマでつないだものは、その和集合。
+    gen_model / verify_*：依頼したときに選んだモデル。後で /status の設定を変えても、この依頼はこのモデルで処理する
+    *_eval_s / *_load_s：Ollama の応答の eval_duration（出力にかかった時間）と load_duration（モデルの読み込み）の合計。
+                        モデルを比べるときに読み込みが混ざらないよう分けて持つ
     """
 
     __tablename__ = "jobs"
@@ -96,6 +101,17 @@ class Job(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     # 検証のテスト：わざと正解をずらした問題を流す。合格してもストックには入れない
     is_test: Mapped[bool] = mapped_column(Boolean, default=False)
+    gen_model: Mapped[str] = mapped_column(String(128), default="")
+    verify_model: Mapped[str] = mapped_column(String(128), default="")
+    verify_count: Mapped[int] = mapped_column(Integer, default=0)
+    verify_model_2: Mapped[str] = mapped_column(String(128), default="")
+    gen_calls: Mapped[int] = mapped_column(Integer, default=0)
+    gen_eval_s: Mapped[float] = mapped_column(Float, default=0.0)
+    gen_load_s: Mapped[float] = mapped_column(Float, default=0.0)
+    verify_calls: Mapped[int] = mapped_column(Integer, default=0)
+    verify_eval_s: Mapped[float] = mapped_column(Float, default=0.0)
+    verify_load_s: Mapped[float] = mapped_column(Float, default=0.0)
+    verified: Mapped[int] = mapped_column(Integer, default=0)  # 検証にかけた下書きの数
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -105,6 +121,7 @@ class Problem(Base):
     """問題。
 
     status: draft（文章ができ、検証待ち）/ ready（検証に合格。ストック）/ rejected（不合格）/
+            deleted（問題検証モードで削除。出題しない。回答の記録は残す）/
             test（検証のテスト用。出題しない）
     format: choice（スマホ向け選択式）/ input（キーボード入力）
     unit: 単元ID、template: 小単元ID（数学ではテンプレートの ID）
@@ -259,9 +276,33 @@ def make_engine(path: str) -> Engine:
     return engine
 
 
+def _add_missing_columns(engine: Engine) -> None:
+    """あとから足した列を、既存のデータベースに足す（SQLite の ALTER TABLE ADD COLUMN）。
+
+    列を足すだけの変更はこれで済む。列の削除・型の変更は行わない。
+    """
+    from sqlalchemy import inspect
+
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                default = col.default.arg if col.default is not None and not callable(col.default.arg) else None
+                ddl = f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {col.type.compile(engine.dialect)}'
+                if default is not None:
+                    ddl += f" DEFAULT {default!r}" if not isinstance(default, bool) else f" DEFAULT {int(default)}"
+                conn.exec_driver_sql(ddl)
+
+
 def init_db(path: str) -> sessionmaker[Session]:
     engine = make_engine(path)
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     sessions = sessionmaker(engine, expire_on_commit=False)
     with sessions.begin() as s:
         if s.get(User, DEFAULT_USER_ID) is None:
