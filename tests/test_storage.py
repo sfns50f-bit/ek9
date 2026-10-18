@@ -85,3 +85,23 @@ def test_worker_takes_daily_backup(settings, sessions, sandbox):
     w = Worker(settings, sessions, OracleLLM(sessions), sandbox)
     w.maybe_backup()
     assert len(backup.list_backups(settings.backup_dir)) == 1
+
+
+def test_existing_database_gets_new_columns(tmp_path):
+    """前の版で作ったデータベース（列が足りない）でも、起動時に列を足して使える。"""
+    import sqlite3
+
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, subject VARCHAR(32), scope VARCHAR(96), "
+                "format VARCHAR(16), count INTEGER, status VARCHAR(16), progress TEXT, gen_attempts INTEGER, "
+                "made INTEGER, error TEXT, is_test BOOLEAN, created_at DATETIME, updated_at DATETIME, "
+                "finished_at DATETIME)")
+    con.execute("INSERT INTO jobs (id, subject, scope, format, count, status, progress, gen_attempts, made, error, "
+                "is_test) VALUES (1, 'math', '', 'choice', 3, 'done', '', 3, 3, '', 0)")
+    con.commit()
+    con.close()
+    sessions = init_db(path)
+    with sessions() as s:
+        job = s.get(Job, 1)
+        assert job.count == 3 and job.gen_model == "" and job.verify_count == 0 and job.gen_eval_s == 0.0

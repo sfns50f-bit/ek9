@@ -1,8 +1,11 @@
 import random
+import threading
+import time
 
 from quizapp.db import Job, Problem, kv_json
 from quizapp.runtime import save_overrides
 from quizapp.worker import Worker
+import pytest
 from sqlalchemy import select
 
 from .conftest import OracleLLM
@@ -353,3 +356,170 @@ def test_no_duplicate_numbers(settings, sessions, sandbox):
     make_worker(settings, sessions, sandbox, llm).run_once()
     keys = [p.params_key for p in problems(sessions, status="ready")]
     assert len(keys) == len(set(keys)) == 6
+
+
+class SlowLLM(OracleLLM):
+    """生成に時間がかかる LLM。should_abort（worker が設定する）が真になったら LLMCancelled を投げる。"""
+
+    should_abort = None
+    slow_from = 0  # この回数目の呼び出しから遅くする（0 なら最初から）
+
+    def chat_json(self, model, system, user, schema, **kw):
+        from quizapp.llm import LLMCancelled
+
+        if len(self.calls) >= self.slow_from:
+            end = time.monotonic() + 30
+            while time.monotonic() < end:
+                if self.should_abort is not None and self.should_abort():
+                    raise LLMCancelled("取り消されました")
+                time.sleep(0.05)
+        return super().chat_json(model, system, user, schema, **kw)
+
+
+def _cancel_later(sessions, jid, after):
+    def run():
+        time.sleep(after)
+        with sessions.begin() as s:
+            s.get(Job, jid).status = "cancelling"  # 画面の「取り消す」と同じ（処理中の依頼）
+    t = threading.Thread(target=run)
+    t.start()
+    return t
+
+
+def test_cancel_during_generation_stops_within_seconds(settings, sessions, sandbox):
+    llm = SlowLLM(sessions)
+    jid = add_job(sessions, count=3)
+    w = make_worker(settings, sessions, sandbox, llm)
+    t = _cancel_later(sessions, jid, 0.5)
+    started = time.monotonic()
+    assert w.run_once()
+    t.join()
+    assert time.monotonic() - started < 4
+    j = job(sessions, jid)
+    assert j.status == "cancelled" and "取り消しました" in j.error
+    assert problems(sessions, status="draft") == []
+
+
+def test_cancel_keeps_problems_that_already_passed(settings, sessions, sandbox):
+    with sessions.begin() as s:
+        save_overrides(s, {"verify_count": "1"})
+    llm = SlowLLM(sessions)
+    llm.slow_from = 4  # 作成 3 回と 1 問目の検証は速く、2 問目の検証で止まる
+    jid = add_job(sessions, count=3)
+    w = make_worker(settings, sessions, sandbox, llm)
+    t = _cancel_later(sessions, jid, 1.0)
+    w.run_once()
+    t.join()
+    j = job(sessions, jid)
+    assert j.status == "cancelled" and j.made == 1 and "1 問はストックに残しました" in j.error
+    assert len(problems(sessions, status="ready")) == 1
+    assert problems(sessions, status="draft") == []
+
+
+def test_cancelled_pending_job_is_never_processed(settings, sessions, sandbox):
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, count=1)
+    with sessions.begin() as s:
+        s.get(Job, jid).status = "cancelled"
+    assert not make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.calls == []
+
+
+class AnswerStyleLLM(OracleLLM):
+    """検証役が、モデルごとの癖のある書き方で答える。"""
+
+    def __init__(self, sessions, style):
+        super().__init__(sessions)
+        self.style = style
+
+    def chat_json(self, model, system, user, schema, **kw):
+        out = super().chat_json(model, system, user, schema, **kw)
+        if "work" in schema["properties"]:
+            ans = out["answer"]
+            out = {"答えは": {"work": "...", "answer": f"答えは {ans} です"},
+                   "boxed": {"work": f"計算すると \\boxed{{{ans}}}", "answer": ","},
+                   "unreadable": {"work": "わからない", "answer": "わかりません"}}[self.style]
+        return out
+
+
+@pytest.mark.parametrize("style", ["答えは", "boxed"])
+def test_verifier_answer_styles_are_read(settings, sessions, sandbox, style):
+    add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=1)
+    make_worker(settings, sessions, sandbox, AnswerStyleLLM(sessions, style)).run_once()
+    assert len(problems(sessions, status="ready")) == 1
+
+
+def test_unreadable_answer_is_classified_and_raw_output_kept(settings, sessions, sandbox):
+    add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=1)
+    make_worker(settings, sessions, sandbox, AnswerStyleLLM(sessions, "unreadable")).run_once()
+    p = problems(sessions, status="rejected")[0]
+    assert p.reject_code == "solver_unreadable"
+    fail = [e for e in p.verification if e["step"] == "検証" and not e["ok"]][0]
+    assert "わかりません" in fail["raw"] and fail["model"] == "gemma4:e4b"
+
+
+def test_broken_verifier_output_is_retried_once(settings, sessions, sandbox):
+    from quizapp.llm import LLMError
+
+    llm = OracleLLM(sessions)
+    real = llm.chat_json
+    state = {"broken": 0}
+
+    def once(model, system, user, schema, **kw):
+        if "work" in schema["properties"] and state["broken"] == 0:
+            state["broken"] += 1
+            raise LLMError("モデルの出力に JSON が見つかりません", raw="{answer: ")
+        return real(model, system, user, schema, **kw)
+
+    llm.chat_json = once
+    add_job(sessions, format="input", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert len(problems(sessions, status="ready")) == 1
+
+
+def test_explanation_with_another_notation_is_accepted(sandbox):
+    """解説の正解の書き方が違っても（√28 と 2√7 など）、sympy で同じ値なら合格にする。"""
+    import random as _r
+
+    import sympy as sp
+    from quizapp import textcheck
+    from quizapp.subjects.math import _explanation_has_value
+    from quizapp.subjects.math.templates import TEMPLATES
+
+    for seed in range(40):
+        inst = TEMPLATES["m1-trig-cosine"](_r.Random(seed))
+        sq = inst.answer ** 2
+        if sq.is_Integer and not sp.sqrt(sq).is_Integer and sp.sqrt(sq) != sp.sqrt(sq, evaluate=False):
+            break
+    other = f"よって $a = \\sqrt{{{sq}}}$ となる。"
+    assert textcheck.missing(other, inst.answer_checks())  # 表記だけでは見つからない
+    assert _explanation_has_value(sandbox, inst, sp.srepr(inst.answer), other)
+    assert not _explanation_has_value(sandbox, inst, sp.srepr(inst.answer), "よって $a = \\sqrt{2}$")
+
+
+def test_think_setting_is_applied_per_model(settings, sessions, sandbox):
+    from quizapp.runtime import resolve_think, save_think_setting, think_settings
+
+    with sessions.begin() as s:
+        save_think_setting(s, "gemma4:e4b", "off")
+    with sessions() as s:
+        choices = think_settings(s)
+    assert resolve_think("qwen3.5:9b-q4_K_M", choices, None) is False   # 自動：qwen3 系は切る
+    assert resolve_think("gemma4:12b-it-qat", choices, None) is None    # 自動：gemma4 は既定のまま
+    assert resolve_think("gemma4:e4b", choices, None) is False          # 画面で選んだ設定
+    with sessions.begin() as s:
+        save_think_setting(s, "qwen3.5:9b-q4_K_M", "on")
+    with sessions() as s:
+        assert resolve_think("qwen3.5:9b-q4_K_M", think_settings(s), None) is True
+
+    class ThinkLLM(OracleLLM):
+        think_for = None
+
+        def chat_json(self, model, *a, **kw):
+            self.seen = getattr(self, "seen", []) + [(model, self.think_for(model))]
+            return super().chat_json(model, *a, **kw)
+
+    llm = ThinkLLM(sessions)
+    add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert ("gemma4:e4b", False) in llm.seen and ("gemma4:12b-it-qat", None) in llm.seen

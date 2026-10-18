@@ -324,3 +324,46 @@ def test_answer_text_helper_round_trip(sandbox):
 
     s = sp.Union(sp.Interval.open(-sp.oo, 1), sp.Interval.open(3, sp.oo))
     assert answer_text(s, "interval") == "x < 1, 3 < x"
+
+
+def test_cancel_states_are_shown(client, sessions):
+    with sessions.begin() as s:
+        s.add(Job(subject="math", scope="", format="choice", count=3))
+        s.add(Job(subject="math", scope="", format="choice", count=3, status="running"))
+    pending, running = [j.id for j in all_rows(sessions, Job)]
+    client.post(f"/jobs/{pending}/cancel", data={"back": "/generate"})
+    client.post(f"/jobs/{running}/cancel", data={"back": "/status"})
+    with sessions() as s:
+        assert s.get(Job, pending).status == "cancelled"   # まだ始まっていない依頼はすぐ取り消し済み
+        assert s.get(Job, running).status == "cancelling"  # 処理中の依頼は worker が止めるまで取り消し中
+    for page in ("/generate", "/status"):
+        text = client.get(page).text
+        assert "取り消し中" in text and "取り消し済み" in text
+
+
+def test_rejection_list_shows_models_question_and_raw_output(client, settings, sessions, sandbox):
+    from .test_worker import AnswerStyleLLM
+
+    w = Worker(settings, sessions, AnswerStyleLLM(sessions, "unreadable"), sandbox, rng=random.Random(1))
+    w.last_backup_check = 1e18
+    with sessions.begin() as s:
+        s.add(Job(subject="math", scope="tmpl:m2-explog-base", format="input", count=1))
+    w.run_once()
+    text = client.get("/status").text
+    assert "検証役の答えが読み取れなかった" in text
+    assert "作成: gemma4:12b-it-qat" in text and "検証: gemma4:e4b" in text
+    assert "検証役の生の出力" in text and "わかりません" in text and "問題文" in text
+
+
+def test_think_setting_on_status(client, sessions):
+    from quizapp.db import dumps, kv_set
+
+    with sessions.begin() as s:
+        kv_set(s, "ollama", dumps({"ok": True, "models": [{"name": "qwen3.5:9b-q4_K_M"}, {"name": "gemma4:e4b"}]}))
+    text = client.get("/status").text
+    assert "思考モード" in text and "qwen3.5:9b-q4_K_M" in text
+    r = client.post("/status/think", data={"model": "qwen3.5:9b-q4_K_M", "choice": "on"}, follow_redirects=True)
+    assert "思考モードの設定を保存しました" in r.text
+    from quizapp.runtime import think_settings
+    with sessions() as s:
+        assert think_settings(s) == {"qwen3.5:9b-q4_K_M": "on"}

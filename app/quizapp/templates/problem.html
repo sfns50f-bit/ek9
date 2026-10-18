@@ -48,7 +48,9 @@
   <ol class="steps">
     {% for e in problem.verification %}
     <li class="{{ 'ok' if e.ok else 'ng' }}">{{ mark(e.ok) }} <strong>{{ e.step }}</strong> <span class="mathtext">{{ e.summary }}</span>
-      {% if e.detail %}<details><summary>詳しく</summary><pre>{{ e.detail }}</pre></details>{% endif %}</li>
+      {% if e.model %}<span class="muted small">（{{ e.model }}）</span>{% endif %}
+      {% if e.detail %}<details><summary>詳しく</summary><pre>{{ e.detail }}</pre></details>{% endif %}
+      {% if e.raw %}<details><summary>生の出力</summary><pre>{{ e.raw }}</pre></details>{% endif %}</li>
     {% endfor %}
   </ol>
   <pre class="small">{{ problem.params | tojson }}</pre>

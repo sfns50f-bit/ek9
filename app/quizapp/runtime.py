@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .db import kv_get, kv_set
+from .db import dumps, kv_get, kv_json, kv_set
 
 KEYS = ("gen_model", "verify_model", "verify_count", "verify_model_2")
 MAX_VERIFY_COUNT = 5
@@ -66,3 +66,41 @@ def model_plan(settings: Settings, session: Session) -> ModelPlan:
         # 画面で「使わない」を選んだときは "-" を保存する
         verify_model_2="" if v2 == "-" else (v2 or settings.verify_model_2),
     )
+
+
+# --- 思考モード（モデルごと） ----------------------------------------------------
+# 画面で一度選ぶとモデルごとに保存され、そのモデルを使うたびに同じ設定になる。
+# 選んでいないモデルは「自動」：qwen3 系（qwen3.5 も含む）は切る。gemma4 などはモデルの既定のまま
+# （gemma4 は think=false を送ると JSON スキーマの指定が効かなくなる不具合があったため）。
+THINK_CHOICES = {"auto": "自動", "off": "切る", "on": "切らない（考えさせる）"}
+THINK_OFF_PREFIXES = ("qwen3",)
+
+
+def think_settings(session: Session) -> dict[str, str]:
+
+    data = kv_json(session, "think_settings", {}) or {}
+    return {str(k): str(v) for k, v in data.items() if v in THINK_CHOICES}
+
+
+def save_think_setting(session: Session, model: str, choice: str) -> None:
+
+    data = think_settings(session)
+    if choice == "auto":
+        data.pop(model, None)
+    elif choice in THINK_CHOICES:
+        data[model] = choice
+    kv_set(session, "think_settings", dumps(data))
+
+
+def auto_think(model: str) -> bool | None:
+    return False if model.lower().startswith(THINK_OFF_PREFIXES) else None
+
+
+def resolve_think(model: str, choices: dict[str, str], env_think: bool | None) -> bool | None:
+    """True / False は think をその値で送る。None は送らない（モデルの既定）。"""
+    choice = choices.get(model, "auto")
+    if choice == "off":
+        return False
+    if choice == "on":
+        return True
+    return env_think if env_think is not None else auto_think(model)

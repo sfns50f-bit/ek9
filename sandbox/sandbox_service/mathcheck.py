@@ -40,6 +40,7 @@ _EMPTY_WORDS = {"解なし", "なし", "空集合", "∅", "emptyset", "none"}
 _ALL_WORDS = {"すべての実数", "全ての実数", "実数全体", "任意の実数", "reals"}
 
 _PRE_NFKC = {"²": "^2", "³": "^3", "⁴": "^4"}  # NFKC で「²」が「2」になる前に置換する
+_PRE_NFKC_TABLE = str.maketrans(_PRE_NFKC)
 _POST_NFKC = [
     ("×", "*"), ("÷", "/"), ("·", "*"), ("∙", "*"), ("−", "-"), ("–", "-"), ("ー", "-"),
     ("°", ""), ("π", "pi"), ("∞", "oo"), ("θ", "theta"), ("α", "alpha"), ("β", "beta"),
@@ -70,9 +71,59 @@ def _local_dict() -> dict[str, Any]:
     }
 
 
+_LATEX_SIMPLE = [
+    (r"\left", ""), (r"\right", ""), (r"\displaystyle", ""), (r"\,", " "), (r"\;", " "), (r"\!", ""),
+    (r"\ ", " "), (r"\cdot", "*"), (r"\times", "*"), (r"\div", "/"), (r"\pi", "pi"), (r"\infty", "oo"),
+    (r"\leqq", "<="), (r"\geqq", ">="), (r"\leq", "<="), (r"\geq", ">="), (r"\le", "<="), (r"\ge", ">="),
+    (r"\neq", "!="), (r"\ne", "!="), (r"\pm", "±"), (r"\mp", "∓"), (r"\theta", "theta"),
+    (r"\alpha", "alpha"), (r"\beta", "beta"), (r"\sin", "sin"), (r"\cos", "cos"), (r"\tan", "tan"),
+    (r"\log", "log"), (r"\ln", "ln"), (r"\circ", ""), (r"\degree", ""),
+]
+_BRACE = r"\{([^{}]*)\}"
+# 「答えは」「よって」などの前置きと、「です」「。」などの結び（検証役が答えに書き添えがち）
+_JA_PREFIX_RE = re.compile(r"^(?:よって|したがって|ゆえに|以上より|答え|解答|正解|解)(?:は|:|：|=)?\s*")
+_JA_SUFFIX_RE = re.compile(r"\s*(?:です|である|となります|となる|になります|になる|。|．|\.)+$")
+_THOUSANDS_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")
+
+
+def latex_to_plain(text: str) -> str:
+    """LaTeX で書かれた答え（\\frac{3}{5}、2\\sqrt{21}、\\boxed{3} など）を SymPy で読める形にする。"""
+    s = str(text).strip()
+    for d in ("$$", "$", r"\(", r"\)", r"\[", r"\]"):
+        s = s.replace(d, "")
+    s = re.sub(r"^\*\*(.+)\*\*$", r"\1", s.replace("`", ""))  # Markdown の太字 **3**（x**2 のべき乗は残す）
+    s = re.sub(r"\^\s*\{?\s*\\circ\s*\}?", "", s)  # 60^{\circ} の度の記号
+    for _ in range(8):  # 入れ子を内側から順に直す
+        before = s
+        s = re.sub(r"\\(?:boxed|text|mathrm|mathbf|operatorname)" + _BRACE, r"\1", s)
+        s = re.sub(r"\\[dt]?frac" + _BRACE + _BRACE, r"((\1)/(\2))", s)
+        s = re.sub(r"\\sqrt\[([^\]]*)\]" + _BRACE, r"((\2)^(1/(\1)))", s)
+        s = re.sub(r"\\sqrt" + _BRACE, r"sqrt(\1)", s)
+        s = re.sub(r"\^" + _BRACE, r"^(\1)", s)
+        s = re.sub(r"_" + _BRACE, "", s)
+        if s == before:
+            break
+    s = re.sub(r"\\sqrt\s*(\d+|[A-Za-z])", r"sqrt(\1)", s)  # \sqrt3
+    for src, dst in _LATEX_SIMPLE:
+        s = s.replace(src, dst)
+    s = s.replace("^()", "")  # 60^{\circ} → 60^() の名残
+    return s.replace("{", "(").replace("}", ")").strip()
+
+
+def strip_words(text: str) -> str:
+    """「答えは 3 です」→「3」のように、日本語の前置き・結びを外す。"""
+    s = text.strip()
+    for _ in range(3):
+        s2 = _JA_SUFFIX_RE.sub("", _JA_PREFIX_RE.sub("", s)).strip()
+        if s2 == s:
+            break
+        s = s2
+    return s
+
+
 def preprocess(text: str) -> str:
-    """全角文字や数学記号を SymPy が読める形に寄せる。"""
-    s = str(text)
+    """全角文字や数学記号、LaTeX、日本語の書き添えを SymPy が読める形に寄せる。"""
+    s = strip_words(latex_to_plain(unicodedata.normalize("NFKC", str(text).translate(_PRE_NFKC_TABLE))))
     for src, dst in _PRE_NFKC.items():
         s = s.replace(src, dst)
     s = unicodedata.normalize("NFKC", s)
@@ -181,6 +232,9 @@ def _check_functions(text: str) -> None:
 def _parse(text: str) -> Any:
     if not text or not text.strip():
         raise AnswerError("答えが空です")
+    if re.search(r"[^\x00-\x7f]", text):
+        # 日本語などが残っている（「わかりません」を文字の積として読むと「数値が違う」になってしまう）
+        raise AnswerError(f"数や式として読み取れません: {text.strip()[:40]}")
     _check_functions(text)
     try:
         return parse_expr(text, local_dict=_local_dict(), transformations=_TRANSFORMS)
@@ -248,6 +302,8 @@ def parse_answer(text: str, kind: str) -> tuple[Any, str]:
         obj = [_parse(p) for p in pieces]
     else:
         s = _strip_assignments(s)
+        if _THOUSANDS_RE.match(s.replace(" ", "")):  # 1,140 は桁区切り（1 つの数の答えのときだけ）
+            s = s.replace(",", "")
         if "±" in s or "∓" in s:
             raise AnswerError("± は答えが複数ある問題でだけ使えます")
         obj = _parse(s)
