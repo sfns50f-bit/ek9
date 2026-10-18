@@ -92,6 +92,19 @@
   </details>
 </section>
 
+<section class="card" id="llm-calls">
+  <h2>最近の LLM 呼び出し（新しい順）</h2>
+  <p class="muted small">遅いときの原因を見分けるための記録です。「読み込み」が毎回数十秒かかっているときは、モデルの入れ替え（他のアプリが Ollama で別のモデルを使っている、作成と検証でモデルが替わる）。
+    「速さ」が低いときは、モデルが GPU に載りきらず一部を CPU で動かしている。「出力」が多いときは、モデルが長く考えている（考えた分も数に入ります）。</p>
+  <table class="compact small">
+    <tr><th>時刻</th><th>種類</th><th>モデル</th><th>全体</th><th>読み込み</th><th>出力</th><th>速さ</th></tr>
+    {% for c in llm_calls %}
+    <tr><td>{{ c.at | epochlocal }}</td><td>{{ c.label }}</td><td>{{ c.model }}</td><td>{{ c.seconds }}秒</td>
+      <td>{{ c.load_s }}秒</td><td>{{ c.tokens }}</td><td>{{ c.tok_per_s }}/秒</td></tr>
+    {% else %}<tr><td colspan="7" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+</section>
+
 <section class="card" id="tests">
   <h2>検証のテスト</h2>
   <p class="small">正解をわざとずらした問題を作り、検証役との突き合わせで弾かれることを確かめます（ストックには入りません）。

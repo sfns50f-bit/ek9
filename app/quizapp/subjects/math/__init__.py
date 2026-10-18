@@ -126,6 +126,8 @@ class MathSubject(Subject):
             log.append({"step": step, "ok": False, "summary": summary + ("（直しを依頼します）" if round_no < FIX_ROUNDS else "")})
             if round_no == FIX_ROUNDS:
                 raise Rejected(code, summary, log, partial)
+            if hasattr(ctx.llm, "label"):
+                ctx.llm.label = "直し"
             out = self._chat(ctx, prompts.GEN_SYSTEM, prompts.fix_user(user, out, summary))
         log.append({"step": "問題文の確認", "ok": True,
                     "summary": f"テンプレートの式・値 {len(inst.givens)} 個がそのまま入っている"})

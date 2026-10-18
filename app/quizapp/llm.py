@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -47,6 +48,8 @@ class OllamaClient:
         self.num_predict = num_predict
         self.keep_alive = keep_alive
         self.think = think
+        self.label = ""  # 呼び出しの種類（作成・直し・検証）。worker が呼ぶ前に設定する
+        self.calls: list[dict[str, Any]] = []
 
     def chat_json(self, model: str, system: str, user: str, schema: dict[str, Any], *,
                   temperature: float = 0.7) -> dict[str, Any]:
@@ -71,6 +74,7 @@ class OllamaClient:
             body["think"] = self.think
         if not self.base_url:
             raise LLMUnavailable("OLLAMA_BASE_URL が設定されていません（.env を確認してください）")
+        started = time.monotonic()
         try:
             resp = httpx.post(f"{self.base_url}/api/chat", json=body, timeout=self.timeout)
         except httpx.TransportError as exc:
@@ -82,8 +86,30 @@ class OllamaClient:
             raise LLMUnavailable(f"Ollama がエラーを返しました（{resp.status_code}）: {resp.text[:300]}")
         if resp.status_code >= 400:
             raise LLMError(f"Ollama がエラーを返しました（{resp.status_code}）: {resp.text[:300]}")
-        message = resp.json().get("message") or {}
+        data = resp.json()
+        self._record(model, time.monotonic() - started, data)
+        message = data.get("message") or {}
         return extract_json(message.get("content", ""))
+
+    def _record(self, model: str, seconds: float, data: dict[str, Any]) -> None:
+        """1 回の呼び出しの時間の内訳を残す（/status の「最近の LLM 呼び出し」で見る）。
+
+        Ollama の応答には、モデルの読み込みにかかった時間（load_duration）、出力したトークン数
+        （eval_count、考えている分も含む）とその時間（eval_duration）が入っている（単位はナノ秒）。
+        """
+        ns = 1e9
+        eval_s = (data.get("eval_duration") or 0) / ns
+        tokens = int(data.get("eval_count") or 0)
+        self.calls.append({
+            "at": time.time(), "model": model, "label": self.label, "seconds": round(seconds, 1),
+            "load_s": round((data.get("load_duration") or 0) / ns, 1),
+            "prompt_tokens": int(data.get("prompt_eval_count") or 0), "tokens": tokens,
+            "tok_per_s": round(tokens / eval_s, 1) if eval_s > 0 else 0.0,
+        })
+
+    def pop_calls(self) -> list[dict[str, Any]]:
+        calls, self.calls = self.calls, []
+        return calls
 
     def list_models(self) -> list[dict[str, Any]]:
         """ダウンロード済みのモデル（埋め込み専用モデルは除く）。"""

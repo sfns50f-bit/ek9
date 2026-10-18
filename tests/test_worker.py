@@ -314,6 +314,39 @@ def test_broken_json_is_retried_once(settings, sessions, sandbox):
     assert job(sessions, jid).status == "done" and job(sessions, jid).gen_attempts == 1
 
 
+def test_llm_call_timings_are_recorded_for_status(settings, sessions, sandbox):
+    """遅いときの原因（モデルの読み込み・出力の長さ・速さ）を /status で見られるように残す。"""
+    from quizapp.llm import OllamaClient
+
+    client = OllamaClient("http://ollama.test")
+    client.label = "作成"
+    client._record("gemma4:12b-it-qat", 42.0, {"load_duration": 12_500_000_000, "eval_count": 900,
+                                               "eval_duration": 30_000_000_000, "prompt_eval_count": 700})
+    (call,) = client.pop_calls()
+    assert (call["label"], call["load_s"], call["tokens"], call["tok_per_s"]) == ("作成", 12.5, 900, 30.0)
+
+    class TimedLLM(OracleLLM):
+        label = ""
+
+        def chat_json(self, model, system, user, schema, **kw):
+            out = super().chat_json(model, system, user, schema, **kw)
+            self.timed.append({"at": 0, "model": model, "label": self.label, "seconds": 1.0, "load_s": 0.0,
+                               "prompt_tokens": 1, "tokens": 1, "tok_per_s": 1.0})
+            return out
+
+        def pop_calls(self):
+            calls, self.timed = self.timed, []
+            return calls
+
+    llm = TimedLLM(sessions)
+    llm.timed = []
+    add_job(sessions, count=2)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    with sessions() as s:
+        labels = [c["label"] for c in kv_json(s, "llm_calls")]
+    assert labels == ["作成"] * 2 + ["検証"] * 4
+
+
 def test_no_duplicate_numbers(settings, sessions, sandbox):
     llm = OracleLLM(sessions)
     add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=6)

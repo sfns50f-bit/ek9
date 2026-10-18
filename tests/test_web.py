@@ -274,6 +274,16 @@ def test_stock_shows_breakdown_by_format(client, settings, sessions, sandbox):
     assert "キーボード入力 2・選択式 3" in client.get("/").text
 
 
+def test_status_shows_recent_llm_calls(client, sessions):
+    from quizapp.db import kv_set
+
+    with sessions.begin() as s:
+        kv_set(s, "llm_calls", '[{"at": 1760000000, "model": "gemma4:e4b", "label": "検証", "seconds": 33.5,'
+                               ' "load_s": 21.0, "prompt_tokens": 300, "tokens": 800, "tok_per_s": 64.0}]')
+    r = client.get("/status")
+    assert "最近の LLM 呼び出し" in r.text and "33.5秒" in r.text and "21.0秒" in r.text and "64.0/秒" in r.text
+
+
 def test_rejection_stats_on_status(client, settings, sessions, sandbox):
     llm = OracleLLM(sessions, solve_answer="0")
     w = Worker(settings, sessions, llm, sandbox, rng=random.Random(5))

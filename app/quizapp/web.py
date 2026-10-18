@@ -88,6 +88,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     templates.env.filters["localtime"] = localtime
     templates.env.filters["seconds"] = seconds
+    templates.env.filters["epochlocal"] = lambda t: localtime(
+        datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None), "%m/%d %H:%M:%S") if t else ""
     templates.env.filters["isolocal"] = lambda text: localtime(datetime.fromisoformat(text)) if text else ""
     templates.env.globals.update(FORMATS=FORMATS, DEVICES=DEVICES, subjects=all_subjects,
                                  get_subject=get_subject)
@@ -428,6 +430,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                                       .order_by(Problem.reported_at.desc())).scalars())
             tests = list(s.execute(select(Job).where(Job.is_test.is_(True)).order_by(Job.id.desc()).limit(5))
                          .scalars())
+            llm_calls = list(reversed(kv_json(s, "llm_calls", []) or []))
         sandbox_ok = sandbox.healthy()
         model_names = [m["name"] for m in data["ollama"].get("models", [])]
         codes = {}
@@ -435,7 +438,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             codes.update(sub.all_reject_codes())
         return render(request, "status.html", **data, plan=plan, overrides=overrides, jobs=jobs, stats=stats,
                       per_template=per_template, templ=templ, rejected=rejected, reported=reported,
-                      tests=tests, sandbox_ok=sandbox_ok, model_names=model_names, codes=codes,
+                      tests=tests, llm_calls=llm_calls, sandbox_ok=sandbox_ok, model_names=model_names, codes=codes,
                       settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg)
 
     @app.get("/status.json")
