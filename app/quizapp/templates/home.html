@@ -36,10 +36,10 @@
 <section class="card">
   <h2>ストック（まだ解いていない問題）</h2>
   <table class="compact">
-    <tr><th>科目</th><th>端末</th><th>残り</th></tr>
+    <tr><th>科目</th><th>端末（出す形式）</th><th>出せる問題</th></tr>
     {% for row in summary %}
-    <tr class="{{ 'warn' if row.low }}"><td>{{ row.subject_name }}</td><td>{{ row.device_label }}</td>
-      <td>{{ row.count }} 問{% if row.low %}（少なめ）{% endif %}</td></tr>
+    <tr class="{{ 'warn' if row.low }}"><td>{{ row.subject_name }}</td><td>{{ row.device_label }}<div class="muted small">{{ row.formats }}</div></td>
+      <td>{{ row.count }} 問{% if row.low %}（少なめ）{% endif %}{% if row.detail %}<div class="muted small">{{ row.detail }}</div>{% endif %}</td></tr>
     {% endfor %}
   </table>
 </section>

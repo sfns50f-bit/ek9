@@ -123,6 +123,19 @@ def coef_term(c: Any, body: str) -> str:
     return f"{L(c)}{body}"
 
 
+def triangle_givens(b: int, c: int, A: int) -> list[Any]:
+    """三角形 ABC の 2 辺とその間の角。∠BAC や「CA = 3」のような書き方も同じ値として認める。
+
+    （値の書き換えは数字で確かめる。辺や角の取り違えは検証役が解いて気づく）
+    """
+    return [
+        [f"b = {b}", f"CA = {b}", f"AC = {b}"],
+        [f"c = {c}", f"AB = {c}", f"BA = {c}"],
+        [f"A = {A}^\\circ", f"\\angle A = {A}^\\circ", f"\\angle BAC = {A}^\\circ", f"\\angle CAB = {A}^\\circ",
+         f"{A}^\\circ"],
+    ]
+
+
 def frac_tex(v: Any) -> str:
     return L(sp.nsimplify(v))
 
@@ -219,7 +232,7 @@ def trig_cosine(rng: random.Random) -> Instance:
     ans = sp.sqrt(sq)
     return Instance(
         task="三角形 ABC で、2辺とその間の角から残りの辺 a = BC の長さを余弦定理で求める問題",
-        givens=[f"b = {b}", f"c = {c}", f"A = {A}^\\circ"],
+        givens=triangle_givens(b, c, A),
         answer=ans,
         candidates=[
             Cand(sp.sqrt(b ** 2 + c ** 2 + 2 * b * c * cos), "sign"),
@@ -246,7 +259,7 @@ def trig_area(rng: random.Random) -> Instance:
     ans = sp.Rational(1, 2) * b * c * sin
     return Instance(
         task="三角形 ABC で、2辺 b = CA, c = AB とその間の角 A から面積 S を求める問題",
-        givens=[f"b = {b}", f"c = {c}", f"A = {A}^\\circ"],
+        givens=triangle_givens(b, c, A),
         answer=ans,
         candidates=[
             Cand(b * c * sin, "coef"),

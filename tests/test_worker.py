@@ -271,6 +271,49 @@ def test_passages_from_a_subject_are_saved_and_shared(settings, sessions, sandbo
         del REGISTRY["reading"]
 
 
+def test_failed_wording_is_fixed_instead_of_regenerated(settings, sessions, sandbox):
+    """文章の確認で落ちたら、同じ数値のまま直させる（作り直しの回数を使わない）。"""
+    llm = OracleLLM(sessions)
+    real = llm.chat_json
+    state = {"gen": 0}
+
+    def first_bad(model, system, user, schema, **kw):
+        out = real(model, system, user, schema, **kw)
+        if "hint" in schema["properties"]:
+            state["gen"] += 1
+            if state["gen"] == 1:  # 1 回目は式を書き写さない
+                out["question"] = "三角形の問題です。答えを求めよ。"
+            else:
+                assert "直してほしい点" in user and "前回の出力" in user
+        return out
+
+    llm.chat_json = first_bad
+    jid = add_job(sessions, scope="tmpl:m1-trig-area", format="input", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert job(sessions, jid).status == "done" and job(sessions, jid).gen_attempts == 1
+    p = problems(sessions, status="ready")[0]
+    assert any("直しを依頼します" in e["summary"] for e in p.verification)
+
+
+def test_broken_json_is_retried_once(settings, sessions, sandbox):
+    from quizapp.llm import LLMError
+
+    llm = OracleLLM(sessions)
+    real = llm.chat_json
+    state = {"n": 0}
+
+    def broken_once(model, system, user, schema, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise LLMError("モデルの出力に JSON が見つかりません")
+        return real(model, system, user, schema, **kw)
+
+    llm.chat_json = broken_once
+    jid = add_job(sessions, format="input", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert job(sessions, jid).status == "done" and job(sessions, jid).gen_attempts == 1
+
+
 def test_no_duplicate_numbers(settings, sessions, sandbox):
     llm = OracleLLM(sessions)
     add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=6)

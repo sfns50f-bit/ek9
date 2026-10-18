@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import Attempt, Problem, utcnow
 from .subjects import all_subjects
-from .subjects.base import DEVICES, Subject
+from .subjects.base import DEVICES, FORMATS, Subject
 
 
 def _servable():
@@ -42,10 +42,15 @@ def stock_summary(s: Session, user_id: int, low: int) -> list[dict[str, Any]]:
     counts = unseen_counts(s, user_id)
     out = []
     for subject in all_subjects():
+        by_format = {f: sum(v for (sub, _t, ff), v in counts.items() if sub == subject.id and ff == f)
+                     for f in FORMATS}
         for device, (label, formats) in DEVICES.items():
-            n = sum(v for (sub, _t, f), v in counts.items() if sub == subject.id and f in formats)
+            # キーボードの端末では選択式も出すので、その端末で出せる数は形式の合計になる
+            n = sum(by_format[f] for f in formats)
+            detail = "・".join(f"{FORMATS[f]} {by_format[f]}" for f in formats) if len(formats) > 1 else ""
             out.append({"subject": subject.id, "subject_name": subject.name, "device": device,
-                        "device_label": label, "count": n, "low": n < low})
+                        "device_label": label, "count": n, "low": n < low, "detail": detail,
+                        "formats": "＋".join(FORMATS[f] for f in formats)})
     return out
 
 
