@@ -119,11 +119,11 @@ def test_verify_test_that_never_reaches_verification_is_not_reported_as_success(
 
 
 def test_tampered_answer_for_every_template_is_rejected(settings, sessions, sandbox):
-    from quizapp.subjects.math.catalog import UNITS
+    from quizapp.subjects.math import MathSubject
 
     llm = OracleLLM(sessions)
     ids = [add_job(sessions, scope=f"tmpl:{su.id}", format="input", count=1, is_test=True)
-           for u in UNITS for su in u.subunits]
+           for u in MathSubject().units() for su in u.subunits]
     w = make_worker(settings, sessions, sandbox, llm)
     for _ in ids:
         w.run_once()

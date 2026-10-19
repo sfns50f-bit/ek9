@@ -12,19 +12,30 @@ import sympy as sp
 from quizapp import textcheck
 from quizapp.subjects.base import GenContext
 from quizapp.subjects.math import MathSubject
-from quizapp.subjects.math.catalog import MISTAKES, UNITS
-from quizapp.subjects.math.templates import TEMPLATES
+from quizapp.subjects.base import LEVELS
+from quizapp.subjects.math.catalog import MISTAKES, UNITS, template_info
+from quizapp.subjects.math.templates import INFO, TEMPLATES
 
 from .conftest import answer_text
 
 x = sp.Symbol("x")
-IDS = [su.id for u in UNITS for su in u.subunits]
+IDS = [su.id for u in MathSubject().units() for su in u.subunits]
 SEEDS = range(40)
 
 
 def test_catalog_matches_templates():
     assert set(IDS) == set(TEMPLATES)
-    assert 15 <= len(IDS) <= 20
+    assert len(IDS) >= 15
+
+
+def test_template_info_is_read_without_sympy():
+    """web が sympy なしで読む @template の情報（ast）が、実際に登録された INFO と同じ。"""
+    assert template_info() == INFO
+    units = {uid for uid, _ in UNITS}
+    for info in INFO.values():
+        assert info.unit in units and info.level in LEVELS, info
+        assert set(info.related) <= units - {info.unit}, info
+        assert set(info.formats) <= {"choice", "input"} and info.formats, info
 
 
 def test_givens_check_ignores_digits_inside_numbers():

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import random
@@ -17,9 +18,9 @@ import re
 from typing import Any
 
 from ... import textcheck
-from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Unit, VerifyResult
+from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import prompts
-from .catalog import MISTAKES, UNITS
+from .catalog import MISTAKES, UNITS, template_info
 
 N_DISTRACTORS = 3
 MAX_ROLLS = 30
@@ -31,6 +32,15 @@ def _params_key(template: str, params: dict[str, Any]) -> str:
     return template + ":" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+@functools.cache
+def _units() -> list[Unit]:
+    """catalog の単元に、templates.py の @template で登録した小単元（テンプレート）を並べる。"""
+    info = template_info()
+    return [Unit(uid, label, tuple(Subunit(i.id, i.label, i.formats, i.level, i.related)
+                                   for i in info.values() if i.unit == uid))
+            for uid, label in UNITS]
+
+
 class MathSubject(Subject):
     id = "math"
     name = "数学"
@@ -40,7 +50,7 @@ class MathSubject(Subject):
     test_format = "input"  # 検証のテスト（正解をずらした問題）に対応する
 
     def units(self) -> list[Unit]:
-        return UNITS
+        return _units()
 
     # --- 作成 ---------------------------------------------------------------
 

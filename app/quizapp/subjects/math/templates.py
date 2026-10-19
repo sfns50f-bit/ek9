@@ -1,6 +1,8 @@
 """数学のテンプレート。数値・正解・誤答を Python（sympy）で作る。
 
-1 つのテンプレートは乱数から Instance を作る関数で、@template("小単元ID") で登録する。
+1 つのテンプレートは乱数から Instance を作る関数で、@template("小単元ID", unit=..., label=..., level=...) で
+登録する。@template の引数は sympy を読まずに catalog.template_info() が読む（web 用）ので、文字列・タプルの
+そのままの値で書く。
 LLM はここで作った数値と正解を受け取って、問題文・解説・ヒントの文章だけを書く。
 
 Instance の中身:
@@ -21,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import sympy as sp
+
+from .catalog import TemplateInfo
 
 x = sp.Symbol("x")
 L = sp.latex
@@ -59,11 +63,16 @@ HINT_NUM = "計算した値を入力（分数は a/b、√ は sqrt(n) または
 HINT_INT = "整数で入力（負の数は -a）"
 
 TEMPLATES: dict[str, Callable[[random.Random], Instance]] = {}
+INFO: dict[str, TemplateInfo] = {}
 
 
-def template(tid: str) -> Callable[[Callable[[random.Random], Instance]], Callable[[random.Random], Instance]]:
+def template(tid: str, *, unit: str, label: str, level: str, formats: tuple[str, ...] = ("choice", "input"),
+             related: tuple[str, ...] = ()) -> Callable[[Callable[[random.Random], Instance]],
+                                                        Callable[[random.Random], Instance]]:
+    """テンプレートを登録する。unit は catalog.UNITS の単元 ID、level は LEVELS のキー。"""
     def deco(fn: Callable[[random.Random], Instance]) -> Callable[[random.Random], Instance]:
         TEMPLATES[tid] = fn
+        INFO[tid] = TemplateInfo(tid, unit, label, level, formats, related)
         return fn
     return deco
 
@@ -146,7 +155,7 @@ def frac_tex(v: Any) -> str:
 # 数学I 2次関数
 # ---------------------------------------------------------------------------
 
-@template("m1-quad-vertex")
+@template("m1-quad-vertex", unit="m1-quad", label="放物線の頂点", level="basic")
 def quad_vertex(rng: random.Random) -> Instance:
     a = rng.choice([2, 3, -1, -2, -3])
     p = rng.choice([-4, -3, -2, -1, 1, 2, 3, 4])
@@ -177,7 +186,7 @@ def quad_vertex(rng: random.Random) -> Instance:
     )
 
 
-@template("m1-quad-ineq")
+@template("m1-quad-ineq", unit="m1-quad", label="2次不等式", level="basic")
 def quad_ineq(rng: random.Random) -> Instance:
     while True:
         al, be = sorted(rng.sample(range(-5, 7), 2))
@@ -225,7 +234,7 @@ _SIN = {30: sp.Rational(1, 2), 45: sp.sqrt(2) / 2, 60: sp.sqrt(3) / 2, 120: sp.s
         135: sp.sqrt(2) / 2, 150: sp.Rational(1, 2)}
 
 
-@template("m1-trig-cosine")
+@template("m1-trig-cosine", unit="m1-trig", label="余弦定理で辺の長さ", level="basic")
 def trig_cosine(rng: random.Random) -> Instance:
     A = rng.choice([60, 120])
     b, c = rng.sample(range(2, 9), 2)
@@ -253,7 +262,7 @@ def trig_cosine(rng: random.Random) -> Instance:
     )
 
 
-@template("m1-trig-area")
+@template("m1-trig-area", unit="m1-trig", label="三角形の面積", level="basic")
 def trig_area(rng: random.Random) -> Instance:
     A = rng.choice([30, 45, 60, 120, 135, 150])
     b, c = rng.sample(range(2, 10), 2)
@@ -282,7 +291,7 @@ def trig_area(rng: random.Random) -> Instance:
 # 数学A 場合の数と確率
 # ---------------------------------------------------------------------------
 
-@template("ma-case-comb")
+@template("ma-case-comb", unit="ma-case", label="組合せ", level="basic")
 def case_comb(rng: random.Random) -> Instance:
     n = rng.randint(6, 12)
     r = rng.randint(2, 4)
@@ -308,7 +317,7 @@ def case_comb(rng: random.Random) -> Instance:
     )
 
 
-@template("ma-case-repeat")
+@template("ma-case-repeat", unit="ma-case", label="反復試行の確率", level="common")
 def case_repeat(rng: random.Random) -> Instance:
     event, p = rng.choice([("1の目", sp.Rational(1, 6)), ("3の倍数の目", sp.Rational(1, 3)),
                            ("偶数の目", sp.Rational(1, 2)), ("5以上の目", sp.Rational(1, 3))])
@@ -340,7 +349,7 @@ def case_repeat(rng: random.Random) -> Instance:
 # 数学II 式と証明・複素数と方程式
 # ---------------------------------------------------------------------------
 
-@template("m2-poly-vieta")
+@template("m2-poly-vieta", unit="m2-poly", label="解と係数の関係", level="common", related=('m1-quad',))
 def poly_vieta(rng: random.Random) -> Instance:
     while True:  # 重解にならないようにする（「2つの解」と書けるように）
         p = rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
@@ -374,7 +383,7 @@ def poly_vieta(rng: random.Random) -> Instance:
     )
 
 
-@template("m2-poly-remainder")
+@template("m2-poly-remainder", unit="m2-poly", label="剰余の定理", level="basic")
 def poly_remainder(rng: random.Random) -> Instance:
     a, b, c = (rng.choice([-4, -3, -2, -1, 1, 2, 3, 4]) for _ in range(3))
     k = rng.choice([-3, -2, 2, 3])
@@ -406,7 +415,7 @@ def poly_remainder(rng: random.Random) -> Instance:
 _TRIG = {"sin": sp.sin, "cos": sp.cos, "tan": sp.tan}
 
 
-@template("m2-trig-value")
+@template("m2-trig-value", unit="m2-trig", label="弧度法と三角関数の値", level="basic")
 def trig_value(rng: random.Random) -> Instance:
     d = rng.choice([6, 4, 3])
     m = rng.choice([k for k in range(1, 2 * d) if math.gcd(k, d) == 1 and (2 * k) % d != 0])
@@ -442,7 +451,7 @@ def trig_value(rng: random.Random) -> Instance:
 _TRIPLES = [(3, 4, 5), (5, 12, 13), (8, 15, 17), (7, 24, 25)]
 
 
-@template("m2-trig-addition")
+@template("m2-trig-addition", unit="m2-trig", label="加法定理", level="common", related=('m1-trig',))
 def trig_addition(rng: random.Random) -> Instance:
     (a1, b1, c1), (a2, b2, c2) = rng.sample(_TRIPLES, 2)
     if rng.random() < 0.5:
@@ -485,7 +494,7 @@ def trig_addition(rng: random.Random) -> Instance:
     )
 
 
-@template("m2-trig-double")
+@template("m2-trig-double", unit="m2-trig", label="2倍角の公式", level="common", related=('m1-trig',))
 def trig_double(rng: random.Random) -> Instance:
     a, b, c = rng.choice(_TRIPLES)
     if rng.random() < 0.5:
@@ -523,7 +532,7 @@ _SYNTH = [(sp.sqrt(3), 1), (1, sp.sqrt(3)), (1, 1), (3, 4), (4, 3), (1, -1), (sp
           (-1, sp.sqrt(3)), (5, 12), (2, 2), (2, -2 * sp.sqrt(3)), (sp.sqrt(2), sp.sqrt(2))]
 
 
-@template("m2-trig-synth")
+@template("m2-trig-synth", unit="m2-trig", label="三角関数の合成と最大・最小", level="common")
 def trig_synth(rng: random.Random) -> Instance:
     a, b = rng.choice(_SYNTH)
     a, b = sp.sympify(a), sp.sympify(b)
@@ -557,7 +566,7 @@ def trig_synth(rng: random.Random) -> Instance:
 # 数学II 指数関数・対数関数
 # ---------------------------------------------------------------------------
 
-@template("m2-explog-base")
+@template("m2-explog-base", unit="m2-explog", label="対数の値（底の変換）", level="basic")
 def explog_base(rng: random.Random) -> Instance:
     c = rng.choice([2, 3, 5])
     while True:
@@ -586,7 +595,7 @@ def explog_base(rng: random.Random) -> Instance:
     )
 
 
-@template("m2-explog-equation")
+@template("m2-explog-equation", unit="m2-explog", label="対数方程式", level="common", related=('m1-quad',))
 def explog_equation(rng: random.Random) -> Instance:
     options = []
     for c in (2, 3):
@@ -631,7 +640,7 @@ def explog_equation(rng: random.Random) -> Instance:
 # 数学II 微分法
 # ---------------------------------------------------------------------------
 
-@template("m2-diff-tangent")
+@template("m2-diff-tangent", unit="m2-diff", label="接線の方程式", level="common")
 def diff_tangent(rng: random.Random) -> Instance:
     if rng.random() < 0.5:
         f = x ** 3 + rng.choice([-3, -2, -1, 1, 2]) * x ** 2 + rng.choice([-4, -2, -1, 1, 3]) * x \
@@ -663,7 +672,7 @@ def diff_tangent(rng: random.Random) -> Instance:
     )
 
 
-@template("m2-diff-extremum")
+@template("m2-diff-extremum", unit="m2-diff", label="極値", level="common", related=('m2-poly',))
 def diff_extremum(rng: random.Random) -> Instance:
     while True:
         al, be = sorted(rng.sample(range(-3, 4), 2))
@@ -699,7 +708,7 @@ def diff_extremum(rng: random.Random) -> Instance:
 # 数学II 積分法
 # ---------------------------------------------------------------------------
 
-@template("m2-int-definite")
+@template("m2-int-definite", unit="m2-int", label="定積分の計算", level="basic")
 def int_definite(rng: random.Random) -> Instance:
     while True:
         p = rng.choice([1, 2, 3, -1, -3])
@@ -731,7 +740,7 @@ def int_definite(rng: random.Random) -> Instance:
     )
 
 
-@template("m2-int-area")
+@template("m2-int-area", unit="m2-int", label="放物線で囲まれた面積", level="common", related=('m1-quad',))
 def int_area(rng: random.Random) -> Instance:
     al, be = sorted(rng.sample(range(-3, 5), 2))
     width = be - al
@@ -771,7 +780,7 @@ def int_area(rng: random.Random) -> Instance:
 # 数学B 数列
 # ---------------------------------------------------------------------------
 
-@template("mb-seq-arith")
+@template("mb-seq-arith", unit="mb-seq", label="等差数列の和", level="basic")
 def seq_arith(rng: random.Random) -> Instance:
     a = rng.choice([-7, -5, -3, -2, 1, 2, 3, 4, 5, 8])
     d = rng.choice([-4, -3, -2, 2, 3, 4, 5])
@@ -832,7 +841,7 @@ def _sqrt3_vector(rng: random.Random, direction: int) -> tuple[Any, Any]:
 _PAIRS: list[tuple[tuple[int, int], tuple[int, int], int]] = []
 
 
-@template("mc-vec-angle")
+@template("mc-vec-angle", unit="mc-vec", label="ベクトルのなす角", level="common")
 def vec_angle(rng: random.Random) -> Instance:
     theta = rng.choice([30, 45, 60, 120, 135, 150])
     if theta in (45, 135):
