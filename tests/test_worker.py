@@ -438,11 +438,13 @@ class AnswerStyleLLM(OracleLLM):
             ans = out["answer"]
             out = {"答えは": {"work": "...", "answer": f"答えは {ans} です"},
                    "boxed": {"work": f"計算すると \\boxed{{{ans}}}", "answer": ","},
+                   # 実機の gemma4:e4b：answer 欄が崩れ、work の最後は正しい
+                   "garbled": {"work": f"底の変換をして\nS = {ans}", "answer": f"@{ans}"},
                    "unreadable": {"work": "わからない", "answer": "わかりません"}}[self.style]
         return out
 
 
-@pytest.mark.parametrize("style", ["答えは", "boxed"])
+@pytest.mark.parametrize("style", ["答えは", "boxed", "garbled"])
 def test_verifier_answer_styles_are_read(settings, sessions, sandbox, style):
     add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=1)
     make_worker(settings, sessions, sandbox, AnswerStyleLLM(sessions, style)).run_once()

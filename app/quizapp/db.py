@@ -91,7 +91,8 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subject: Mapped[str] = mapped_column(String(32))
-    scope: Mapped[str] = mapped_column(String(96), default="")
+    scope: Mapped[str] = mapped_column(String(1024), default="")
+    levels: Mapped[str] = mapped_column(String(64), default="")  # LEVELS のキーをカンマで。"" はすべて
     format: Mapped[str] = mapped_column(String(16))
     count: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), index=True, default="pending")
@@ -135,6 +136,9 @@ class Problem(Base):
     subject: Mapped[str] = mapped_column(String(32), index=True)
     unit: Mapped[str] = mapped_column(String(64), index=True)
     template: Mapped[str] = mapped_column(String(64), index=True)
+    # レベル（LEVELS のキー）と、主な単元とは別に関係する単元（カンマ区切り）。作成時に小単元から写す
+    level: Mapped[str] = mapped_column(String(16), default="", index=True)
+    related_units: Mapped[str] = mapped_column(String(255), default="")
     format: Mapped[str] = mapped_column(String(16), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
@@ -191,7 +195,8 @@ class StudySession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     subject: Mapped[str] = mapped_column(String(32))
-    scope: Mapped[str] = mapped_column(String(96), default="")
+    scope: Mapped[str] = mapped_column(String(1024), default="")
+    levels: Mapped[str] = mapped_column(String(64), default="")
     device: Mapped[str] = mapped_column(String(16))
     kind: Mapped[str] = mapped_column(String(16), default="normal")
     problem_ids_json: Mapped[str] = mapped_column("problem_ids", Text, default="[]")

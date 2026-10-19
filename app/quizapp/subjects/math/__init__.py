@@ -273,7 +273,11 @@ _ANSWER_LINE_RE = re.compile(r"(?:答え|答|解答|Answer)\s*[:：は]\s*(.+)$"
 
 
 def _answer_candidates(answer: str, work: str) -> list[str]:
-    """検証役の答えとして試す文字列（answer 欄 → work の \\boxed{…} → work の「答え: …」の行）。"""
+    """検証役の答えとして試す文字列（読み取れた最初のものを使う）。
+
+    answer 欄 → work の \\boxed{…} → work の「答え: …」の行 → work の最後の「=」の行（行全体、最後の「=」の右側）。
+    answer 欄が「@35/4」のように崩れていても、work の最後が「S = 35/4」なら救える（実機の gemma4:e4b で多かった）。
+    """
     out = [answer.strip()] if answer.strip() else []
     boxed = _BOXED_RE.findall(work)
     if boxed:
@@ -281,6 +285,10 @@ def _answer_candidates(answer: str, work: str) -> list[str]:
     lines = _ANSWER_LINE_RE.findall(work)
     if lines:
         out.append(lines[-1].strip())
+    eq_lines = [ln.strip().strip("$").strip().rstrip("。.") for ln in work.splitlines() if "=" in ln]
+    if eq_lines:
+        out.append(eq_lines[-1])
+        out.append(eq_lines[-1].rsplit("=", 1)[1].strip())
     return list(dict.fromkeys(c for c in out if c))
 
 

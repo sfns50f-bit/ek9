@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .runtime import API_PROVIDERS, provider_of  # noqa: F401（モデル名の「提供元/」の読み方は runtime にある）
+
 
 class LLMError(RuntimeError):
     """モデルの出力が使えない（JSON でない、項目が足りないなど）。raw はモデルの生の出力。"""
@@ -285,17 +287,6 @@ class OllamaClient:
 # 付けなければ Ollama。Ollama のモデル名は「gemma4:e4b」のように / を含まないので区別できる。
 # 提供元を足すときは、OllamaClient と同じ形（chat_json・list_models・pop_calls と、属性 label・
 # should_abort・think_for）のクラスを作り、LLMRouter の providers に登録する（CLAUDE.md の手順を参照）。
-API_PROVIDERS = ("anthropic", "openai", "google")
-
-
-def provider_of(model: str) -> tuple[str, str]:
-    """(提供元, 提供元の中でのモデル名)。"""
-    head, sep, rest = model.partition("/")
-    if sep and head in API_PROVIDERS:
-        return head, rest
-    return "ollama", model
-
-
 class LLMRouter:
     """モデル名で提供元のクライアントに振り分ける。worker からは 1 つのクライアントに見える。"""
 

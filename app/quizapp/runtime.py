@@ -13,6 +13,19 @@ from sqlalchemy.orm import Session
 from .config import Settings
 from .db import dumps, kv_get, kv_json, kv_set
 
+# API の提供元。モデル名の頭に「提供元/」を付けると（例 anthropic/claude-…）その API へ送る（llm.LLMRouter）。
+# 頭に付けなければ Ollama のモデル。web からも使うので、LLM のクライアントを読み込まないここに置く
+API_PROVIDERS = ("anthropic", "openai", "google")
+
+
+def provider_of(model: str) -> tuple[str, str]:
+    """(提供元, 提供元の中でのモデル名)。"""
+    head, sep, rest = model.partition("/")
+    if sep and head in API_PROVIDERS:
+        return head, rest
+    return "ollama", model
+
+
 KEYS = ("gen_model", "verify_model", "verify_count", "verify_model_2")
 MAX_VERIFY_COUNT = 5
 
@@ -31,6 +44,10 @@ class ModelPlan:
         if self.verify_model_2:
             runs.append(self.verify_model_2)
         return runs
+
+    @property
+    def needs_ollama(self) -> bool:
+        return any(provider_of(m)[0] == "ollama" for m in [self.gen_model, *self.verify_runs])
 
     @property
     def verify_label(self) -> str:
@@ -66,6 +83,26 @@ def model_plan(settings: Settings, session: Session) -> ModelPlan:
         # 画面で「使わない」を選んだときは "-" を保存する
         verify_model_2="" if v2 == "-" else (v2 or settings.verify_model_2),
     )
+
+
+def plan_for_job(settings: Settings, session: Session, job: object) -> ModelPlan:
+    """依頼で選んだモデル。依頼に記録がなければ（前の版で作った依頼）今の設定。"""
+    if not getattr(job, "gen_model", ""):
+        return model_plan(settings, session)
+    return ModelPlan(
+        gen_model=job.gen_model,  # type: ignore[attr-defined]
+        verify_model=job.verify_model or settings.verify_model,  # type: ignore[attr-defined]
+        verify_count=_count(str(job.verify_count), settings.verify_count),  # type: ignore[attr-defined]
+        verify_model_2=job.verify_model_2,  # type: ignore[attr-defined]
+    )
+
+
+def apply_plan(job: object, plan: ModelPlan) -> None:
+    """依頼にモデルを記録する（後で /status の設定を変えても、この依頼はこのモデルで最後まで処理する）。"""
+    job.gen_model = plan.gen_model  # type: ignore[attr-defined]
+    job.verify_model = plan.verify_model  # type: ignore[attr-defined]
+    job.verify_count = plan.verify_count  # type: ignore[attr-defined]
+    job.verify_model_2 = plan.verify_model_2  # type: ignore[attr-defined]
 
 
 # --- 思考モード（モデルごと） ----------------------------------------------------

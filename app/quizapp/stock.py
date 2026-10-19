@@ -55,45 +55,90 @@ def stock_summary(s: Session, user_id: int, low: int) -> list[dict[str, Any]]:
 
 
 def wrong_problem_ids(s: Session, user_id: int, subject: str, templates: list[str],
-                      formats: tuple[str, ...]) -> list[int]:
-    """最後の回答が不正解のままの問題（古い順）。報告された問題は除く。"""
+                      formats: tuple[str, ...]) -> list[tuple[int, str]]:
+    """最後の回答が不正解のままの問題の (ID, 小単元)（古い順）。報告された問題は除く。"""
     latest = (
         select(Attempt.problem_id, func.max(Attempt.id).label("last_id"))
         .where(Attempt.user_id == user_id).group_by(Attempt.problem_id).subquery()
     )
     rows = s.execute(
-        select(Attempt.problem_id)
+        select(Attempt.problem_id, Problem.template)
         .join(latest, Attempt.id == latest.c.last_id)
         .join(Problem, Problem.id == Attempt.problem_id)
         .where(Attempt.is_correct.is_(False), *_servable(), Problem.subject == subject,
                Problem.template.in_(templates), Problem.format.in_(formats))
         .order_by(Attempt.created_at)
-    ).scalars().all()
-    return list(rows)
+    ).all()
+    return [(pid, t) for pid, t in rows]
+
+
+def spread_pick(items: list[tuple[int, str]], n: int, rng: random.Random) -> list[tuple[int, str]]:
+    """小単元ごとに順番に 1 問ずつ取り、なるべく均等に n 問選ぶ（同じ小単元の中は items の順）。"""
+    groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for item in items:
+        groups[item[1]].append(item)
+    keys = list(groups)
+    rng.shuffle(keys)
+    out: list[tuple[int, str]] = []
+    while len(out) < n and keys:
+        for k in list(keys):
+            if len(out) >= n:
+                break
+            out.append(groups[k].pop(0))
+            if not groups[k]:
+                keys.remove(k)
+    return out
+
+
+def spread_order(items: list[tuple[int, str]], rng: random.Random) -> list[int]:
+    """同じ小単元の問題が続かないように並べる。
+
+    毎回「直前と違う小単元のうち、残りが最も多いもの」から 1 問出す（残りが多いものを先に減らすと、
+    最後に同じ小単元だけが残って続いてしまうことが起きにくい）。1 つの小単元しかなければ続くのは避けられない。
+    """
+    groups: dict[str, list[int]] = defaultdict(list)
+    for pid, t in items:
+        groups[t].append(pid)
+    for ids in groups.values():
+        rng.shuffle(ids)
+    out: list[int] = []
+    last = None
+    while groups:
+        cands = [t for t in groups if t != last] or list(groups)
+        most = max(len(groups[t]) for t in cands)
+        t = rng.choice([c for c in cands if len(groups[c]) == most])
+        out.append(groups[t].pop())
+        if not groups[t]:
+            del groups[t]
+        last = t
+    return out
 
 
 def build_session(s: Session, user_id: int, subject: Subject, scope: str, device: str, count: int,
-                  retry_percent: int, rng: random.Random | None = None) -> list[int]:
+                  retry_percent: int, rng: random.Random | None = None, levels: str = "") -> list[int]:
     """未出題のストックに、間違えた問題の再出題を混ぜて count 問のセットを作る。
 
     再出題は count の retry_percent % まで。未出題が足りなければ、残りの間違えた問題で埋め、
-    それでも足りなければある分だけで始める。
+    それでも足りなければある分だけで始める。選んだ範囲の小単元からなるべく均等に選び、
+    同じ小単元の問題が続かないように並べる。
     """
     rng = rng or random.Random()
     formats = DEVICES[device][1]
-    templates = subject.templates_for(scope)
+    templates = subject.templates_for(scope, levels=levels)
     wrong = wrong_problem_ids(s, user_id, subject.id, templates, formats)
-    fresh = list(s.execute(
-        select(Problem.id).where(*_servable(), Problem.subject == subject.id, Problem.template.in_(templates),
-                                 Problem.format.in_(formats), Problem.id.not_in(_seen_ids(user_id)))
-    ).scalars())
+    fresh = [(pid, t) for pid, t in s.execute(
+        select(Problem.id, Problem.template).where(
+            *_servable(), Problem.subject == subject.id, Problem.template.in_(templates),
+            Problem.format.in_(formats), Problem.id.not_in(_seen_ids(user_id)))
+    ).all()]
     rng.shuffle(fresh)
     n_retry = min(len(wrong), count * retry_percent // 100)
-    picked = wrong[:n_retry] + fresh[:count - n_retry]
+    picked = spread_pick(wrong, n_retry, rng)
+    picked += spread_pick(fresh, count - len(picked), rng)
     if len(picked) < count:
-        picked += wrong[n_retry:n_retry + count - len(picked)]
-    rng.shuffle(picked)
-    return picked
+        rest = [w for w in wrong if w not in picked]
+        picked += spread_pick(rest, count - len(picked), rng)
+    return spread_order(picked, rng)
 
 
 # ---------------------------------------------------------------------------
