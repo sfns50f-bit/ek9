@@ -242,6 +242,18 @@ def _parse(text: str) -> Any:
         raise AnswerError(f"式として読み取れません: {text.strip()}") from exc
 
 
+def _check_range_form(cond: Any) -> None:
+    """範囲の答えは「a < x < b」のように、不等号の両側が文字だけか数だけの形に限る。
+
+    問題の不等式（x^2 - 2x - 3 >= 0 など）を書き写しただけの答えを正解にしないため。
+    """
+    rels = cond.atoms(sp.Rel) if isinstance(cond, sp.Basic) else set()
+    for rel in rels:
+        for side in (rel.lhs, rel.rhs):
+            if not (side.is_Symbol or not side.free_symbols):
+                raise AnswerError("x の範囲を a<x<b や x<a の形で書いてください（不等式を書き写しただけでは答えになりません）")
+
+
 def _parse_interval(text: str) -> tuple[Any, str]:
     s = text.replace("または", ",").replace(" or ", ",")
     sets, var = [], None
@@ -257,6 +269,7 @@ def _parse_interval(text: str) -> tuple[Any, str]:
                 cond = None  # "(1 < x) & (x < 3)" のような SymPy 記法は下で読む
         if cond is None:
             cond = _parse(part)
+        _check_range_form(cond)
         obj, v = normalize_with_var(cond, "interval")
         sets.append(obj)
         var = var or v

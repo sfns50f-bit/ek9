@@ -49,7 +49,11 @@
     {% set j = r.job %}{% set sub = get_subject(j.subject) %}
     <li><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}
       <span class="muted">{{ j.created_at | localtime }}・{{ JOB_STATUS.get(j.status, j.status) }}</span>
+      {% if j.gen_model or not r.old_models %}
       <div>作成役 <strong>{{ j.gen_model or "—" }}</strong>／検証役 <strong>{{ j.verify_model or "—" }}{% if j.verify_count %} ×{{ j.verify_count }}{% endif %}{% if j.verify_model_2 %} ＋ {{ j.verify_model_2 }}{% endif %}</strong></div>
+      {% else %}
+      <div>作成役 <strong>{{ r.old_models[0] }}</strong>／検証役 <strong>{{ r.old_models[1] or "—" }}</strong> <span class="muted">（問題の記録から）</span></div>
+      {% endif %}
       <div>合格 {{ r.made }}／作成 {{ r.tried }}{% if r.pass_rate is not none %}（{{ r.pass_rate }}%）{% endif %}
         ・作成 1 問 {{ r.gen_per ~ "秒" if r.gen_per is not none else "—" }}
         ・検証 1 問 {{ r.verify_per ~ "秒" if r.verify_per is not none else "—" }}

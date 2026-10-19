@@ -194,10 +194,10 @@ def verify_stats(s: Session, days: int = 30, from_job: int = 0) -> dict[str, Any
         total += 1
         g = gen.setdefault(gen_model or "（記録なし）", {"total": 0, "passed": 0, "codes": Counter()})
         g["total"] += 1
-        if status == "rejected":
+        if status == "rejected" and code != "duplicate":
             by_code[code or "unknown"] += 1
             g["codes"][code or "unknown"] += 1
-        else:  # 合格（後で問題検証モードで削除したものも、検証には合格している）
+        else:  # 合格（後で削除したもの、同じ数値の問題がすでにあってストックに入れなかったものも、検証には合格している）
             passed += 1
             g["passed"] += 1
         try:
@@ -240,7 +240,15 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
     jobs = list(s.execute(q).scalars())
     codes: dict[int, Counter[str]] = defaultdict(Counter)
     statuses: dict[int, Counter[str]] = defaultdict(Counter)
+    models: dict[int, tuple[str, str]] = {}
     if jobs:
+        # 前の版の依頼はモデルの記録がないので、作った問題の記録から出す
+        for jid, gen, ver in s.execute(
+            select(Problem.job_id, Problem.gen_model, Problem.verify_models)
+            .where(Problem.job_id.in_([j.id for j in jobs if not j.gen_model]))
+        ):
+            if gen and (jid not in models or (ver and not models[jid][1])):
+                models[jid] = (gen, ver or "")
         for jid, status, code, n in s.execute(
             select(Problem.job_id, Problem.status, Problem.reject_code, func.count())
             .where(Problem.job_id.in_([j.id for j in jobs]))
@@ -254,7 +262,7 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
         made = statuses[j.id]["ready"] + statuses[j.id]["deleted"]
         tried = sum(statuses[j.id].values()) - statuses[j.id]["draft"]
         out.append({
-            "job": j, "made": made, "tried": tried,
+            "job": j, "made": made, "tried": tried, "old_models": models.get(j.id),
             "pass_rate": round(100 * made / tried) if tried else None,
             "gen_per": round(j.gen_eval_s / j.gen_attempts, 1) if j.gen_attempts and j.gen_calls else None,
             "verify_per": round(j.verify_eval_s / j.verified, 1) if j.verified and j.verify_calls else None,
@@ -265,7 +273,9 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
 
 
 def recent_rejected(s: Session, days: int = 30, from_job: int = 0, limit: int = 30) -> list[Problem]:
-    return list(s.execute(select(Problem).where(*_period(days, from_job), Problem.status == "rejected")
+    # 同じ数値の問題がストックにある（duplicate）ものは、ストックの問題の答えが見えるので出さない
+    return list(s.execute(select(Problem).where(*_period(days, from_job), Problem.status == "rejected",
+                                                Problem.reject_code != "duplicate")
                           .order_by(Problem.id.desc()).limit(limit)).scalars())
 
 

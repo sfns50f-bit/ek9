@@ -330,10 +330,15 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             attempts = list(s.execute(select(Attempt).where(Attempt.problem_id == pid,
                                                             Attempt.user_id == user_id(request))
                                       .order_by(Attempt.id.desc())).scalars())
-            # まだ解いていないストックの問題は、正解が見えてしまうので問題検証モードでだけ見せる
-            servable = problem.status == "ready" and not problem.reported
-            # （問題検証モードの一覧からのリンクには ?review=1 が付く。パスワードがあればログインも要る）
-            if servable and not attempts and not (review_mode and review_ok(request)):
+            # まだ解いていない問題は、正解が見えてしまうので問題検証モードでだけ見せる
+            # （問題検証モードの一覧からのリンクには ?review=1 が付く。パスワードがあればログインも要る）。
+            # ほかに見せてよいのは出題されない問題：不合格（同じ数値の問題がストックにある duplicate は除く）・
+            # 削除・検証のテスト・報告済み。検証待ちの下書きはまもなくストックに入るので見せない
+            hidden = problem.reported or (problem.status in ("rejected", "deleted", "test")
+                                          and problem.reject_code != "duplicate")
+            if not hidden and not attempts and not (review_mode and review_ok(request)):
+                if review_mode:
+                    return redirect("/review/login")
                 raise HTTPException(404, "まだ解いていない問題です（正解つきの一覧は問題検証モードで見られます）")
         return render(request, "problem.html", problem=problem, attempts=attempts,
                       subject=get_subject(problem.subject), msg=msg)

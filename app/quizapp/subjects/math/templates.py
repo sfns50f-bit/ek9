@@ -343,7 +343,8 @@ def case_repeat(rng: random.Random) -> Instance:
     ans = sp.binomial(n, k) * p ** k * q ** (n - k)
     return Instance(
         task=f"「{trial}」ことを {n} 回くり返すとき、{event}のがちょうど {k} 回である確率を求める問題",
-        givens=[f"{n}回", f"{k}回", *extra],
+        # 起きること（「1の目」「表」など）も問題文に入っているかを確かめる
+        givens=[f"{n}回", f"{k}回", event.removesuffix("が出る"), *extra],
         answer=ans,
         candidates=[
             Cand(p ** k * q ** (n - k) if k < n else p ** (n - 1), "partial"),

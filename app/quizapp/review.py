@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import Problem
-from .subjects import get_subject
+from .subjects import all_subjects, get_subject
 from .subjects.base import FORMATS, LEVELS
 
 COOKIE = "review"
@@ -40,7 +40,9 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
     if unit:
         q = q.where(Problem.unit == unit)
     if level:
-        q = q.where(Problem.level == level)
+        # レベルは小単元で決まるので、小単元で絞る（前の版で作った、レベルの列が空の問題も入るように）
+        templates = [t for sub in all_subjects() for t in sub.templates_for("", levels=level)]
+        q = q.where(Problem.template.in_(templates))
     if gen_model:
         q = q.where(Problem.gen_model == gen_model)
     return list(s.execute(q.order_by(Problem.id.desc()).offset(offset).limit(limit)).scalars())
@@ -49,12 +51,14 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
 def labels(problem: Problem) -> dict[str, str]:
     sub = get_subject(problem.subject)
     unit_label = subunit_label = problem.template
+    level = problem.level
     if sub:
         found = sub.subunit_map().get(problem.template)
         if found:
             unit_label, subunit_label = found[0].label, found[1].label
+            level = level or found[1].level
     return {"subject": sub.name if sub else problem.subject, "unit": unit_label, "subunit": subunit_label,
-            "level": LEVELS.get(problem.level, "—"), "format": FORMATS.get(problem.format, problem.format)}
+            "level": LEVELS.get(level, "—"), "format": FORMATS.get(problem.format, problem.format)}
 
 
 def mistake_label(problem: Problem, key: str | None) -> str:

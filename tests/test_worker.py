@@ -602,3 +602,23 @@ def test_api_only_job_runs_while_ollama_is_down(settings, sessions, sandbox):
     assert job(sessions, api_job).status == "done"
     assert job(sessions, ollama_job).status == "pending"
     assert api.calls == [("gen", "claude-x"), ("solve", "claude-y")]
+
+
+def test_missing_verifier_model_discards_drafts(settings, sessions, sandbox):
+    """検証役のモデルが見つからないときは失敗で止め、検証できない下書きを残さない。"""
+    from quizapp.llm import LLMModelMissing
+
+    llm = OracleLLM(sessions)
+    real = llm.chat_json
+
+    def chat(model, system, user, schema, **kw):
+        if model == "typo-model":
+            raise LLMModelMissing("モデル typo-model が Ollama に見つかりません")
+        return real(model, system, user, schema, **kw)
+
+    llm.chat_json = chat
+    jid = add_job(sessions, count=2, gen_model="gemma4:12b-it-qat", verify_model="typo-model", verify_count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = job(sessions, jid)
+    assert j.status == "failed" and "見つかりません" in j.error and j.made == 0
+    assert problems(sessions, status="draft") == []

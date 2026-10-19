@@ -223,8 +223,11 @@ def check_double(inst):
     name = re.search(r"\\(sin|cos|tan) 2", inst.params["target"]).group(1)
     value = getattr(math, name)(2 * th)
     assert abs(value - float(inst.answer)) < 1e-9
-    if inst.params["given"] == "cos":  # 与えた cos θ の値も角と合っている
-        assert f"\\cos\\theta = " in inst.givens[0]
+    # 問題文に入れる値（sin θ または cos θ）を読み直し、角と合っているかを確かめる
+    m = re.fullmatch(r"\\(sin|cos)\\theta = (- ?)?\\frac\{(\d+)\}\{(\d+)\}", inst.givens[0])
+    assert m and m.group(1) == inst.params["given"], inst.givens[0]
+    given = (-1 if m.group(2) else 1) * int(m.group(3)) / int(m.group(4))
+    assert abs(getattr(math, m.group(1))(th) - given) < 1e-12
 
 
 def check_synth(inst):

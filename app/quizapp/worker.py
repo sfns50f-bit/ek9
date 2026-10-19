@@ -146,6 +146,11 @@ class Worker:
             for job in s.execute(select(Job).where(Job.status == "cancelling")).scalars():
                 self._discard_drafts(s, job.id)
                 job.status, job.progress, job.finished_at = "cancelled", "", utcnow()
+            # 前の版で作った問題には、レベル・関連する単元を小単元から書き込む（列を足しただけでは空のまま）
+            for p in s.execute(select(Problem).where(Problem.level == "")).scalars():
+                su = self._subunit(p.subject, p.template)
+                if su is not None and su.level:
+                    p.level, p.related_units = su.level, ",".join(su.related)
 
     def next_job_id(self, ollama_ok: bool = True) -> int | None:
         """次に処理する依頼。Ollama につながらないときは、API のモデルだけを使う依頼を先に進める。"""
@@ -455,6 +460,10 @@ class Worker:
             self.set_status(f"依頼 #{job_id} を取り消しました", job_id)
         except LLMModelMissing as exc:  # 待っても直らないので失敗で止める
             log.warning("job %s failed: %s", job_id, exc)
+            with self.sessions.begin() as s:  # 検証できない下書きは捨てる（合格済みの問題は残す）
+                self._discard_drafts(s, job_id)
+                s.get(Job, job_id).made = s.execute(select(func.count()).select_from(Problem).where(
+                    Problem.job_id == job_id, Problem.status == "ready")).scalar_one()
             self._finish(job_id, "failed", str(exc))
         except (LLMUnavailable, SandboxUnavailable) as exc:
             log.warning("job %s waiting: %s", job_id, exc)

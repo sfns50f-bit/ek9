@@ -451,7 +451,9 @@ def test_review_mode_password_delete_and_export(settings, sessions, sandbox, mon
     assert r.status_code == 303 and r.headers["location"] == "/review/login"
     assert client.get("/review/export.md", follow_redirects=False).status_code == 303
     pid = all_rows(sessions, Problem)[0].id
-    assert client.get(f"/problems/{pid}?review=1").status_code == 404
+    r = client.get(f"/problems/{pid}?review=1", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/review/login"
+    assert client.get(f"/problems/{pid}").status_code == 404
     assert "パスワードが違います" in client.post("/review/login", data={"password": "x"}, follow_redirects=True).text
     r = client.post("/review/login", data={"password": "himitsu"}, follow_redirects=True)
     assert "問題検証モード" in r.text and "正解" in r.text and "gemma4:12b-it-qat" in r.text
@@ -505,3 +507,33 @@ def test_status_pages_are_split(client):
     for page in ("/status", "/status/models", "/status/quality", "/status/llm"):
         r = client.get(page)
         assert r.status_code == 200 and "問題検証モード" in r.text, page
+
+
+def test_drafts_and_duplicates_do_not_show_answers(client, settings, sessions, sandbox):
+    """検証待ちの下書きと、同じ数値の問題がストックにある duplicate は、正解つきで見せない。"""
+    stock_up(settings, sessions, sandbox, count=1)
+    with sessions.begin() as s:
+        ready = s.execute(select(Problem)).scalars().first()
+        common = dict(subject="math", unit=ready.unit, template=ready.template, format="choice",
+                      question="q", params_key=ready.params_key)
+        draft = Problem(status="draft", **common)
+        dup = Problem(status="rejected", reject_code="duplicate", **common)
+        bad = Problem(status="rejected", reject_code="solver_mismatch", **common)
+        s.add_all([draft, dup, bad])
+    for p in (draft, dup):
+        assert client.get(f"/problems/{p.id}").status_code == 404
+    assert client.get(f"/problems/{bad.id}").status_code == 200
+    assert f"/problems/{dup.id}" not in client.get("/status/quality?days=0").text
+
+
+def test_review_level_filter_includes_problems_from_before_levels(client, settings, sessions, sandbox):
+    stock_up(settings, sessions, sandbox, scope="tmpl:m2-int-area", count=1)
+    with sessions.begin() as s:
+        for p in s.execute(select(Problem)).scalars():
+            p.level = ""  # 前の版で作った問題（レベルの列が空）
+    text = client.get("/review?level=common").text
+    assert "放物線で囲まれた面積" in text and "共通テスト" in text
+    assert "放物線で囲まれた面積" not in client.get("/review?level=basic").text
+    w = Worker(settings, sessions, OracleLLM(sessions), sandbox)
+    w.recover()  # worker の起動時にレベルを書き込む
+    assert {p.level for p in all_rows(sessions, Problem)} == {"common"}
