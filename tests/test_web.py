@@ -374,7 +374,7 @@ def test_think_setting_on_status(client, sessions):
 def test_generate_with_models_units_and_levels(client, settings, sessions):
     """作成依頼でモデル・複数の単元・レベルを選べる。モデルの初期値は /status の設定。"""
     r = client.get("/generate")
-    assert 'value="gemma4:12b-it-qat"' in r.text and 'name="levels"' in r.text and 'value="unit:m2-int"' in r.text
+    assert 'value="gemma4:12b-it-qat"' in r.text and "一覧にないモデル" in r.text and 'name="levels"' in r.text and 'value="unit:m2-int"' in r.text
     r = client.post("/generate", data={"subject": "math", "scope": ["unit:m1-quad", "tmpl:m1-quad-vertex",
                                                                      "tmpl:m2-int-area"],
                                        "levels": ["basic", "common"], "format": "choice", "count": "4",
@@ -386,6 +386,10 @@ def test_generate_with_models_units_and_levels(client, settings, sessions):
     assert job.scope == "unit:m1-quad,tmpl:m2-int-area" and job.levels == "basic,common"
     assert (job.gen_model, job.verify_model, job.verify_count, job.verify_model_2) == \
         ("qwen3.5:4b", "gemma4:e4b", 1, "")
+    client.post("/generate", data={"subject": "math", "format": "choice", "count": "1", "gen_model": "gemma4:e4b",
+                                   "gen_model_text": " anthropic/claude-x ", "verify_model_2": "-"})
+    job = all_rows(sessions, Job)[-1]
+    assert job.gen_model == "anthropic/claude-x" and job.verify_model_2 == ""
     bad = {"subject": "math", "scope": "unit:m1-quad", "levels": "jhs", "format": "choice", "count": "1"}
     assert client.post("/generate", data=bad).status_code == 400  # 中学レベルのテンプレートはまだない
     assert client.post("/generate", data={**bad, "levels": "nope"}).status_code == 400

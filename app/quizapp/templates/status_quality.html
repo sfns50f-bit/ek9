@@ -44,22 +44,19 @@
   <h2>依頼ごとの比較</h2>
   <p class="muted small">時間は Ollama の出力にかかった時間（eval）だけで比べます。モデルの読み込みは「読み込み」に分けました（依頼全体の合計）。
     作成の 1 問あたり＝作成役の時間 ÷ 作った下書きの数、検証の 1 問あたり＝検証役の時間（全回の合計）÷ 検証にかけた下書きの数。</p>
-  <div class="scroll">
-  <table class="compact small">
-    <tr><th>依頼</th><th>作成役</th><th>検証役</th><th>合格／作成</th><th>作成 1 問</th><th>検証 1 問</th><th>読み込み</th><th>不合格の内訳</th></tr>
+  <ul class="list small">
     {% for r in job_rows %}
-    {% set j = r.job %}
-    <tr><td>#{{ j.id }}<div class="muted">{{ j.created_at | localtime }}</div>{% set sub = get_subject(j.subject) %}<div class="muted">{{ sub.scope_label(j.scope) if sub else j.subject }}</div></td>
-      <td>{{ j.gen_model or "—" }}</td>
-      <td>{{ j.verify_model or "—" }}{% if j.verify_count %} ×{{ j.verify_count }}{% endif %}{% if j.verify_model_2 %}<br>＋{{ j.verify_model_2 }}{% endif %}</td>
-      <td>{{ r.made }}／{{ r.tried }}{% if r.pass_rate is not none %}<br>（{{ r.pass_rate }}%）{% endif %}</td>
-      <td>{{ r.gen_per ~ "秒" if r.gen_per is not none else "—" }}</td>
-      <td>{{ r.verify_per ~ "秒" if r.verify_per is not none else "—" }}</td>
-      <td>{{ r.load_s }}秒</td>
-      <td>{% for code, n in r.codes %}{{ codes.get(code, code) }} {{ n }}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</td></tr>
-    {% else %}<tr><td colspan="8" class="muted">まだありません</td></tr>{% endfor %}
-  </table>
-  </div>
+    {% set j = r.job %}{% set sub = get_subject(j.subject) %}
+    <li><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}
+      <span class="muted">{{ j.created_at | localtime }}・{{ JOB_STATUS.get(j.status, j.status) }}</span>
+      <div>作成役 <strong>{{ j.gen_model or "—" }}</strong>／検証役 <strong>{{ j.verify_model or "—" }}{% if j.verify_count %} ×{{ j.verify_count }}{% endif %}{% if j.verify_model_2 %} ＋ {{ j.verify_model_2 }}{% endif %}</strong></div>
+      <div>合格 {{ r.made }}／作成 {{ r.tried }}{% if r.pass_rate is not none %}（{{ r.pass_rate }}%）{% endif %}
+        ・作成 1 問 {{ r.gen_per ~ "秒" if r.gen_per is not none else "—" }}
+        ・検証 1 問 {{ r.verify_per ~ "秒" if r.verify_per is not none else "—" }}
+        ・読み込み {{ r.load_s }}秒</div>
+      {% if r.codes %}<div class="muted">不合格：{% for code, n in r.codes %}{{ codes.get(code, code) }} {{ n }}{% if not loop.last %}、{% endif %}{% endfor %}</div>{% endif %}</li>
+    {% else %}<li class="muted">まだありません</li>{% endfor %}
+  </ul>
 </section>
 
 <section class="card" id="rejected">

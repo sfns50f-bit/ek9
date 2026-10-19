@@ -410,13 +410,18 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     def generate(subject: str = Form(...), scope: Annotated[list[str], Form()] = [],  # noqa: B006
                  levels: Annotated[list[str], Form()] = [], format: str = Form("choice"),  # noqa: A002, B006
                  count: str = Form("10"), gen_model: str = Form(""), verify_model: str = Form(""),
-                 verify_count: str = Form(""), verify_model_2: str = Form("")) -> Response:
+                 verify_count: str = Form(""), verify_model_2: str = Form(""), gen_model_text: str = Form(""),
+                 verify_model_text: str = Form(""), verify_model_2_text: str = Form("")) -> Response:
         sub = subject_or_404(subject)
         scope_s, levels_s = form_scope(sub, scope), form_levels(levels)
         if format not in sub.formats or not sub.scope_valid(scope_s):
             raise HTTPException(400, "選び方が正しくありません")
         if not sub.templates_for(scope_s, format, levels_s):
             raise HTTPException(400, "この範囲・形式・レベルに当てはまる小単元がありません")
+        # 打ち込んだ名前は一覧の選択より優先する
+        gen_model = gen_model_text.strip() or gen_model
+        verify_model = verify_model_text.strip() or verify_model
+        verify_model_2 = verify_model_2_text.strip() or verify_model_2
         with sessions.begin() as s:
             # 依頼ごとにモデルを記録する（空の欄は /status の設定）。後で設定を変えても、この依頼はこのモデルで最後まで処理する
             plan = runtime.model_plan(settings, s)
