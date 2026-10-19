@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% from "_macros.html" import mark, status_nav %}
+{% block title %}モデルと思考モード - AI問題集{% endblock %}
+{% block content %}
+{{ status_nav(page) }}
+{% if msg == "saved" %}<p class="notice">設定を保存しました。次の依頼から使われます（作る画面の初期値になります）。</p>{% endif %}
+{% if msg == "think" %}<p class="notice">思考モードの設定を保存しました。次の依頼から使われます。</p>{% endif %}
+{% if msg == "test" %}<p class="notice">検証のテストを順番待ちに入れました。下の「検証のテスト」に結果が出ます。</p>{% endif %}
+<section class="card" id="models">
+  <h2>モデルと検証の回数（作る画面の初期値）</h2>
+  <p class="muted small">ここで選んだものが「作る」画面の初期値になります。依頼ごとに作る画面で変えられ、依頼したときのモデルで最後まで処理します。</p>
+  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong></p>
+  <form method="post" action="/status/models">
+    {% macro model_select(name, current, env_value, allow_none=false) %}
+    <select name="{{ name }}">
+      <option value="">.env の設定（{{ env_value or "使わない" }}）</option>
+      {% if allow_none %}<option value="-" {{ 'selected' if current == '-' }}>使わない</option>{% endif %}
+      {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if current == m }}>{{ m }}</option>{% endfor %}
+      {% if current and current != '-' and current not in model_names %}<option value="{{ current }}" selected>{{ current }}（Ollama に見当たらない）</option>{% endif %}
+    </select>
+    {% endmacro %}
+    <label>作成に使うモデル {{ model_select("gen_model", overrides.gen_model, settings.gen_model) }}</label>
+    <label>検証役のモデル {{ model_select("verify_model", overrides.verify_model, settings.verify_model) }}</label>
+    <label>検証役に解かせる回数（全部一致したら合格）
+      <select name="verify_count">
+        <option value="">.env の設定（{{ settings.verify_count }} 回）</option>
+        {% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if overrides.verify_count == n|string }}>{{ n }} 回</option>{% endfor %}
+      </select></label>
+    <label>別系統の検証役（1回だけ追加で解かせる） {{ model_select("verify_model_2", overrides.verify_model_2, settings.verify_model_2, true) }}</label>
+    {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルから選べます。</p>{% endif %}
+    <button type="submit" class="primary">保存</button>
+  </form>
+</section>
+
+<section class="card" id="think">
+  <h2>思考モード（モデルごと）</h2>
+  <p class="muted small">考えてから答えるモデルは、考えた分も出力の上限に数えられ、JSON が途中で切れたり答えの読み取りを邪魔したりします。
+    選んだ設定はモデルごとに保存され、そのモデルを使うたびに同じ設定になります。「自動」は qwen3 系（qwen3.5 も）を切り、
+    それ以外（gemma4 など）はモデルの既定のままにします（gemma4 は思考を切ると JSON の指定が効かなくなる不具合がありました）。</p>
+  {% if not ollama.ok %}<p class="notice warn">Ollama につながっていないので、モデルの一覧を出せません（保存した設定は残っています）。</p>{% endif %}
+  <p class="muted small">Ollama に今あるモデルだけを出しています。Ollama から消したモデルの設定も保存したまま残るので、入れ直せば同じ設定が効きます。</p>
+  <table class="compact small">
+    <tr><th>モデル</th><th>いまの動き</th><th>設定</th></tr>
+    {% for r in think_rows %}
+    <tr><td>{{ r.model }}</td><td>{{ r.effective }}</td>
+      <td><form method="post" action="/status/think" class="inline"><input type="hidden" name="model" value="{{ r.model }}">
+        <select name="choice" onchange="this.form.submit()">
+          {% for key, label in think_labels.items() %}<option value="{{ key }}" {{ 'selected' if r.choice == key }}>{{ label }}</option>{% endfor %}
+        </select><noscript><button class="secondary small">保存</button></noscript></form></td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section class="card" id="tests">
+  <h2>検証のテスト</h2>
+  <p class="small">正解をわざとずらした問題を作り、検証役との突き合わせで弾かれることを確かめます（ストックには入りません）。
+    文章の確認など検証より前の段階で落ちたときは、最大 3 回まで作り直し、それでも届かなければ「判定できませんでした」と出ます。</p>
+  <form method="post" action="/status/test">
+    <select name="target">
+      {% for sub in subjects() if sub.test_format %}
+      <option value="{{ sub.id }}">{{ sub.name }}（小単元をおまかせ）</option>
+      {% for unit in sub.units() %}{% for su in unit.subunits %}
+      <option value="{{ sub.id }}|{{ su.id }}">{{ sub.name }}：{{ unit.label }}／{{ su.label }}</option>
+      {% endfor %}{% endfor %}
+      {% endfor %}
+    </select>
+    <button type="submit" class="secondary">テストを流す</button>
+  </form>
+  <ul class="list small">
+    {% for j in tests %}
+    <li>#{{ j.id }} {{ JOB_STATUS.get(j.status, j.status) }}
+      {% if j.error %}— {{ j.error }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{% endblock %}

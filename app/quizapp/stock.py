@@ -11,10 +11,10 @@ from collections import Counter, defaultdict
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .db import Attempt, Problem, utcnow
+from .db import Attempt, Job, Problem, utcnow
 from .subjects import all_subjects
 from .subjects.base import DEVICES, FORMATS, Subject
 
@@ -163,27 +163,43 @@ def template_stock(s: Session, user_id: int) -> list[dict[str, Any]]:
     return rows
 
 
-def verify_stats(s: Session, days: int = 30) -> dict[str, Any]:
-    """直近 days 日の作成・検証の成績。
+def _period(days: int, from_job: int):  # noqa: ANN202
+    """集計の期間の条件。days=0 はすべて。from_job を指定すればその依頼番号以降（直す前のデータを外すため）。"""
+    conds = []
+    if days > 0:
+        conds.append(Problem.created_at >= utcnow() - timedelta(days=days))
+    if from_job > 0:
+        conds.append(Problem.job_id >= from_job)
+    return conds
+
+
+def verify_stats(s: Session, days: int = 30, from_job: int = 0) -> dict[str, Any]:
+    """期間内の作成・検証の成績（検証のテストは含めない）。
 
     by_model: 検証役のモデルごとに、検証にかけた問題数と、そのモデルが弾いた数
+    by_gen: 作成役のモデルごとに、作った数・合格した数・不合格の理由の内訳
     by_code: 不合格の理由の種類ごとの数（作成段階の不合格も含む）
     """
-    since = utcnow() - timedelta(days=days)
     rows = s.execute(
-        select(Problem.status, Problem.reject_code, Problem.verification_json, Problem.created_at)
-        .where(Problem.created_at >= since, Problem.status.in_(("ready", "rejected")))
+        select(Problem.status, Problem.reject_code, Problem.verification_json, Problem.gen_model)
+        .where(*_period(days, from_job), Problem.status.in_(("ready", "rejected", "deleted")),
+               or_(Problem.job_id.is_(None), Problem.job_id.not_in(select(Job.id).where(Job.is_test.is_(True)))))
     ).all()
     by_code: Counter[str] = Counter()
     reached: Counter[str] = Counter()
     rejected_by: Counter[str] = Counter()
+    gen: dict[str, dict[str, Any]] = {}
     total = passed = 0
-    for status, code, vjson, _created in rows:
+    for status, code, vjson, gen_model in rows:
         total += 1
-        if status == "ready":
-            passed += 1
-        else:
+        g = gen.setdefault(gen_model or "（記録なし）", {"total": 0, "passed": 0, "codes": Counter()})
+        g["total"] += 1
+        if status == "rejected":
             by_code[code or "unknown"] += 1
+            g["codes"][code or "unknown"] += 1
+        else:  # 合格（後で問題検証モードで削除したものも、検証には合格している）
+            passed += 1
+            g["passed"] += 1
         try:
             entries = json.loads(vjson or "[]")
         except ValueError:
@@ -200,9 +216,57 @@ def verify_stats(s: Session, days: int = 30) -> dict[str, Any]:
             reached[m] += 1
     by_model = [{"model": m, "reached": n, "rejected": rejected_by[m],
                  "rate": round(100 * rejected_by[m] / n) if n else 0} for m, n in reached.most_common()]
-    return {"days": days, "total": total, "passed": passed,
+    by_gen = [{"model": m, "total": g["total"], "passed": g["passed"],
+               "rate": round(100 * g["passed"] / g["total"]) if g["total"] else 0,
+               "codes": g["codes"].most_common()}
+              for m, g in sorted(gen.items(), key=lambda kv: -kv[1]["total"])]
+    return {"days": days, "from_job": from_job, "total": total, "passed": passed,
             "pass_rate": round(100 * passed / total) if total else 0,
-            "by_code": by_code.most_common(), "by_model": by_model}
+            "by_code": by_code.most_common(), "by_model": by_model, "by_gen": by_gen}
+
+
+def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) -> list[dict[str, Any]]:
+    """依頼ごとの比較（モデルの比べ用）。
+
+    1 問あたりの作成時間 = 作成役の eval（出力にかかった時間）の合計 ÷ 作った下書きの数（作成の回数）
+    1 問あたりの検証時間 = 検証役の eval の合計 ÷ 検証にかけた下書きの数
+    モデルの読み込み（load）は混ぜずに、依頼全体の合計を別に出す
+    """
+    q = select(Job).where(Job.is_test.is_(False)).order_by(Job.id.desc()).limit(limit)
+    if days > 0:
+        q = q.where(Job.created_at >= utcnow() - timedelta(days=days))
+    if from_job > 0:
+        q = q.where(Job.id >= from_job)
+    jobs = list(s.execute(q).scalars())
+    codes: dict[int, Counter[str]] = defaultdict(Counter)
+    statuses: dict[int, Counter[str]] = defaultdict(Counter)
+    if jobs:
+        for jid, status, code, n in s.execute(
+            select(Problem.job_id, Problem.status, Problem.reject_code, func.count())
+            .where(Problem.job_id.in_([j.id for j in jobs]))
+            .group_by(Problem.job_id, Problem.status, Problem.reject_code)
+        ):
+            statuses[jid][status] += n
+            if status == "rejected":
+                codes[jid][code or "unknown"] += n
+    out = []
+    for j in jobs:
+        made = statuses[j.id]["ready"] + statuses[j.id]["deleted"]
+        tried = sum(statuses[j.id].values()) - statuses[j.id]["draft"]
+        out.append({
+            "job": j, "made": made, "tried": tried,
+            "pass_rate": round(100 * made / tried) if tried else None,
+            "gen_per": round(j.gen_eval_s / j.gen_attempts, 1) if j.gen_attempts and j.gen_calls else None,
+            "verify_per": round(j.verify_eval_s / j.verified, 1) if j.verified and j.verify_calls else None,
+            "load_s": round(j.gen_load_s + j.verify_load_s, 1),
+            "codes": codes[j.id].most_common(),
+        })
+    return out
+
+
+def recent_rejected(s: Session, days: int = 30, from_job: int = 0, limit: int = 30) -> list[Problem]:
+    return list(s.execute(select(Problem).where(*_period(days, from_job), Problem.status == "rejected")
+                          .order_by(Problem.id.desc()).limit(limit)).scalars())
 
 
 def per_template_rejects(s: Session, days: int = 30) -> dict[str, dict[str, int]]:

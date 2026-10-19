@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% from "_macros.html" import mark, status_nav %}
+{% block title %}検証の成績 - AI問題集{% endblock %}
+{% block content %}
+{{ status_nav(page) }}
+<form method="get" action="/status/quality" class="card filters">
+  <h1>検証の成績</h1>
+  <label>期間
+    <select name="days" onchange="this.form.submit()">
+      {% for d, label in [(1, "直近 24 時間"), (7, "7 日"), (30, "30 日"), (0, "すべて")] %}
+      <option value="{{ d }}" {{ 'selected' if days == d }}>{{ label }}</option>{% endfor %}
+    </select></label>
+  <label>この依頼番号以降だけ（直す前のデータを外す）
+    <input type="number" name="from_job" value="{{ from_job }}" min="1" inputmode="numeric" placeholder="例：依頼 # の番号"></label>
+  <button type="submit" class="secondary">絞り込む</button>
+</form>
+<section class="card">
+  <h2>合計</h2>
+  <p>作成 {{ stats.total }} 問のうち合格 {{ stats.passed }} 問（{{ stats.pass_rate }}%）<span class="muted small">（検証のテストは含めない）</span></p>
+  <h3>作成役のモデルごと</h3>
+  <table class="compact small">
+    <tr><th>作成役</th><th>作った数</th><th>合格</th><th>不合格の内訳</th></tr>
+    {% for g in stats.by_gen %}
+    <tr><td>{{ g.model }}</td><td>{{ g.total }}</td><td>{{ g.passed }}（{{ g.rate }}%）</td>
+      <td>{% for code, n in g.codes %}{{ codes.get(code, code) }} {{ n }}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+  <h3>検証役のモデルごと</h3>
+  <table class="compact">
+    <tr><th>検証役のモデル</th><th>検証した数</th><th>弾いた数</th><th>弾いた割合</th></tr>
+    {% for m in stats.by_model %}
+    <tr><td>{{ m.model }}</td><td>{{ m.reached }}</td><td>{{ m.rejected }}</td><td>{{ m.rate }}%</td></tr>
+    {% else %}<tr><td colspan="4" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+  <table class="compact">
+    <tr><th>不合格の理由</th><th>数</th></tr>
+    {% for code, n in stats.by_code %}<tr><td>{{ codes.get(code, code) }}</td><td>{{ n }}</td></tr>
+    {% else %}<tr><td colspan="2" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+  <p class="muted small">検証役が正しい問題まで弾きすぎる（「検証役の答えが正解と一致しない」が多い）ときは、検証役を大きいモデルに変えてください。</p>
+</section>
+
+<section class="card" id="jobs">
+  <h2>依頼ごとの比較</h2>
+  <p class="muted small">時間は Ollama の出力にかかった時間（eval）だけで比べます。モデルの読み込みは「読み込み」に分けました（依頼全体の合計）。
+    作成の 1 問あたり＝作成役の時間 ÷ 作った下書きの数、検証の 1 問あたり＝検証役の時間（全回の合計）÷ 検証にかけた下書きの数。</p>
+  <div class="scroll">
+  <table class="compact small">
+    <tr><th>依頼</th><th>作成役</th><th>検証役</th><th>合格／作成</th><th>作成 1 問</th><th>検証 1 問</th><th>読み込み</th><th>不合格の内訳</th></tr>
+    {% for r in job_rows %}
+    {% set j = r.job %}
+    <tr><td>#{{ j.id }}<div class="muted">{{ j.created_at | localtime }}</div>{% set sub = get_subject(j.subject) %}<div class="muted">{{ sub.scope_label(j.scope) if sub else j.subject }}</div></td>
+      <td>{{ j.gen_model or "—" }}</td>
+      <td>{{ j.verify_model or "—" }}{% if j.verify_count %} ×{{ j.verify_count }}{% endif %}{% if j.verify_model_2 %}<br>＋{{ j.verify_model_2 }}{% endif %}</td>
+      <td>{{ r.made }}／{{ r.tried }}{% if r.pass_rate is not none %}<br>（{{ r.pass_rate }}%）{% endif %}</td>
+      <td>{{ r.gen_per ~ "秒" if r.gen_per is not none else "—" }}</td>
+      <td>{{ r.verify_per ~ "秒" if r.verify_per is not none else "—" }}</td>
+      <td>{{ r.load_s }}秒</td>
+      <td>{% for code, n in r.codes %}{{ codes.get(code, code) }} {{ n }}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</td></tr>
+    {% else %}<tr><td colspan="8" class="muted">まだありません</td></tr>{% endfor %}
+  </table>
+  </div>
+</section>
+
+<section class="card" id="rejected">
+  <details open><summary>この期間の不合格（新しい順）</summary>
+    <p class="muted small">「答えが読み取れなかった」は検証役の書き方の問題、「数値が違う」は問題か検証役の解き方の問題です。生の出力で見分けてください。</p>
+    <ul class="list small">
+      {% for p in rejected %}
+      {% set f = failure(p) %}
+      <li>
+        <a href="/problems/{{ p.id }}">#{{ p.id }} {{ get_subject(p.subject).label_of(p.template) if get_subject(p.subject) else p.template }}</a>
+        — <strong>{{ codes.get(p.reject_code, p.reject_code) }}</strong>
+        <div class="muted">作成: {{ p.gen_model or "—" }}{% if f.model and f.step == "検証" %}／検証: {{ f.model }}{% endif %}</div>
+        <div class="mathtext">{{ p.reject_reason }}</div>
+        {% if p.question %}<details><summary>問題文</summary><div class="mathtext">{{ p.question }}</div></details>{% endif %}
+        {% if f.raw %}<details><summary>{{ "検証役" if f.step == "検証" else "作成役" }}の生の出力</summary><pre>{{ f.raw }}</pre></details>{% endif %}
+      </li>
+      {% else %}<li class="muted">ありません</li>{% endfor %}
+    </ul>
+  </details>
+</section>
+
+{% endblock %}

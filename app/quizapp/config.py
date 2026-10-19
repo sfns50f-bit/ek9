@@ -65,6 +65,9 @@ class Settings:
     # 解き始めのセットに混ぜる「間違えた問題」の上限の割合（%）
     retry_percent: int = field(default_factory=lambda: _int("RETRY_PERCENT", 30))
 
+    # 問題検証モード（/review。正解つきの一覧・削除・書き出し）のパスワード。空ならパスワードなしで入れる
+    review_password: str = field(default_factory=lambda: os.environ.get("REVIEW_PASSWORD", "").strip())
+
     timezone: str = field(default_factory=lambda: _str("DISPLAY_TZ", "Asia/Tokyo"))
     # 開発用：データの場所の目印ファイルを確認しない（テストでだけ使う）
     skip_data_check: bool = field(default_factory=lambda: _bool("SKIP_DATA_CHECK", False))

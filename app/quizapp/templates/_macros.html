@@ -19,16 +19,44 @@
 </details>
 {%- endmacro %}
 
-{% macro scope_select(subject, name="scope", selected="", all_label="科目全体から") -%}
-<select name="{{ name }}" class="scope" data-subject="{{ subject.id }}">
-  <option value="">{{ all_label }}</option>
-  {% for unit in subject.units() %}
-  <optgroup label="{{ unit.label }}">
-    <option value="unit:{{ unit.id }}" {{ 'selected' if selected == 'unit:' ~ unit.id }}>{{ unit.label }}（全部）</option>
-    {% for su in unit.subunits %}
-    <option value="tmpl:{{ su.id }}" {{ 'selected' if selected == 'tmpl:' ~ su.id }}>　{{ su.label }}</option>
+{% macro status_nav(active) -%}
+<nav class="subnav">{% for href, label in STATUS_PAGES.items() %}<a href="{{ href }}" class="{{ 'active' if href == active }}">{{ label }}</a>{% endfor %}</nav>
+{%- endmacro %}
+
+{# 範囲の選び方：単元をチェックで複数選べる。単元を開くと小単元（テンプレート）ごとにも選べる。
+   何も選ばなければ科目全体。数字はストック（まだ解いていない問題）の数で、画面の JavaScript が入れる #}
+{% macro scope_picker(subject) -%}
+<div class="scope-picker" data-subject="{{ subject.id }}">
+  <details class="picker">
+    <summary>範囲：<span class="scope-summary">{{ subject.name }}（全体）</span>
+      <span class="count total" data-subject-total></span></summary>
+    <p class="muted small">何も選ばなければ科目全体です。単元の名前の横の ▸ を開くと、小単元ごとに選べます。</p>
+    {% for unit in subject.units() %}
+    <div class="unit-row">
+      <label class="check"><input type="checkbox" name="scope" value="unit:{{ unit.id }}" data-unit="{{ unit.id }}">
+        <span>{{ unit.label }}</span></label>
+      <span class="count" data-unit-count="{{ unit.id }}"></span>
+      <details class="subunits">
+        <summary>小単元</summary>
+        {% for su in unit.subunits %}
+        <div class="subunit-row" data-level="{{ su.level }}">
+          <label class="check"><input type="checkbox" name="scope" value="tmpl:{{ su.id }}" data-parent="{{ unit.id }}">
+            <span>{{ su.label }} <small class="muted">{{ LEVELS.get(su.level, "") }}</small></span></label>
+          <span class="count" data-tmpl-count="{{ su.id }}"></span>
+        </div>
+        {% endfor %}
+      </details>
+    </div>
     {% endfor %}
-  </optgroup>
+  </details>
+</div>
+{%- endmacro %}
+
+{% macro level_picker() -%}
+<fieldset class="levels">
+  <legend>レベル（選ばなければすべて）</legend>
+  {% for key, label in LEVELS.items() %}
+  <label class="check inline"><input type="checkbox" name="levels" value="{{ key }}"><span>{{ label }}</span></label>
   {% endfor %}
-</select>
+</fieldset>
 {%- endmacro %}

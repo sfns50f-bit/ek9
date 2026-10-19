@@ -21,21 +21,18 @@ function storageSet(key, value) {
   try { window.localStorage.setItem(key, value); } catch (e) { /* 保存できなくても動作は続ける */ }
 }
 
-// --- 解き始め・作成依頼：科目ごとの範囲の切り替えと、残りの問題数の表示 -----------
+// --- 解き始め・作成依頼：科目ごとの範囲（単元・小単元のチェック）とレベル、ストックの数の表示 ---
 function setupScopeForm(form, mode) {
   const subjectSel = form.querySelector("#subject");
   const dataEl = document.getElementById("home-data");
   const hint = form.querySelector("#stock-hint");
   if (!subjectSel || !dataEl) return;
   const data = JSON.parse(dataEl.textContent);
-  const scopes = form.querySelectorAll("select.scope");
+  const pickers = form.querySelectorAll(".scope-picker");
   const devices = { phone: ["choice"], keyboard: ["input", "choice"] };
   const key = "quiz." + mode;
 
-  function currentScope() {
-    const sel = form.querySelector(`select.scope[data-subject="${subjectSel.value}"]`);
-    return sel ? sel.value : "";
-  }
+  function picker() { return form.querySelector(`.scope-picker[data-subject="${subjectSel.value}"]`); }
   function formats() {
     if (mode === "start") {
       const d = form.querySelector("input[name=device]:checked");
@@ -44,39 +41,83 @@ function setupScopeForm(form, mode) {
     const f = form.querySelector("input[name=format]:checked");
     return [f ? f.value : "choice"];
   }
-  function templatesOf(subject, scope) {
-    const out = [];
-    subject.units.forEach((u) => u.subunits.forEach((su) => {
-      if (scope.startsWith("unit:") && u.id !== scope.slice(5)) return;
-      if (scope.startsWith("tmpl:") && su.id !== scope.slice(5)) return;
-      out.push(su.id);
-    }));
-    return out;
+  function levels() { return [...form.querySelectorAll("input[name=levels]:checked")].map((c) => c.value); }
+  function checkedScope() {
+    const p = picker();
+    return p ? [...p.querySelectorAll("input[name=scope]:checked")].map((c) => c.value) : [];
   }
   function update() {
-    scopes.forEach((sel) => {
-      const on = sel.dataset.subject === subjectSel.value;
-      sel.hidden = !on;
-      sel.disabled = !on;
+    pickers.forEach((p) => {
+      const on = p.dataset.subject === subjectSel.value;
+      p.hidden = !on;
+      p.querySelectorAll("input").forEach((i) => { i.disabled = !on; });
     });
     const subject = data[subjectSel.value];
-    if (subject && hint) {
-      let n = 0;
-      templatesOf(subject, currentScope()).forEach((t) => formats().forEach((f) => { n += subject.counts[`${t}|${f}`] || 0; }));
+    const p = picker();
+    if (!subject || !p) return;
+    const lv = levels();
+    const scope = checkedScope();
+    const chosen = new Set();
+    let subjectTotal = 0;
+    let chosenTotal = 0;
+    subject.units.forEach((u) => {
+      let unitTotal = 0;
+      u.subunits.forEach((su) => {
+        let n = 0;
+        formats().forEach((f) => { n += subject.counts[`${su.id}|${f}`] || 0; });
+        const inLevel = !lv.length || lv.includes(su.level);
+        const row = p.querySelector(`[data-tmpl-count="${su.id}"]`);
+        if (row) {
+          row.textContent = `${n} 問`;
+          row.parentElement.classList.toggle("dim", !inLevel);
+        }
+        if (!inLevel) return;
+        unitTotal += n;
+        const picked = !scope.length || scope.includes(`unit:${u.id}`) || scope.includes(`tmpl:${su.id}`);
+        if (picked) { chosenTotal += n; }
+        if (scope.includes(`unit:${u.id}`) || scope.includes(`tmpl:${su.id}`)) chosen.add(u.label);
+      });
+      subjectTotal += unitTotal;
+      const el = p.querySelector(`[data-unit-count="${u.id}"]`);
+      if (el) el.textContent = `${unitTotal} 問`;
+    });
+    const total = p.querySelector("[data-subject-total]");
+    if (total) total.textContent = `ストック ${subjectTotal} 問`;
+    const summary = p.querySelector(".scope-summary");
+    if (summary) summary.textContent = chosen.size ? [...chosen].join("、") : `${subject.name}（全体）`;
+    if (hint) {
       hint.textContent = mode === "start"
-        ? `この範囲でまだ解いていない問題：${n} 問`
-        : `この範囲・形式のストック（まだ解いていない問題）：${n} 問`;
+        ? `選んだ範囲でまだ解いていない問題：${chosenTotal} 問`
+        : `選んだ範囲・形式のストック（まだ解いていない問題）：${chosenTotal} 問`;
     }
-    storageSet(key, JSON.stringify({ subject: subjectSel.value, scope: currentScope() }));
+    storageSet(key, JSON.stringify({ subject: subjectSel.value, scope, levels: lv }));
   }
+  // 単元にチェック → その小単元を全部チェック。小単元を外す → 単元のチェックも外す
+  form.addEventListener("change", (ev) => {
+    const t = ev.target;
+    if (t.name === "scope" && t.dataset.unit) {
+      form.querySelectorAll(`input[data-parent="${t.dataset.unit}"]`).forEach((c) => { c.checked = t.checked; });
+    } else if (t.name === "scope" && t.dataset.parent) {
+      const kids = [...form.querySelectorAll(`input[data-parent="${t.dataset.parent}"]`)];
+      const unit = form.querySelector(`input[data-unit="${t.dataset.parent}"]`);
+      if (unit) unit.checked = kids.every((c) => c.checked);
+    }
+    update();
+  });
   let last = null;
   try { last = JSON.parse(storageGet(key) || "null"); } catch (e) { last = null; }
   if (last && data[last.subject]) {
     subjectSel.value = last.subject;
-    const sel = form.querySelector(`select.scope[data-subject="${last.subject}"]`);
-    if (sel && [...sel.options].some((o) => o.value === last.scope)) sel.value = last.scope;
+    const p = picker();
+    (last.scope || []).forEach((v) => {
+      const box = p && [...p.querySelectorAll("input[name=scope]")].find((c) => c.value === v);
+      if (box) box.checked = true;
+    });
+    (last.levels || []).forEach((v) => {
+      const box = form.querySelector(`input[name=levels][value="${v}"]`);
+      if (box) box.checked = true;
+    });
   }
-  form.addEventListener("change", update);
   update();
   form.addEventListener("submit", () => {
     const button = form.querySelector("button[type=submit]");

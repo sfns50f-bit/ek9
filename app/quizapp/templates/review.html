@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% from "_macros.html" import math, status_nav %}
+{% block title %}問題検証モード - AI問題集{% endblock %}
+{% block content %}
+{{ status_nav(page) }}
+{% if msg == "deleted" %}<p class="notice">削除しました。この問題は今後出題しません（回答の記録は残ります）。</p>{% endif %}
+{% if msg == "restored" %}<p class="notice">ストックに戻しました。</p>{% endif %}
+{% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) %}
+<form method="get" action="/review" class="card filters">
+  <h1>問題検証モード</h1>
+  <p class="muted small">正解・選択肢（誤答の間違いの種類）・ヒント・解説・作成役と検証役のモデルを確かめ、おかしな問題を削除します。
+    子供に見せないでください。{% if locked %}（パスワードで保護されています）{% endif %}</p>
+  <label>科目 <select name="subject"><option value="">すべて</option>
+    {% for sub in subjects() %}<option value="{{ sub.id }}" {{ 'selected' if f.subject == sub.id }}>{{ sub.name }}</option>{% endfor %}</select></label>
+  <label>単元 <select name="unit"><option value="">すべて</option>
+    {% for sub in subjects() %}{% for u in sub.units() %}<option value="{{ u.id }}" {{ 'selected' if f.unit == u.id }}>{{ u.label }}</option>{% endfor %}{% endfor %}</select></label>
+  <label>レベル <select name="level"><option value="">すべて</option>
+    {% for key, label in options.levels.items() %}<option value="{{ key }}" {{ 'selected' if f.level == key }}>{{ label }}</option>{% endfor %}</select></label>
+  <label>作成役 <select name="gen_model"><option value="">すべて</option>
+    {% for m in options.gen_models %}<option value="{{ m }}" {{ 'selected' if f.gen_model == m }}>{{ m }}</option>{% endfor %}</select></label>
+  <label>状態 <select name="status">
+    {% for key, label in options.statuses.items() %}<option value="{{ key }}" {{ 'selected' if f.status == key }}>{{ label }}</option>{% endfor %}</select></label>
+  <div class="actions">
+    <button type="submit" class="primary">絞り込む</button>
+    <a class="button secondary" href="/review/export.md?{{ qs }}" target="_blank">Markdown で表示</a>
+    <a class="button secondary" href="/review/export.md?{{ qs }}&download=1">Markdown を保存</a>
+  </div>
+  <p class="muted small">Markdown は、冒頭に「{{ "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。" }}」を付けて書き出します（絞り込んだ問題、新しい順に最大 500 問）。Claude などのチャットにそのまま貼れます。</p>
+</form>
+
+{% if not problems %}<p class="muted">当てはまる問題はありません。</p>{% endif %}
+{% for p in problems %}
+{% set lab = labels(p) %}
+<section class="card review-item" id="p{{ p.id }}">
+  <div class="meta small muted">
+    <span>#{{ p.id }}</span><span>{{ lab.subject }}／{{ lab.unit }}／{{ lab.subunit }}</span>
+    <span>{{ lab.level }}</span><span>{{ lab.format }}</span><span>{{ p.created_at | localtime }}</span>
+    {% if p.reported %}<span class="tag ng">報告あり</span>{% endif %}
+  </div>
+  {% if p.passage and p.passage.body %}<details><summary>本文</summary>{{ math(p.passage.body) }}</details>{% endif %}
+  {{ math(p.question, "question") }}
+  {% if p.choices %}
+  <ul class="choice-review">
+    {% for c in p.choices %}
+    <li class="{{ 'correct' if c.correct }}"><span class="choice-no">{{ "ABCDEFGH"[loop.index0] }}</span>
+      <span class="mathtext">{{ c.text }}</span>
+      {% if c.correct %}<span class="tag ok">正解</span>{% else %}<span class="tag">{{ mistake(p, c.mistake) }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <p>正解: <span class="mathtext">{{ p.answer_display or "—" }}</span>
+    {% if p.input_hint and p.format == "input" %}<span class="muted small">（入力の例: {{ p.input_hint }}）</span>{% endif %}</p>
+  <details><summary>ヒント</summary>{{ math(p.hint) }}</details>
+  <details><summary>解説</summary>{{ math(p.explanation, "explanation") }}</details>
+  <p class="small muted">作成役: {{ p.gen_model or "—" }}／検証役: {{ p.verify_models or "—" }}
+    {% if p.reject_reason %}<br>不合格の理由: <span class="mathtext">{{ p.reject_reason }}</span>{% endif %}</p>
+  <div class="actions">
+    <a class="button secondary small" href="/problems/{{ p.id }}?review=1">検証の記録</a>
+    {% if p.status == "ready" %}
+    <form method="post" action="/review/{{ p.id }}/delete" class="inline" onsubmit="return confirm('この問題を削除しますか？（出題しなくなります。回答の記録は残ります）')">
+      <input type="hidden" name="back" value="/review?{{ qs }}&page={{ page_no }}">
+      <button type="submit" class="secondary small">削除する</button></form>
+    {% elif p.status == "deleted" %}
+    <form method="post" action="/review/{{ p.id }}/restore" class="inline">
+      <input type="hidden" name="back" value="/review?{{ qs }}&page={{ page_no }}">
+      <button type="submit" class="secondary small">ストックに戻す</button></form>
+    {% endif %}
+  </div>
+</section>
+{% endfor %}
+<div class="actions">
+  {% if page_no > 1 %}<a class="button secondary" href="/review?{{ qs }}&page={{ page_no - 1 }}">前の 50 問</a>{% endif %}
+  {% if more %}<a class="button secondary" href="/review?{{ qs }}&page={{ page_no + 1 }}">次の 50 問</a>{% endif %}
+</div>
+{% if locked %}<form method="post" action="/review/logout"><button type="submit" class="secondary small">問題検証モードを出る</button></form>{% endif %}
+{% endblock %}

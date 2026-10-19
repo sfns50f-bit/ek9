@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}問題検証モード - AI問題集{% endblock %}
+{% block content %}
+<form method="post" action="/review/login" class="card">
+  <h1>問題検証モード</h1>
+  {% if msg == "wrong" %}<p class="notice warn">パスワードが違います。</p>{% endif %}
+  <p class="small">正解つきの問題の一覧です。パスワードを入れてください（.env の REVIEW_PASSWORD）。</p>
+  <label>パスワード <input type="password" name="password" autocomplete="current-password" autofocus
+    style="display:block;width:100%;font:inherit;font-size:18px;padding:10px;border:1px solid var(--line);border-radius:10px;min-height:48px"></label>
+  <button type="submit" class="primary big">入る</button>
+</form>
+{% endblock %}

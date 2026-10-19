@@ -540,3 +540,65 @@ def test_missing_model_fails_the_job_instead_of_waiting(settings, sessions, sand
     make_worker(settings, sessions, sandbox, llm).run_once()
     j = job(sessions, jid)
     assert j.status == "failed" and "見つかりません" in j.error
+
+
+def test_job_keeps_the_models_chosen_at_request(settings, sessions, sandbox):
+    """依頼に記録したモデルで最後まで処理する（後で /status の設定を変えても変わらない）。"""
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, count=1, gen_model="qwen3.5:4b", verify_model="gemma4:12b-it-qat", verify_count=1)
+    with sessions.begin() as s:
+        save_overrides(s, {"gen_model": "gemma4:e4b", "verify_model": "gemma4:e4b", "verify_count": "2"})
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.calls == [("gen", "qwen3.5:4b"), ("solve", "gemma4:12b-it-qat")]
+    p = problems(sessions, status="ready")[0]
+    assert p.gen_model == "qwen3.5:4b" and p.verify_models == "gemma4:12b-it-qat ×1"
+    # モデルを記録していない（前の版の）依頼は、取りかかった時点の設定を記録してから処理する
+    jid2 = add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    j = job(sessions, jid2)
+    assert (j.gen_model, j.verify_model, j.verify_count) == ("gemma4:e4b", "gemma4:e4b", 2)
+    assert job(sessions, jid).status == "done"
+
+
+def test_problems_record_level_and_related_units(settings, sessions, sandbox):
+    add_job(sessions, scope="tmpl:m2-int-area", count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    p = problems(sessions, status="ready")[0]
+    assert p.level == "common" and p.related_units == "m1-quad"
+
+
+def test_levels_and_several_units_limit_the_templates(settings, sessions, sandbox):
+    from quizapp.subjects.math import MathSubject
+
+    sub = MathSubject()
+    both = sub.templates_for("unit:m1-quad,tmpl:m2-int-area")
+    assert set(both) == {"m1-quad-vertex", "m1-quad-ineq", "m2-int-area"}
+    assert sub.templates_for("unit:m1-quad,tmpl:m2-int-area", levels="common") == ["m2-int-area"]
+    assert sub.templates_for("", levels="jhs") == []  # 中学レベルのテンプレートはまだない
+    assert sub.scope_valid("unit:m1-quad,tmpl:m2-int-area") and not sub.scope_valid("unit:nope")
+    jid = add_job(sessions, scope="unit:m1-quad", levels="jhs", count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    assert job(sessions, jid).status == "failed" and "レベル" in job(sessions, jid).error
+
+
+def test_api_only_job_runs_while_ollama_is_down(settings, sessions, sandbox):
+    """API のモデルだけを使う依頼は、Ollama が止まっていても進める（API を使う日のための準備）。"""
+    from quizapp.llm import LLMRouter, LLMUnavailable
+
+    class DownOllama:
+        def chat_json(self, *a, **kw):
+            raise LLMUnavailable("つながりません")
+
+        def list_models(self):
+            raise LLMUnavailable("つながりません")
+
+    api = OracleLLM(sessions)
+    router = LLMRouter(DownOllama(), {"anthropic": api})
+    ollama_job = add_job(sessions, count=1)
+    api_job = add_job(sessions, count=1, gen_model="anthropic/claude-x", verify_model="anthropic/claude-y",
+                      verify_count=1)
+    w = make_worker(settings, sessions, sandbox, router)
+    assert w.run_once()
+    assert job(sessions, api_job).status == "done"
+    assert job(sessions, ollama_job).status == "pending"
+    assert api.calls == [("gen", "claude-x"), ("solve", "claude-y")]

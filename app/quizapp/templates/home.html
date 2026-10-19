@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import scope_select %}
+{% from "_macros.html" import level_picker, scope_picker %}
 {% block content %}
 {% if msg == "empty" %}
 <p class="notice warn">この範囲・端末で出せる問題がまだありません。「作る」から作成を依頼してください。</p>
@@ -15,9 +15,8 @@
       {% for sub in subjects() %}<option value="{{ sub.id }}">{{ sub.name }}</option>{% endfor %}
     </select>
   </label>
-  <label>範囲
-    {% for sub in subjects() %}{{ scope_select(sub) }}{% endfor %}
-  </label>
+  {% for sub in subjects() %}{{ scope_picker(sub) }}{% endfor %}
+  {{ level_picker() }}
   <fieldset class="segmented">
     <legend>使う端末</legend>
     {% for key, (label, formats) in DEVICES.items() %}
