@@ -523,3 +523,18 @@ def test_think_setting_is_applied_per_model(settings, sessions, sandbox):
     add_job(sessions, count=1)
     make_worker(settings, sessions, sandbox, llm).run_once()
     assert ("gemma4:e4b", False) in llm.seen and ("gemma4:12b-it-qat", None) in llm.seen
+
+
+def test_missing_model_fails_the_job_instead_of_waiting(settings, sessions, sandbox):
+    from quizapp.llm import LLMModelMissing
+
+    llm = OracleLLM(sessions)
+
+    def missing(*a, **kw):
+        raise LLMModelMissing("モデル gemma4:12b-it-qat が Ollama に見つかりません")
+
+    llm.chat_json = missing
+    jid = add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = job(sessions, jid)
+    assert j.status == "failed" and "見つかりません" in j.error

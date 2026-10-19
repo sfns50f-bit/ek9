@@ -97,8 +97,10 @@ def test_cancel_stops_within_seconds(fake, mode):
 
 
 def test_missing_model_and_unreachable(fake):
+    from quizapp.llm import LLMModelMissing
+
     server = fake("missing")
-    with pytest.raises(LLMUnavailable, match="見つかりません"):
+    with pytest.raises(LLMModelMissing, match="見つかりません"):
         OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA)
     with pytest.raises(LLMUnavailable, match="接続できません"):
         OllamaClient("http://127.0.0.1:9").chat_json("m", "sys", "user", SCHEMA)
@@ -120,3 +122,37 @@ def test_latex_backslashes_and_thinking_in_json_are_read():
     assert extract_json(raw) == {"answer": "2\\sqrt{21}", "work": "\\frac{1}{2} \\cdot x"}
     assert extract_json('<think>{maybe}</think>{"answer": "3"}') == {"answer": "3"}
     assert extract_json('```json\n{"answer": "3"}\n```') == {"answer": "3"}
+
+
+def test_router_sends_api_models_to_their_provider(fake):
+    """モデル名の頭に「提供元/」があれば API の提供元へ。設定されていなければモデルが見つからない扱い。"""
+    from quizapp.llm import LLMModelMissing, LLMRouter, provider_of
+
+    assert provider_of("gemma4:e4b") == ("ollama", "gemma4:e4b")
+    assert provider_of("anthropic/claude-x") == ("anthropic", "claude-x")
+    server = fake("ok")
+
+    class FakeApi:
+        label, should_abort, think_for = "", None, None
+
+        def __init__(self):
+            self.seen = []
+
+        def chat_json(self, model, system, user, schema, temperature=0.7):
+            self.seen.append((model, self.label))
+            return {"answer": "api"}
+
+        def list_models(self):
+            return [{"name": "claude-x"}]
+
+        def pop_calls(self):
+            return []
+
+    api = FakeApi()
+    router = LLMRouter(OllamaClient(server.url), {"anthropic": api})
+    router.label = "検証"
+    assert router.chat_json("anthropic/claude-x", "s", "u", SCHEMA) == {"answer": "api"}
+    assert api.seen == [("claude-x", "検証")]
+    assert router.chat_json("gemma4:e4b", "s", "u", SCHEMA) == {"answer": "42"}
+    with pytest.raises(LLMModelMissing, match="openai"):
+        LLMRouter(OllamaClient(server.url)).chat_json("openai/gpt-x", "s", "u", SCHEMA)

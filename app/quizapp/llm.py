@@ -26,6 +26,13 @@ class LLMUnavailable(RuntimeError):
     """Ollama に接続できない、またはモデルが見つからない。"""
 
 
+class LLMModelMissing(RuntimeError):
+    """選んだモデルが見つからない（Ollama に入っていない、API の提供元が設定されていない）。
+
+    待っても直らないので、その依頼は失敗で止める（LLMUnavailable のように再試行しない）。
+    """
+
+
 class LLMCancelled(RuntimeError):
     """呼び出し中に取り消された（should_abort が真になった）。"""
 
@@ -144,7 +151,8 @@ class OllamaClient:
         state = self._stream("/api/chat", body)
         status = state.get("status")
         if status == 404:
-            raise LLMUnavailable(f"モデル {model} が見つかりません。`ollama pull {model}` を実行してください")
+            raise LLMModelMissing(f"モデル {model} が Ollama に見つかりません。`ollama pull {model}` を実行するか、"
+                                  "別のモデルを選んでください")
         if status is not None and status >= 500:
             # GPU のメモリ不足やモデルの読み込み失敗など。作り直しの回数を使わずに、後で再試行する
             raise LLMUnavailable(f"Ollama がエラーを返しました（{status}）: {state.get('text', '')[:300]}")
@@ -267,3 +275,90 @@ class OllamaClient:
                 "quantization": details.get("quantization_level", ""),
             })
         return sorted(models, key=lambda m: m["name"])
+
+
+# ---------------------------------------------------------------------------
+# 提供元ごとの振り分け（将来 API で作成するときの入口）
+# ---------------------------------------------------------------------------
+
+# モデル名の頭に「提供元/」を付けると、その提供元の API に振り分ける（例: anthropic/claude-…）。
+# 付けなければ Ollama。Ollama のモデル名は「gemma4:e4b」のように / を含まないので区別できる。
+# 提供元を足すときは、OllamaClient と同じ形（chat_json・list_models・pop_calls と、属性 label・
+# should_abort・think_for）のクラスを作り、LLMRouter の providers に登録する（CLAUDE.md の手順を参照）。
+API_PROVIDERS = ("anthropic", "openai", "google")
+
+
+def provider_of(model: str) -> tuple[str, str]:
+    """(提供元, 提供元の中でのモデル名)。"""
+    head, sep, rest = model.partition("/")
+    if sep and head in API_PROVIDERS:
+        return head, rest
+    return "ollama", model
+
+
+class LLMRouter:
+    """モデル名で提供元のクライアントに振り分ける。worker からは 1 つのクライアントに見える。"""
+
+    def __init__(self, ollama: Any, providers: dict[str, Any] | None = None) -> None:
+        self.providers: dict[str, Any] = {"ollama": ollama, **(providers or {})}
+        self._label = ""
+        self._should_abort: Callable[[], bool] | None = None
+        self._think_for: Callable[[str], bool | None] | None = None
+
+    # worker が設定する属性（呼び出しの種類・取り消しの確認・思考モード）は、すべての提供元に配る
+    def _broadcast(self, name: str, value: Any) -> None:
+        for client in self.providers.values():
+            setattr(client, name, value)
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @label.setter
+    def label(self, value: str) -> None:
+        self._label = value
+        self._broadcast("label", value)
+
+    @property
+    def should_abort(self) -> Callable[[], bool] | None:
+        return self._should_abort
+
+    @should_abort.setter
+    def should_abort(self, value: Callable[[], bool] | None) -> None:
+        self._should_abort = value
+        self._broadcast("should_abort", value)
+
+    @property
+    def think_for(self) -> Callable[[str], bool | None] | None:
+        return self._think_for
+
+    @think_for.setter
+    def think_for(self, value: Callable[[str], bool | None] | None) -> None:
+        self._think_for = value
+        self._broadcast("think_for", value)
+
+    def chat_json(self, model: str, system: str, user: str, schema: dict[str, Any], *,
+                  temperature: float = 0.7) -> dict[str, Any]:
+        provider, name = provider_of(model)
+        client = self.providers.get(provider)
+        if client is None:
+            raise LLMModelMissing(f"API の提供元「{provider}」はまだ使えるように設定されていません（モデル {model}）")
+        return client.chat_json(name, system, user, schema, temperature=temperature)
+
+    def list_models(self) -> list[dict[str, Any]]:
+        """Ollama のモデル（つながらなければ LLMUnavailable）と、設定済みの API のモデル。"""
+        models = self.providers["ollama"].list_models()
+        for provider, client in self.providers.items():
+            if provider == "ollama":
+                continue
+            try:
+                models += [{**m, "name": f"{provider}/{m['name']}"} for m in client.list_models()]
+            except Exception:  # API の一覧が取れなくても Ollama のモデルは使える
+                continue
+        return models
+
+    def pop_calls(self) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+        for client in self.providers.values():
+            calls += client.pop_calls() if hasattr(client, "pop_calls") else []
+        return calls

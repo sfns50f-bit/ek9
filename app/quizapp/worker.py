@@ -24,7 +24,7 @@ from . import backup
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import Job, Passage, Problem, dumps, init_db, kv_json, kv_set, utcnow
-from .llm import LLMCancelled, LLMError, LLMUnavailable, OllamaClient
+from .llm import LLMCancelled, LLMError, LLMModelMissing, LLMRouter, LLMUnavailable, OllamaClient
 from .runtime import ModelPlan, model_plan, resolve_think, think_settings
 from .sandbox_client import SandboxClient, SandboxUnavailable
 from .subjects import get_subject
@@ -46,7 +46,7 @@ class Cancelled(Exception):
 
 
 class Worker:
-    def __init__(self, settings: Settings, sessions: sessionmaker[Session], llm: OllamaClient,
+    def __init__(self, settings: Settings, sessions: sessionmaker[Session], llm: Any,
                  sandbox: SandboxClient, rng: random.Random | None = None) -> None:
         self.settings = settings
         self.sessions = sessions
@@ -440,6 +440,9 @@ class Worker:
             log.info("job %s cancelled", job_id)
             self.finish_cancel(job_id)
             self.set_status(f"依頼 #{job_id} を取り消しました", job_id)
+        except LLMModelMissing as exc:  # 待っても直らないので失敗で止める
+            log.warning("job %s failed: %s", job_id, exc)
+            self._finish(job_id, "failed", str(exc))
         except (LLMUnavailable, SandboxUnavailable) as exc:
             log.warning("job %s waiting: %s", job_id, exc)
             self.unavailable_until = time.monotonic() + self.settings.retry_seconds
@@ -492,8 +495,9 @@ def main() -> None:
     settings = Settings()
     ensure_or_exit(settings.data_dir, skip=settings.skip_data_check)
     sessions = init_db(settings.database_path)
-    llm = OllamaClient(settings.ollama_base_url, timeout=settings.llm_timeout, num_ctx=settings.num_ctx,
-                       num_predict=settings.num_predict, keep_alive=settings.keep_alive, think=settings.think)
+    ollama = OllamaClient(settings.ollama_base_url, timeout=settings.llm_timeout, num_ctx=settings.num_ctx,
+                          num_predict=settings.num_predict, keep_alive=settings.keep_alive, think=settings.think)
+    llm = LLMRouter(ollama)  # API の提供元を足すときはここに登録する
     Worker(settings, sessions, llm, SandboxClient(settings.sandbox_url)).run_forever()
 
 
