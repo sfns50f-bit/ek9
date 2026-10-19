@@ -6,6 +6,7 @@
 """
 
 import random
+import re
 
 import pytest
 import sympy as sp
@@ -140,7 +141,8 @@ def check_quad_ineq(inst):
     al, be, rel = inst.params["al"], inst.params["be"], inst.params["rel"]
     f = (x - al) * (x - be)
     xr = sp.Symbol("x", real=True)
-    cond = f.subs(x, xr) < 0 if rel == "<" else f.subs(x, xr) > 0
+    g = f.subs(x, xr)
+    cond = {"<": g < 0, ">": g > 0, "\\leqq": g <= 0, "\\geqq": g >= 0}[rel]
     assert sp.solve_univariate_inequality(cond, xr, relational=False) == inst.answer
 
 
@@ -168,9 +170,18 @@ def check_repeat(inst):
     import itertools
 
     event, n, k = inst.params["event"], inst.params["n"], inst.params["k"]
-    hit = {"1の目": {1}, "3の倍数の目": {3, 6}, "偶数の目": {2, 4, 6}, "5以上の目": {5, 6}}[event]
-    good = sum(1 for faces in itertools.product(range(1, 7), repeat=n) if sum(f in hit for f in faces) == k)
-    assert sp.Rational(good, 6 ** n) == inst.answer
+    trial = inst.params["trial"]
+    # 1 回の試行で起こりうる結果（同様に確からしい）と、そのうち「起きる」もの
+    outcomes, hit = {
+        "1の目が出る": (range(1, 7), {1}), "3の倍数の目が出る": (range(1, 7), {3, 6}),
+        "偶数の目が出る": (range(1, 7), {2, 4, 6}), "5以上の目が出る": (range(1, 7), {5, 6}),
+        "2以下の目が出る": (range(1, 7), {1, 2}), "6の約数の目が出る": (range(1, 7), {1, 2, 3, 6}),
+        "表が出る": ("表裏", {"表"}),
+    }.get(event) or (["赤"] * int(re.search(r"赤玉(\d+)個", trial).group(1))
+                     + ["白"] * int(re.search(r"白玉(\d+)個", trial).group(1)), {"赤"})
+    outcomes = list(outcomes)
+    good = sum(1 for res in itertools.product(outcomes, repeat=n) if sum(r in hit for r in res) == k)
+    assert sp.Rational(good, len(outcomes) ** n) == inst.answer
 
 
 def check_vieta(inst):
@@ -190,6 +201,7 @@ def check_trig_value(inst):
     name, m, d = inst.params["name"], inst.params["m"], inst.params["d"]
     import math
 
+    assert -2 * d < m < 2 * d and m != 0
     value = getattr(math, name)(math.pi * m / d)
     assert abs(value - float(inst.answer)) < 1e-9
 
@@ -208,8 +220,11 @@ def check_double(inst):
 
     s = float(sp.Rational(inst.params["s"]))
     th = math.pi - math.asin(s) if inst.params["obtuse"] else math.asin(s)
-    value = math.sin(2 * th) if "sin" in inst.params["target"] else math.cos(2 * th)
+    name = re.search(r"\\(sin|cos|tan) 2", inst.params["target"]).group(1)
+    value = getattr(math, name)(2 * th)
     assert abs(value - float(inst.answer)) < 1e-9
+    if inst.params["given"] == "cos":  # 与えた cos θ の値も角と合っている
+        assert f"\\cos\\theta = " in inst.givens[0]
 
 
 def check_synth(inst):
@@ -223,7 +238,8 @@ def check_synth(inst):
 
 def check_log_base(inst):
     c, m, n = inst.params["c"], inst.params["m"], inst.params["n"]
-    assert sp.simplify(sp.log(c ** n) / sp.log(c ** m) - inst.answer) == 0
+    b = sp.Rational(1, c ** n) if inst.params["inv"] else c ** n
+    assert sp.simplify(sp.log(b) / sp.log(c ** m) - inst.answer) == 0
 
 
 def check_log_equation(inst):
@@ -257,14 +273,13 @@ def check_definite(inst):
 
 
 def check_area_int(inst):
-    al, be = inst.params["al"], inst.params["be"]
-    if inst.params["line"]:
-        upper, lower = sp.sympify(inst.params["line"]), x ** 2
-    else:
-        upper, lower = sp.Integer(0), sp.expand((x - al) * (x - be))
-    mid = sp.Rational(al + be, 2)
-    assert (upper - lower).subs(x, mid) > 0
-    assert sp.integrate(upper - lower, (x, al, be)) == inst.answer
+    curve, line = sp.sympify(inst.params["curve"]), sp.sympify(inst.params["line"])
+    # 交点を解き直し、その間で |曲線 - 直線| を積分する（どちらが上かはテンプレートに頼らない）
+    a, b = sorted(sp.solve(sp.Eq(curve, line), x))
+    assert (a, b) == (inst.params["al"], inst.params["be"])
+    mid = (a + b) / 2
+    top, bottom = (curve, line) if curve.subs(x, mid) > line.subs(x, mid) else (line, curve)
+    assert sp.integrate(top - bottom, (x, a, b)) == inst.answer
 
 
 def check_arith(inst):
