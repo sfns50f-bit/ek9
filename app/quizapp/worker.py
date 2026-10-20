@@ -28,7 +28,7 @@ from .llm import LLMCancelled, LLMError, LLMModelMissing, LLMRouter, LLMUnavaila
 from .runtime import ModelPlan, apply_plan, plan_for_job, resolve_think, think_settings
 from .sandbox_client import SandboxClient, SandboxUnavailable
 from .subjects import get_subject
-from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit
+from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit, VerifyResult
 
 log = logging.getLogger("worker")
 
@@ -38,6 +38,7 @@ OLLAMA_CHECK_SECONDS = 60
 HEARTBEAT_SECONDS = 60
 LLM_CALLS_KEEP = 40
 VERIFY_STEP = "検証"
+REVIEW_STEP = "解説の見直し"
 TEST_ATTEMPTS = 3  # 検証のテストで、検証の段階まで届く下書きを作るまでに試す回数
 
 
@@ -387,35 +388,42 @@ class Worker:
                       label: str) -> None:
         """下書きをまとめて検証する。取り消し・Ollama の停止で途中で抜けても、
         それまでに全回合格した下書きはストックに入れ、不合格が決まったものは不合格にする。"""
-        logs = {d.id: [e for e in d.verification if e.get("step") != VERIFY_STEP] for d in drafts}
+        logs = {d.id: [e for e in d.verification if e.get("step") not in (VERIFY_STEP, REVIEW_STEP)] for d in drafts}
         alive = {d.id: d for d in drafts}
         failed: dict[int, tuple[str, str]] = {}
-        runs = plan.verify_runs
-        done = {d.id: 0 for d in drafts}  # 終わった検証の回数
+        # 検証役に解かせる回数分 → 全回一致したものだけ、検証役のモデルで解説の見直しを 1 回（検証のテストではしない）
+        steps = [(model, VERIFY_STEP) for model in plan.verify_runs]
+        if plan.review and not job.is_test:
+            steps.append((plan.verify_model, REVIEW_STEP))
+        done = {d.id: 0 for d in drafts}  # 終わった段階の数
         try:
-            for r, model in enumerate(runs, 1):
+            for r, (model, step) in enumerate(steps, 1):
                 for k, (pid, problem) in enumerate(list(alive.items()), 1):
                     self._check_cancel(job.id)
-                    text = f"検証中 {r}/{len(runs)} 回目 {k}/{len(alive)}（{model}）"
+                    what = "解説の見直し" if step == REVIEW_STEP else f"検証中 {r}/{len(plan.verify_runs)} 回目"
+                    text = f"{what} {k}/{len(alive)}（{model}）"
                     self._update_job(job.id, progress=text)
                     self.set_status(f"{label} — {text}", job.id)
-                    self._label("検証")
+                    self._label("見直し" if step == REVIEW_STEP else "検証")
                     try:
-                        res = subject.verify(self.llm, self.sandbox, model, problem)
+                        if step == REVIEW_STEP:
+                            res = subject.review(self.llm, model, problem) or VerifyResult(True, "見直しなし")
+                        else:
+                            res = subject.verify(self.llm, self.sandbox, model, problem)
                         ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
                     except LLMError as exc:
                         ok, summary, detail, code = False, f"{model}: 出力を読めません（{exc}）", "", "llm_output"
                         raw = getattr(exc, "raw", "")
                     finally:
                         self._save_llm_calls(job.id)
-                    logs[pid].append({"step": VERIFY_STEP, "ok": ok, "summary": summary, "detail": detail,
+                    logs[pid].append({"step": step, "ok": ok, "summary": summary, "detail": detail,
                                       "model": model, "run": r, "code": "" if ok else code, "raw": raw[:4000]})
                     done[pid] += 1
                     if not ok:
                         failed[pid] = (code, summary)
                         del alive[pid]
         finally:
-            self._finalize_verified(job, drafts, logs, failed, done, len(runs), plan)
+            self._finalize_verified(job, drafts, logs, failed, done, len(steps), plan)
 
     def _finalize_verified(self, job: Job, drafts: list[Problem], logs: dict[int, list[dict[str, Any]]],
                            failed: dict[int, tuple[str, str]], done: dict[int, int], n_runs: int,

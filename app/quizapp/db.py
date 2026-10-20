@@ -106,6 +106,7 @@ class Job(Base):
     verify_model: Mapped[str] = mapped_column(String(128), default="")
     verify_count: Mapped[int] = mapped_column(Integer, default=0)
     verify_model_2: Mapped[str] = mapped_column(String(128), default="")
+    explanation_review: Mapped[bool] = mapped_column(Boolean, default=True)  # 解説の見直しをするか
     gen_calls: Mapped[int] = mapped_column(Integer, default=0)
     gen_eval_s: Mapped[float] = mapped_column(Float, default=0.0)
     gen_load_s: Mapped[float] = mapped_column(Float, default=0.0)

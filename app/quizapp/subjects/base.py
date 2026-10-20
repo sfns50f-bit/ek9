@@ -166,6 +166,13 @@ class Subject:
 
     # --- 採点（web。LLM は使わない） ---------------------------------------
 
+    def review(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
+        """解説の見直し（任意）。検証役が全回一致した問題の解説に、明らかな誤りがないかを LLM に確かめさせる。
+
+        対応しない科目は None を返す（見直しをしない）。
+        """
+        return None
+
     def grade(self, sandbox: Sandbox | None, problem: Any, response: str) -> Grade:
         if problem.format == "choice":
             return grade_choice(problem, response)

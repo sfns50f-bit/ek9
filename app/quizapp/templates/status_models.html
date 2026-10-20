@@ -9,7 +9,7 @@
 <section class="card" id="models">
   <h2>モデルと検証の回数（作る画面の初期値）</h2>
   <p class="muted small">ここで選んだものが「作る」画面の初期値になります。依頼ごとに作る画面で変えられ、依頼したときのモデルで最後まで処理します。</p>
-  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong></p>
+  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>／解説の見直し <strong>{{ "する" if plan.review else "しない" }}</strong></p>
   <form method="post" action="/status/models">
     {% macro model_select(name, current, env_value, allow_none=false) %}
     <select name="{{ name }}">
@@ -27,6 +27,12 @@
         {% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if overrides.verify_count == n|string }}>{{ n }} 回</option>{% endfor %}
       </select></label>
     <label>別系統の検証役（1回だけ追加で解かせる） {{ model_select("verify_model_2", overrides.verify_model_2, settings.verify_model_2, true) }}</label>
+    <label>解説の見直し（検証役が全回一致したあと、検証役のモデルに解説の誤り（辺の対応・途中式・言葉の説明）を探させる）
+      <select name="review">
+        <option value="on" {{ 'selected' if plan.review }}>する</option>
+        <option value="off" {{ 'selected' if not plan.review }}>しない</option>
+      </select></label>
+    <p class="muted small">見直しで正しい問題まで弾かれすぎる（「検証の成績」の「解説の見直しで誤りを指摘された」が多い）ときは「しない」にしてください。</p>
     {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルから選べます。</p>{% endif %}
     <button type="submit" class="primary">保存</button>
   </form>

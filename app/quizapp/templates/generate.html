@@ -23,7 +23,7 @@
   </label>
   <p class="muted" id="stock-hint"></p>
   <details class="models">
-    <summary>モデル：作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>（変える）</summary>
+    <summary>モデル：作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>{% if plan.review %}＋見直し{% endif %}（変える）</summary>
     <p class="muted small">初期値は「状態 → モデルと思考モード」の設定です。この依頼は、ここで選んだモデルで最後まで処理します（後で設定を変えても変わりません）。
 </p>
     {% macro model_choice(name, current, allow_none=false) %}
@@ -38,6 +38,9 @@
     <label>検証役に解かせる回数（全部一致したら合格）
       <select name="verify_count">{% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if n == plan.verify_count }}>{{ n }} 回</option>{% endfor %}</select></label>
     <label>別系統の検証役（1 回だけ追加） {{ model_choice("verify_model_2", plan.verify_model_2, true) }}</label>
+    <input type="hidden" name="review_shown" value="1">
+    <label class="check"><input type="checkbox" name="review" value="on" {{ 'checked' if plan.review }}>
+      <span>解説の見直し（検証役が全回一致したあと、検証役のモデルに解説の誤りを探させる）</span></label>
     <details>
       <summary class="small">一覧にないモデルの名前を打ち込む</summary>
       <p class="muted small">書いた欄は上の選択より優先します（将来 API を使うときは「anthropic/モデル名」のように書きます）。</p>
@@ -65,7 +68,7 @@
         {{ JOB_STATUS.get(j.status, j.status) }}
         ・合格 {{ j.made }} / {{ j.count }}・作成 {{ j.gen_attempts }} 回・{{ j.created_at | localtime }}
       </div>
-      {% if j.gen_model %}<div class="small muted">作成 {{ j.gen_model }}／検証 {{ j.verify_model }} ×{{ j.verify_count }}{% if j.verify_model_2 %} ＋ {{ j.verify_model_2 }}{% endif %}</div>{% endif %}
+      {% if j.gen_model %}<div class="small muted">作成 {{ j.gen_model }}／検証 {{ j.verify_model }} ×{{ j.verify_count }}{% if j.verify_model_2 %} ＋ {{ j.verify_model_2 }}{% endif %}{% if j.explanation_review %}＋見直し{% endif %}</div>{% endif %}
       {% if j.progress %}<div class="small muted">{{ j.progress }}</div>{% endif %}
       {% if j.error %}<div class="small">{{ j.error }}</div>{% endif %}
       {% if j.status in ["pending", "running", "waiting"] %}

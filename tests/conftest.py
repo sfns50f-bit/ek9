@@ -90,9 +90,14 @@ class OracleLLM:
         self.alter_givens = alter_givens
         self.down_calls = down_calls
         self.calls = []
+        self.reviews = []  # 解説の見直しを頼まれたモデル
+        self.review_verdict = "問題なし"
         self.n = 0
 
     def chat_json(self, model, system, user, schema, *, temperature=0.7):
+        if "verdict" in schema["properties"]:  # 解説の見直し：review_verdict を返す
+            self.reviews.append(model)
+            return {"verdict": self.review_verdict, "issues": "なし" if "なし" in self.review_verdict else "途中式が違う"}
         role = "gen" if "hint" in schema["properties"] else "solve"
         if self.down_calls > 0:
             self.down_calls -= 1

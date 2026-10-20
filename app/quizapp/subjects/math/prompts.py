@@ -107,3 +107,26 @@ def solve_user(question: str, kind: str, input_hint: str) -> str:
         "",
         f"答え方: {ANSWER_FORMS.get(kind, '1つの数または式')}。{input_hint}",
     ])
+
+
+REVIEW_SYSTEM = """あなたは日本の高校数学の問題集の校閲者です。問題文・正解・解説を読み、次の点に明らかな誤りがないかだけを確かめてください。
+1. 三角形の辺の名前の対応（a = BC, b = CA, c = AB）が、問題文と解説で正しく使われているか
+2. 解説の途中式が 1 行ずつ正しいか（最終的な答えだけでなく、途中の計算も）
+3. 解説の言葉による説明（上側・下側、増加・減少、正・負、最大・最小など）が式と矛盾していないか
+4. 問題文が自然な日本語で、問題として成り立っているか
+
+正解は Python で計算済みで正しいものとします（正解を疑わない）。言い回しや表記の好みは指摘しません。
+明らかな誤りがあるときだけ「問題あり」とし、どこがどう違うかを短く書きます。"""
+
+REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "description": "「問題なし」または「問題あり」のどちらか"},
+        "issues": {"type": "string", "description": "誤りの箇所と理由（なければ「なし」）"},
+    },
+    "required": ["verdict"],
+}
+
+
+def review_user(question: str, answer_latex: str, explanation: str) -> str:
+    return "\n".join(["問題文:", question, "", f"正解: ${answer_latex}$", "", "解説:", explanation])

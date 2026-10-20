@@ -48,7 +48,8 @@ class MathSubject(Subject):
     mistakes = MISTAKES
     reject_codes = {"answer_leak": "問題文・ヒントに正解が書かれている",
                     "text_format": "表記の崩れ（KaTeX にない命令・$ の対応・数式の中の日本語・中国語の字など）",
-                    "explanation_math": "解説の途中式の誤り（数どうしの = が等しくない）"}
+                    "explanation_math": "解説の途中式の誤り（数どうしの = が等しくない）",
+                    "explanation_review": "解説の見直しで誤りを指摘された（辺の対応・途中式・言葉の説明）"}
     test_format = "input"  # 検証のテスト（正解をずらした問題）に対応する
 
     def units(self) -> list[Unit]:
@@ -127,6 +128,8 @@ class MathSubject(Subject):
         # 渡すと解説が本当の正解で書かれ、検証より前の「解説の確認」で落ちてしまい、テストにならない
         steps = [] if ctx.is_test else inst.steps
         user = prompts.gen_user(inst.task, [textcheck.first(g) for g in inst.givens], answer_latex, steps, fmt)
+        # 作成役に送った文章をそのまま残す（表記が崩れたとき、送った側か受け取った側かを見分けるため）
+        log[0]["detail"] = "作成役に送った文章:\n" + user[:4000]
         out = self._chat(ctx, prompts.GEN_SYSTEM, user)
         # 文章の確認で落ちたら、同じ数値のまま、指摘した点だけを直させる（作り直しより速く、成功しやすい）
         for round_no in range(FIX_ROUNDS + 1):
@@ -204,6 +207,30 @@ class MathSubject(Subject):
             return VerifyResult(True, f"{model}: ${shown}$（一致）", work, raw=raw)
         return VerifyResult(False, f"{model}: ${shown}$（正解 ${ans['latex']}$ と不一致）", work, "solver_mismatch",
                             raw=raw)
+
+    def review(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
+        """解説の見直し。検証役のモデルに、辺の対応・途中式・言葉の説明の誤りを探させる。"""
+        from ...llm import LLMError
+
+        user = prompts.review_user(problem.question, problem.answer.get("latex", ""), problem.explanation)
+        out: dict[str, Any] = {}
+        for _ in range(2):  # 出力が読めなかったときは 1 回だけ呼び直す
+            try:
+                out = llm.chat_json(model, prompts.REVIEW_SYSTEM, user, prompts.REVIEW_SCHEMA, temperature=0.2)
+                break
+            except LLMError as exc:
+                out = {"_error": str(exc), "_raw": getattr(exc, "raw", "")}
+        verdict = str(out.get("verdict") or "")
+        issues = str(out.get("issues") or "").strip()
+        raw = out.get("_raw") or f"[[verdict]]\n{verdict}\n[[issues]]\n{issues}"
+        if "問題あり" in verdict:
+            return VerifyResult(False, f"{model}: 解説に誤りがあると指摘（{issues[:300] or '理由なし'}）", issues,
+                                "explanation_review", raw=raw)
+        if "問題なし" in verdict:
+            return VerifyResult(True, f"{model}: 解説に誤りは見つからなかった", issues, raw=raw)
+        # 見直しの結果が読めないときは、それだけで不合格にはしない（検証役の答えは全回一致している）
+        return VerifyResult(True, f"{model}: 見直しの結果を読めなかった（{out.get('_error') or verdict[:60]}）",
+                            "", raw=raw)
 
     # --- 採点 ---------------------------------------------------------------
 

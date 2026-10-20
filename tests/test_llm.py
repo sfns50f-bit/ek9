@@ -17,6 +17,7 @@ class FakeOllama:
     def __init__(self, mode: str):
         self.mode = mode
         self.disconnected = threading.Event()
+        self.bodies = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -24,7 +25,7 @@ class FakeOllama:
                 pass
 
             def do_POST(self):  # noqa: N802
-                self.rfile.read(int(self.headers["Content-Length"]))
+                outer.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 if outer.mode == "missing":
                     self.send_response(404)
                     self.end_headers()
@@ -35,7 +36,8 @@ class FakeOllama:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
-                pieces = {"ok": ['{"answer": ', '"42"}'], "cut": ['{"answer": "4']}.get(outer.mode, [" "] * 300)
+                pieces = {"ok": ['{"answer": ', '"42"}'], "cut": ['{"answer": "4'],
+                          "tagged": ["[[answer]]\n$120^", "\\circ$ と \\angle A\n"]}.get(outer.mode, [" "] * 300)
                 try:
                     for piece in pieces:
                         chunk = {"message": {"content": piece}, "done": False}
@@ -156,3 +158,23 @@ def test_router_sends_api_models_to_their_provider(fake):
     assert router.chat_json("gemma4:e4b", "s", "u", SCHEMA) == {"answer": "42"}
     with pytest.raises(LLMModelMissing, match="openai"):
         LLMRouter(OllamaClient(server.url)).chat_json("openai/gpt-x", "s", "u", SCHEMA)
+
+
+def test_output_is_tagged_text_not_json_schema(fake):
+    """JSON スキーマ（format）は送らない。[[項目]] の見出しの平文で受け取り、バックスラッシュはそのまま届く。"""
+    server = fake("tagged")
+    out = OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA)
+    assert out == {"answer": "$120^\\circ$ と \\angle A"}
+    body = server.bodies[0]
+    assert "format" not in body and "[[answer]]" in body["messages"][0]["content"]
+
+
+def test_tagged_output_parsing():
+    from quizapp.llm import LLMError, parse_tagged
+
+    schema = {"properties": {"question": {}, "hint": {}, "explanation": {}},
+              "required": ["question", "hint", "explanation"]}
+    text = "<think>考え中</think>\n[[question]]\n問題 $x^2$\n[[hint]] 公式\n[[explanation]]\n```\n解説\n```\n"
+    assert parse_tagged(text, schema) == {"question": "問題 $x^2$", "hint": "公式", "explanation": "解説"}
+    with pytest.raises(LLMError, match="hint"):
+        parse_tagged("[[question]]\nq\n[[explanation]]\ne", schema)
