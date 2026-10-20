@@ -172,3 +172,17 @@ def test_copied_inequality_is_not_an_answer():
             mc.parse_answer(text, "interval")
     import sympy as sp
     assert mc.parse_answer("x<=-1, 3<=x", "interval")[0] == sp.Union(sp.Interval(-sp.oo, -1), sp.Interval(3, sp.oo))
+
+
+def test_every_task_has_a_timeout():
+    """サンドボックスのタスクには、すべて時間の上限がある（足し忘れると HTTP で呼べない）。"""
+    from sandbox_service import server
+
+    assert set(tasks.TASKS) == set(server.TIMEOUTS)
+
+
+def test_equalities_in_explanations():
+    res = tasks.run("equalities", {"segments": [
+        r"58 - (-21) \cdot \frac{1}{2} = 79", r"58 - (-21) = 79", r"a^2 = 9 + 16 = 25", r"\sqrt{2} = 1.414",
+        r"\sin 120^\circ = \frac{\sqrt{3}}{2}", r"\log_{2} 8 = 3", r"x = 3"]})
+    assert res == {"ok": True, "mismatches": [r"58 - (-21) \cdot \frac{1}{2} = 79"]}
