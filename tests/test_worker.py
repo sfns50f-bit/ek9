@@ -119,11 +119,11 @@ def test_verify_test_that_never_reaches_verification_is_not_reported_as_success(
 
 
 def test_tampered_answer_for_every_template_is_rejected(settings, sessions, sandbox):
-    from quizapp.subjects.math.catalog import UNITS
+    from quizapp.subjects.math import MathSubject
 
     llm = OracleLLM(sessions)
     ids = [add_job(sessions, scope=f"tmpl:{su.id}", format="input", count=1, is_test=True)
-           for u in UNITS for su in u.subunits]
+           for u in MathSubject().units() for su in u.subunits]
     w = make_worker(settings, sessions, sandbox, llm)
     for _ in ids:
         w.run_once()
@@ -438,11 +438,13 @@ class AnswerStyleLLM(OracleLLM):
             ans = out["answer"]
             out = {"答えは": {"work": "...", "answer": f"答えは {ans} です"},
                    "boxed": {"work": f"計算すると \\boxed{{{ans}}}", "answer": ","},
+                   # 実機の gemma4:e4b：answer 欄が崩れ、work の最後は正しい
+                   "garbled": {"work": f"底の変換をして\nS = {ans}", "answer": f"@{ans}"},
                    "unreadable": {"work": "わからない", "answer": "わかりません"}}[self.style]
         return out
 
 
-@pytest.mark.parametrize("style", ["答えは", "boxed"])
+@pytest.mark.parametrize("style", ["答えは", "boxed", "garbled"])
 def test_verifier_answer_styles_are_read(settings, sessions, sandbox, style):
     add_job(sessions, scope="tmpl:m2-explog-base", format="input", count=1)
     make_worker(settings, sessions, sandbox, AnswerStyleLLM(sessions, style)).run_once()
@@ -523,3 +525,100 @@ def test_think_setting_is_applied_per_model(settings, sessions, sandbox):
     add_job(sessions, count=1)
     make_worker(settings, sessions, sandbox, llm).run_once()
     assert ("gemma4:e4b", False) in llm.seen and ("gemma4:12b-it-qat", None) in llm.seen
+
+
+def test_missing_model_fails_the_job_instead_of_waiting(settings, sessions, sandbox):
+    from quizapp.llm import LLMModelMissing
+
+    llm = OracleLLM(sessions)
+
+    def missing(*a, **kw):
+        raise LLMModelMissing("モデル gemma4:12b-it-qat が Ollama に見つかりません")
+
+    llm.chat_json = missing
+    jid = add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = job(sessions, jid)
+    assert j.status == "failed" and "見つかりません" in j.error
+
+
+def test_job_keeps_the_models_chosen_at_request(settings, sessions, sandbox):
+    """依頼に記録したモデルで最後まで処理する（後で /status の設定を変えても変わらない）。"""
+    llm = OracleLLM(sessions)
+    jid = add_job(sessions, count=1, gen_model="qwen3.5:4b", verify_model="gemma4:12b-it-qat", verify_count=1)
+    with sessions.begin() as s:
+        save_overrides(s, {"gen_model": "gemma4:e4b", "verify_model": "gemma4:e4b", "verify_count": "2"})
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.calls == [("gen", "qwen3.5:4b"), ("solve", "gemma4:12b-it-qat")]
+    p = problems(sessions, status="ready")[0]
+    assert p.gen_model == "qwen3.5:4b" and p.verify_models == "gemma4:12b-it-qat ×1"
+    # モデルを記録していない（前の版の）依頼は、取りかかった時点の設定を記録してから処理する
+    jid2 = add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    j = job(sessions, jid2)
+    assert (j.gen_model, j.verify_model, j.verify_count) == ("gemma4:e4b", "gemma4:e4b", 2)
+    assert job(sessions, jid).status == "done"
+
+
+def test_problems_record_level_and_related_units(settings, sessions, sandbox):
+    add_job(sessions, scope="tmpl:m2-int-area", count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    p = problems(sessions, status="ready")[0]
+    assert p.level == "common" and p.related_units == "m1-quad"
+
+
+def test_levels_and_several_units_limit_the_templates(settings, sessions, sandbox):
+    from quizapp.subjects.math import MathSubject
+
+    sub = MathSubject()
+    both = sub.templates_for("unit:m1-quad,tmpl:m2-int-area")
+    assert set(both) == {"m1-quad-vertex", "m1-quad-ineq", "m2-int-area"}
+    assert sub.templates_for("unit:m1-quad,tmpl:m2-int-area", levels="common") == ["m2-int-area"]
+    assert sub.templates_for("", levels="jhs") == []  # 中学レベルのテンプレートはまだない
+    assert sub.scope_valid("unit:m1-quad,tmpl:m2-int-area") and not sub.scope_valid("unit:nope")
+    jid = add_job(sessions, scope="unit:m1-quad", levels="jhs", count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    assert job(sessions, jid).status == "failed" and "レベル" in job(sessions, jid).error
+
+
+def test_api_only_job_runs_while_ollama_is_down(settings, sessions, sandbox):
+    """API のモデルだけを使う依頼は、Ollama が止まっていても進める（API を使う日のための準備）。"""
+    from quizapp.llm import LLMRouter, LLMUnavailable
+
+    class DownOllama:
+        def chat_json(self, *a, **kw):
+            raise LLMUnavailable("つながりません")
+
+        def list_models(self):
+            raise LLMUnavailable("つながりません")
+
+    api = OracleLLM(sessions)
+    router = LLMRouter(DownOllama(), {"anthropic": api})
+    ollama_job = add_job(sessions, count=1)
+    api_job = add_job(sessions, count=1, gen_model="anthropic/claude-x", verify_model="anthropic/claude-y",
+                      verify_count=1)
+    w = make_worker(settings, sessions, sandbox, router)
+    assert w.run_once()
+    assert job(sessions, api_job).status == "done"
+    assert job(sessions, ollama_job).status == "pending"
+    assert api.calls == [("gen", "claude-x"), ("solve", "claude-y")]
+
+
+def test_missing_verifier_model_discards_drafts(settings, sessions, sandbox):
+    """検証役のモデルが見つからないときは失敗で止め、検証できない下書きを残さない。"""
+    from quizapp.llm import LLMModelMissing
+
+    llm = OracleLLM(sessions)
+    real = llm.chat_json
+
+    def chat(model, system, user, schema, **kw):
+        if model == "typo-model":
+            raise LLMModelMissing("モデル typo-model が Ollama に見つかりません")
+        return real(model, system, user, schema, **kw)
+
+    llm.chat_json = chat
+    jid = add_job(sessions, count=2, gen_model="gemma4:12b-it-qat", verify_model="typo-model", verify_count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = job(sessions, jid)
+    assert j.status == "failed" and "見つかりません" in j.error and j.made == 0
+    assert problems(sessions, status="draft") == []

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import random
@@ -17,9 +18,9 @@ import re
 from typing import Any
 
 from ... import textcheck
-from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Unit, VerifyResult
+from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import prompts
-from .catalog import MISTAKES, UNITS
+from .catalog import MISTAKES, UNITS, template_info
 
 N_DISTRACTORS = 3
 MAX_ROLLS = 30
@@ -31,6 +32,15 @@ def _params_key(template: str, params: dict[str, Any]) -> str:
     return template + ":" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+@functools.cache
+def _units() -> list[Unit]:
+    """catalog の単元に、templates.py の @template で登録した小単元（テンプレート）を並べる。"""
+    info = template_info()
+    return [Unit(uid, label, tuple(Subunit(i.id, i.label, i.formats, i.level, i.related)
+                                   for i in info.values() if i.unit == uid))
+            for uid, label in UNITS]
+
+
 class MathSubject(Subject):
     id = "math"
     name = "数学"
@@ -40,7 +50,7 @@ class MathSubject(Subject):
     test_format = "input"  # 検証のテスト（正解をずらした問題）に対応する
 
     def units(self) -> list[Unit]:
-        return UNITS
+        return _units()
 
     # --- 作成 ---------------------------------------------------------------
 
@@ -263,7 +273,11 @@ _ANSWER_LINE_RE = re.compile(r"(?:答え|答|解答|Answer)\s*[:：は]\s*(.+)$"
 
 
 def _answer_candidates(answer: str, work: str) -> list[str]:
-    """検証役の答えとして試す文字列（answer 欄 → work の \\boxed{…} → work の「答え: …」の行）。"""
+    """検証役の答えとして試す文字列（読み取れた最初のものを使う）。
+
+    answer 欄 → work の \\boxed{…} → work の「答え: …」の行 → work の最後の「=」の行（行全体、最後の「=」の右側）。
+    answer 欄が「@35/4」のように崩れていても、work の最後が「S = 35/4」なら救える（実機の gemma4:e4b で多かった）。
+    """
     out = [answer.strip()] if answer.strip() else []
     boxed = _BOXED_RE.findall(work)
     if boxed:
@@ -271,6 +285,10 @@ def _answer_candidates(answer: str, work: str) -> list[str]:
     lines = _ANSWER_LINE_RE.findall(work)
     if lines:
         out.append(lines[-1].strip())
+    eq_lines = [ln.strip().strip("$").strip().rstrip("。.") for ln in work.splitlines() if "=" in ln]
+    if eq_lines:
+        out.append(eq_lines[-1])
+        out.append(eq_lines[-1].rsplit("=", 1)[1].strip())
     return list(dict.fromkeys(c for c in out if c))
 
 

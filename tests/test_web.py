@@ -62,10 +62,12 @@ def test_web_process_does_not_load_the_llm_client():
     import sys
 
     root = Path(__file__).resolve().parents[1]
-    code = ("import sys; sys.path[:0]=['app']; import quizapp.web, quizapp.stock;"
-            " print('quizapp.llm' in sys.modules)")
+    code = ("import sys; sys.path[:0]=['app']; import quizapp.web, quizapp.stock, quizapp.review;"
+            " from quizapp.subjects import all_subjects; [s.units() for s in all_subjects()];"
+            " print('quizapp.llm' in sys.modules, 'sympy' in sys.modules)")
     out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=True)
-    assert out.stdout.strip() == "False"
+    # sympy も読まない（小単元の一覧は templates.py を ast で読む。web のメモリと起動時間のため）
+    assert out.stdout.strip() == "False False"
 
 
 def test_blank_count_uses_default(client, settings, sessions, sandbox):
@@ -280,7 +282,7 @@ def test_status_shows_recent_llm_calls(client, sessions):
     with sessions.begin() as s:
         kv_set(s, "llm_calls", '[{"at": 1760000000, "model": "gemma4:e4b", "label": "検証", "seconds": 33.5,'
                                ' "load_s": 21.0, "prompt_tokens": 300, "tokens": 800, "tok_per_s": 64.0}]')
-    r = client.get("/status")
+    r = client.get("/status/llm")
     assert "最近の LLM 呼び出し" in r.text and "33.5秒" in r.text and "21.0秒" in r.text and "64.0/秒" in r.text
 
 
@@ -294,7 +296,7 @@ def test_rejection_stats_on_status(client, settings, sessions, sandbox):
     j = client.get("/status.json").json()["verify"]
     assert j["by_model"][0]["model"] == "gemma4:e4b" and j["by_model"][0]["rate"] == 100
     assert dict(j["by_code"])["solver_mismatch"] == settings.max_attempts
-    r = client.get("/status")
+    r = client.get("/status/quality")
     assert "検証役の答えが正解と一致しない" in r.text
 
 
@@ -349,7 +351,7 @@ def test_rejection_list_shows_models_question_and_raw_output(client, settings, s
     with sessions.begin() as s:
         s.add(Job(subject="math", scope="tmpl:m2-explog-base", format="input", count=1))
     w.run_once()
-    text = client.get("/status").text
+    text = client.get("/status/quality").text
     assert "検証役の答えが読み取れなかった" in text
     assert "作成: gemma4:12b-it-qat" in text and "検証: gemma4:e4b" in text
     assert "検証役の生の出力" in text and "わかりません" in text and "問題文" in text
@@ -360,10 +362,178 @@ def test_think_setting_on_status(client, sessions):
 
     with sessions.begin() as s:
         kv_set(s, "ollama", dumps({"ok": True, "models": [{"name": "qwen3.5:9b-q4_K_M"}, {"name": "gemma4:e4b"}]}))
-    text = client.get("/status").text
+    text = client.get("/status/models").text
     assert "思考モード" in text and "qwen3.5:9b-q4_K_M" in text
     r = client.post("/status/think", data={"model": "qwen3.5:9b-q4_K_M", "choice": "on"}, follow_redirects=True)
     assert "思考モードの設定を保存しました" in r.text
     from quizapp.runtime import think_settings
     with sessions() as s:
         assert think_settings(s) == {"qwen3.5:9b-q4_K_M": "on"}
+
+
+def test_generate_with_models_units_and_levels(client, settings, sessions):
+    """作成依頼でモデル・複数の単元・レベルを選べる。モデルの初期値は /status の設定。"""
+    r = client.get("/generate")
+    assert 'value="gemma4:12b-it-qat"' in r.text and "一覧にないモデル" in r.text and 'name="levels"' in r.text and 'value="unit:m2-int"' in r.text
+    r = client.post("/generate", data={"subject": "math", "scope": ["unit:m1-quad", "tmpl:m1-quad-vertex",
+                                                                     "tmpl:m2-int-area"],
+                                       "levels": ["basic", "common"], "format": "choice", "count": "4",
+                                       "gen_model": "qwen3.5:4b", "verify_model": "", "verify_count": "1",
+                                       "verify_model_2": ""}, follow_redirects=True)
+    assert "順番待ちに入れました" in r.text and "qwen3.5:4b" in r.text
+    job = all_rows(sessions, Job)[-1]
+    # 単元を選ぶと小単元にもチェックが付くので、その単元の小単元は省いて記録する
+    assert job.scope == "unit:m1-quad,tmpl:m2-int-area" and job.levels == "basic,common"
+    assert (job.gen_model, job.verify_model, job.verify_count, job.verify_model_2) == \
+        ("qwen3.5:4b", "gemma4:e4b", 1, "")
+    client.post("/generate", data={"subject": "math", "format": "choice", "count": "1", "gen_model": "gemma4:e4b",
+                                   "gen_model_text": " anthropic/claude-x ", "verify_model_2": "-"})
+    job = all_rows(sessions, Job)[-1]
+    assert job.gen_model == "anthropic/claude-x" and job.verify_model_2 == ""
+    bad = {"subject": "math", "scope": "unit:m1-quad", "levels": "jhs", "format": "choice", "count": "1"}
+    assert client.post("/generate", data=bad).status_code == 400  # 中学レベルのテンプレートはまだない
+    assert client.post("/generate", data={**bad, "levels": "nope"}).status_code == 400
+
+
+def test_set_spreads_templates_and_follows_units_and_levels(client, settings, sessions, sandbox):
+    stock_up(settings, sessions, sandbox, scope="tmpl:m1-quad-vertex", count=4)
+    stock_up(settings, sessions, sandbox, scope="tmpl:m2-int-area", count=3)
+    stock_up(settings, sessions, sandbox, scope="tmpl:ma-case-comb", count=3)
+    loc = start(client, scope=["tmpl:m1-quad-vertex", "unit:m2-int"], count="20")
+    with sessions() as s:
+        ids = s.get(StudySession, int(loc.rsplit("/", 1)[1])).problem_ids
+        temps = [s.get(Problem, i).template for i in ids]
+    assert sorted(set(temps)) == ["m1-quad-vertex", "m2-int-area"] and len(temps) == 7
+    assert all(a != b for a, b in zip(temps, temps[1:-1])), temps  # 同じ小単元が続かない（最後の 1 つは避けられない）
+    loc = start(client, levels="common", count="20")
+    with sessions() as s:
+        row = s.get(StudySession, int(loc.rsplit("/", 1)[1]))
+        assert row.levels == "common" and {s.get(Problem, i).template for i in row.problem_ids} == {"m2-int-area"}
+
+
+def test_spread_order_never_repeats_when_possible():
+    from quizapp.stock import spread_order, spread_pick
+
+    rng = random.Random(0)
+    for _ in range(200):
+        items = [(i, rng.choice("abc")) for i in range(rng.randrange(1, 20))]
+        order = spread_order(items, rng)
+        kinds = dict(items)
+        seq = [kinds[i] for i in order]
+        most = max(seq.count(k) for k in set(seq))
+        if most <= (len(seq) + 1) // 2:  # 並べ方があるときは必ず続かない
+            assert all(a != b for a, b in zip(seq, seq[1:])), seq
+    picked = spread_pick([(i, "a") for i in range(10)] + [(10, "b"), (11, "c")], 6, random.Random(1))
+    assert {"b", "c"} <= {t for _i, t in picked}
+
+
+def test_unseen_problem_page_needs_review_mode(client, settings, sessions, sandbox, monkeypatch):
+    """まだ解いていないストックの問題は /problems/<番号> で正解ごと見えない。解いた後と問題検証モードでは見える。"""
+    stock_up(settings, sessions, sandbox, count=2)
+    pid = all_rows(sessions, Problem)[0].id
+    assert client.get(f"/problems/{pid}").status_code == 404
+    with sessions.begin() as s:
+        s.add(Attempt(user_id=1, problem_id=pid, subject="math", unit="u", template="t", format="choice"))
+    assert client.get(f"/problems/{pid}").status_code == 200
+    other = all_rows(sessions, Problem)[1].id
+    assert client.get("/review").status_code == 200  # パスワードなし（初期）なら問題検証モードに入れる
+    assert client.get(f"/problems/{other}").status_code == 404
+    assert client.get(f"/problems/{other}?review=1").status_code == 200  # 問題検証モードの一覧からのリンク
+
+
+def test_review_mode_password_delete_and_export(settings, sessions, sandbox, monkeypatch):
+    monkeypatch.setenv("REVIEW_PASSWORD", "himitsu")
+    from quizapp.config import Settings
+
+    client = TestClient(create_app(Settings(), sessions, sandbox))
+    stock_up(settings, sessions, sandbox, count=3)
+    r = client.get("/review", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/review/login"
+    assert client.get("/review/export.md", follow_redirects=False).status_code == 303
+    pid = all_rows(sessions, Problem)[0].id
+    r = client.get(f"/problems/{pid}?review=1", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/review/login"
+    assert client.get(f"/problems/{pid}").status_code == 404
+    assert "パスワードが違います" in client.post("/review/login", data={"password": "x"}, follow_redirects=True).text
+    r = client.post("/review/login", data={"password": "himitsu"}, follow_redirects=True)
+    assert "問題検証モード" in r.text and "正解" in r.text and "gemma4:12b-it-qat" in r.text
+    assert client.get("/").status_code == 200  # ほかの画面にはパスワードをかけない
+    assert client.get(f"/problems/{pid}?review=1").status_code == 200
+    md = client.get("/review/export.md?subject=math&level=basic").text
+    assert md.startswith("高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください")
+    assert "### 正解" in md and "### 解説" in md and "### ヒント" in md and "作成役：gemma4:12b-it-qat" in md
+    assert "（正解）" in md and "（誤答：" in md
+    client.post(f"/review/{pid}/delete", data={"back": "/review"})
+    with sessions() as s:
+        assert s.get(Problem, pid).status == "deleted"
+    loc = start(client, count="20")
+    with sessions() as s:
+        assert pid not in s.get(StudySession, int(loc.rsplit("/", 1)[1])).problem_ids
+    assert f"#{pid}" in client.get("/review?status=deleted").text
+    client.post(f"/review/{pid}/restore", data={"back": "/review"})
+    with sessions() as s:
+        assert s.get(Problem, pid).status == "ready"
+    client.post("/review/logout")
+    assert client.get("/review", follow_redirects=False).status_code == 303
+
+
+def test_quality_page_compares_jobs_and_gen_models(client, settings, sessions, sandbox):
+    stock_up(settings, sessions, sandbox, scope="tmpl:m2-explog-base", count=2)
+    w = Worker(settings, sessions, OracleLLM(sessions, solve_answer="0"), sandbox, rng=random.Random(5))
+    w.last_backup_check = 1e18
+    with sessions.begin() as s:
+        s.add(Job(subject="math", scope="tmpl:m2-explog-base", format="choice", count=1, gen_model="qwen3.5:4b",
+                  verify_model="gemma4:e4b", verify_count=1))
+    w.run_once()
+    text = client.get("/status/quality?days=0").text
+    assert "依頼ごとの比較" in text and "qwen3.5:4b" in text and "作成役のモデルごと" in text
+    last = all_rows(sessions, Job)[-1].id
+    text = client.get(f"/status/quality?days=0&from_job={last}").text
+    assert "作成 3 問のうち合格 0 問" in text  # 前の依頼の分は外れる
+
+
+def test_think_list_shows_only_installed_models(client, sessions):
+    from quizapp.db import dumps, kv_set
+    from quizapp.runtime import save_think_setting
+
+    with sessions.begin() as s:
+        kv_set(s, "ollama", dumps({"ok": True, "models": [{"name": "gemma4:e4b"}]}))
+        save_think_setting(s, "qwen3.5:9b-q4_K_M", "on")  # Ollama から消したモデルの設定
+    text = client.get("/status/models").text
+    assert "gemma4:e4b" in text and "qwen3.5:9b-q4_K_M" not in text
+
+
+def test_status_pages_are_split(client):
+    for page in ("/status", "/status/models", "/status/quality", "/status/llm"):
+        r = client.get(page)
+        assert r.status_code == 200 and "問題検証モード" in r.text, page
+
+
+def test_drafts_and_duplicates_do_not_show_answers(client, settings, sessions, sandbox):
+    """検証待ちの下書きと、同じ数値の問題がストックにある duplicate は、正解つきで見せない。"""
+    stock_up(settings, sessions, sandbox, count=1)
+    with sessions.begin() as s:
+        ready = s.execute(select(Problem)).scalars().first()
+        common = dict(subject="math", unit=ready.unit, template=ready.template, format="choice",
+                      question="q", params_key=ready.params_key)
+        draft = Problem(status="draft", **common)
+        dup = Problem(status="rejected", reject_code="duplicate", **common)
+        bad = Problem(status="rejected", reject_code="solver_mismatch", **common)
+        s.add_all([draft, dup, bad])
+    for p in (draft, dup):
+        assert client.get(f"/problems/{p.id}").status_code == 404
+    assert client.get(f"/problems/{bad.id}").status_code == 200
+    assert f"/problems/{dup.id}" not in client.get("/status/quality?days=0").text
+
+
+def test_review_level_filter_includes_problems_from_before_levels(client, settings, sessions, sandbox):
+    stock_up(settings, sessions, sandbox, scope="tmpl:m2-int-area", count=1)
+    with sessions.begin() as s:
+        for p in s.execute(select(Problem)).scalars():
+            p.level = ""  # 前の版で作った問題（レベルの列が空）
+    text = client.get("/review?level=common").text
+    assert "放物線で囲まれた面積" in text and "共通テスト" in text
+    assert "放物線で囲まれた面積" not in client.get("/review?level=basic").text
+    w = Worker(settings, sessions, OracleLLM(sessions), sandbox)
+    w.recover()  # worker の起動時にレベルを書き込む
+    assert {p.level for p in all_rows(sessions, Problem)} == {"common"}

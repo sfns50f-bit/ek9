@@ -29,6 +29,7 @@ x-app-env: &app-env
   LOW_STOCK: ${LOW_STOCK:-40}
   RETRY_PERCENT: ${RETRY_PERCENT:-30}
   DISPLAY_TZ: ${DISPLAY_TZ:-Asia/Tokyo}
+  REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
 
 x-logging: &logging
   # SD カードを傷めないよう、ログは小さく保つ

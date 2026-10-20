@@ -1,10 +1,8 @@
 {% extends "base.html" %}
-{% from "_macros.html" import mark %}
+{% from "_macros.html" import mark, status_nav %}
 {% block title %}状態 - AI問題集{% endblock %}
 {% block content %}
-{% if msg == "saved" %}<p class="notice">設定を保存しました。次の依頼から使われます。</p>{% endif %}
-{% if msg == "think" %}<p class="notice">思考モードの設定を保存しました。次の依頼から使われます。</p>{% endif %}
-{% if msg == "test" %}<p class="notice">検証のテストを順番待ちに入れました。下の「検証のテスト」に結果が出ます。</p>{% endif %}
+{{ status_nav(page) }}
 
 <section class="card">
   <h1>状態</h1>
@@ -16,6 +14,8 @@
       {{ worker.text or "" }}</td></tr>
     <tr><th>sandbox</th><td>{{ mark(sandbox_ok) }} {{ "動いています" if sandbox_ok else "つながりません（キーボード入力の採点ができません）" }}</td></tr>
     <tr><th>順番待ち</th><td>{{ jobs_open }} 件</td></tr>
+    <tr><th>モデル（設定）</th><td>作成 {{ plan.gen_model }}／検証 {{ plan.verify_label }}
+      <a class="small" href="/status/models">変える</a></td></tr>
     <tr><th>データ</th><td>{{ settings.database_path }}</td></tr>
     <tr><th>バックアップ</th><td>{{ backup_count }} 個（最新 {{ backup_last or "なし" }}）
       {% if backup_info and not backup_info.ok %}<div class="notice warn">前回失敗: {{ backup_info.error }}</div>{% endif %}</td></tr>
@@ -41,117 +41,6 @@
       {% endfor %}
     </table>
   </details>
-</section>
-
-<section class="card" id="think">
-  <h2>思考モード（モデルごと）</h2>
-  <p class="muted small">考えてから答えるモデルは、考えた分も出力の上限に数えられ、JSON が途中で切れたり答えの読み取りを邪魔したりします。
-    選んだ設定はモデルごとに保存され、そのモデルを使うたびに同じ設定になります。「自動」は qwen3 系（qwen3.5 も）を切り、
-    それ以外（gemma4 など）はモデルの既定のままにします（gemma4 は思考を切ると JSON の指定が効かなくなる不具合がありました）。</p>
-  <table class="compact small">
-    <tr><th>モデル</th><th>いまの動き</th><th>設定</th></tr>
-    {% for r in think_rows %}
-    <tr><td>{{ r.model }}</td><td>{{ r.effective }}</td>
-      <td><form method="post" action="/status/think" class="inline"><input type="hidden" name="model" value="{{ r.model }}">
-        <select name="choice" onchange="this.form.submit()">
-          {% for key, label in think_labels.items() %}<option value="{{ key }}" {{ 'selected' if r.choice == key }}>{{ label }}</option>{% endfor %}
-        </select><noscript><button class="secondary small">保存</button></noscript></form></td></tr>
-    {% endfor %}
-  </table>
-</section>
-
-<section class="card" id="models">
-  <h2>モデルと検証の回数</h2>
-  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong></p>
-  <form method="post" action="/status/models">
-    {% macro model_select(name, current, env_value, allow_none=false) %}
-    <select name="{{ name }}">
-      <option value="">.env の設定（{{ env_value or "使わない" }}）</option>
-      {% if allow_none %}<option value="-" {{ 'selected' if current == '-' }}>使わない</option>{% endif %}
-      {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if current == m }}>{{ m }}</option>{% endfor %}
-      {% if current and current != '-' and current not in model_names %}<option value="{{ current }}" selected>{{ current }}（Ollama に見当たらない）</option>{% endif %}
-    </select>
-    {% endmacro %}
-    <label>作成に使うモデル {{ model_select("gen_model", overrides.gen_model, settings.gen_model) }}</label>
-    <label>検証役のモデル {{ model_select("verify_model", overrides.verify_model, settings.verify_model) }}</label>
-    <label>検証役に解かせる回数（全部一致したら合格）
-      <select name="verify_count">
-        <option value="">.env の設定（{{ settings.verify_count }} 回）</option>
-        {% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if overrides.verify_count == n|string }}>{{ n }} 回</option>{% endfor %}
-      </select></label>
-    <label>別系統の検証役（1回だけ追加で解かせる） {{ model_select("verify_model_2", overrides.verify_model_2, settings.verify_model_2, true) }}</label>
-    {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルから選べます。</p>{% endif %}
-    <button type="submit" class="primary">保存</button>
-  </form>
-</section>
-
-<section class="card">
-  <h2>検証の成績（直近 {{ stats.days }} 日）</h2>
-  <p>作成 {{ stats.total }} 問のうち合格 {{ stats.passed }} 問（{{ stats.pass_rate }}%）</p>
-  <table class="compact">
-    <tr><th>検証役のモデル</th><th>検証した数</th><th>弾いた数</th><th>弾いた割合</th></tr>
-    {% for m in stats.by_model %}
-    <tr><td>{{ m.model }}</td><td>{{ m.reached }}</td><td>{{ m.rejected }}</td><td>{{ m.rate }}%</td></tr>
-    {% else %}<tr><td colspan="4" class="muted">まだありません</td></tr>{% endfor %}
-  </table>
-  <table class="compact">
-    <tr><th>不合格の理由</th><th>数</th></tr>
-    {% for code, n in stats.by_code %}<tr><td>{{ codes.get(code, code) }}</td><td>{{ n }}</td></tr>
-    {% else %}<tr><td colspan="2" class="muted">まだありません</td></tr>{% endfor %}
-  </table>
-  <p class="muted small">検証役が正しい問題まで弾きすぎる（「検証役の答えが正解と一致しない」が多い）ときは、検証役を大きいモデルに変えてください。</p>
-  <details open><summary>最近の不合格（新しい順）</summary>
-    <p class="muted small">「答えが読み取れなかった」は検証役の書き方の問題、「数値が違う」は問題か検証役の解き方の問題です。生の出力で見分けてください。</p>
-    <ul class="list small">
-      {% for p in rejected %}
-      {% set f = failure(p) %}
-      <li>
-        <a href="/problems/{{ p.id }}">#{{ p.id }} {{ get_subject(p.subject).label_of(p.template) if get_subject(p.subject) else p.template }}</a>
-        — <strong>{{ codes.get(p.reject_code, p.reject_code) }}</strong>
-        <div class="muted">作成: {{ p.gen_model or "—" }}{% if f.model and f.step == "検証" %}／検証: {{ f.model }}{% endif %}</div>
-        <div class="mathtext">{{ p.reject_reason }}</div>
-        {% if p.question %}<details><summary>問題文</summary><div class="mathtext">{{ p.question }}</div></details>{% endif %}
-        {% if f.raw %}<details><summary>{{ "検証役" if f.step == "検証" else "作成役" }}の生の出力</summary><pre>{{ f.raw }}</pre></details>{% endif %}
-      </li>
-      {% else %}<li class="muted">ありません</li>{% endfor %}
-    </ul>
-  </details>
-</section>
-
-<section class="card" id="llm-calls">
-  <h2>最近の LLM 呼び出し（新しい順）</h2>
-  <p class="muted small">遅いときの原因を見分けるための記録です。「読み込み」が毎回数十秒かかっているときは、モデルの入れ替え（他のアプリが Ollama で別のモデルを使っている、作成と検証でモデルが替わる）。
-    「速さ」が低いときは、モデルが GPU に載りきらず一部を CPU で動かしている。「出力」が多いときは、モデルが長く考えている（考えた分も数に入ります）。</p>
-  <table class="compact small">
-    <tr><th>時刻</th><th>種類</th><th>モデル</th><th>全体</th><th>読み込み</th><th>出力</th><th>速さ</th></tr>
-    {% for c in llm_calls %}
-    <tr><td>{{ c.at | epochlocal }}</td><td>{{ c.label }}</td><td>{{ c.model }}</td><td>{{ c.seconds }}秒</td>
-      <td>{{ c.load_s }}秒</td><td>{{ c.tokens }}</td><td>{{ c.tok_per_s }}/秒</td></tr>
-    {% else %}<tr><td colspan="7" class="muted">まだありません</td></tr>{% endfor %}
-  </table>
-</section>
-
-<section class="card" id="tests">
-  <h2>検証のテスト</h2>
-  <p class="small">正解をわざとずらした問題を作り、検証役との突き合わせで弾かれることを確かめます（ストックには入りません）。
-    文章の確認など検証より前の段階で落ちたときは、最大 3 回まで作り直し、それでも届かなければ「判定できませんでした」と出ます。</p>
-  <form method="post" action="/status/test">
-    <select name="target">
-      {% for sub in subjects() if sub.test_format %}
-      <option value="{{ sub.id }}">{{ sub.name }}（小単元をおまかせ）</option>
-      {% for unit in sub.units() %}{% for su in unit.subunits %}
-      <option value="{{ sub.id }}|{{ su.id }}">{{ sub.name }}：{{ unit.label }}／{{ su.label }}</option>
-      {% endfor %}{% endfor %}
-      {% endfor %}
-    </select>
-    <button type="submit" class="secondary">テストを流す</button>
-  </form>
-  <ul class="list small">
-    {% for j in tests %}
-    <li>#{{ j.id }} {{ JOB_STATUS.get(j.status, j.status) }}
-      {% if j.error %}— {{ j.error }}{% endif %}</li>
-    {% endfor %}
-  </ul>
 </section>
 
 <section class="card" id="reported">

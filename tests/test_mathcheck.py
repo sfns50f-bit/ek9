@@ -163,3 +163,12 @@ def test_reading_failure_is_not_a_wrong_value(given):
     """「,」「わかりません」のように読めない答えは、「数値が違う」ではなく読み取りエラーにする。"""
     res = tasks.run("compare", {"kind": "value", "expected": {"text": "3"}, "given": {"text": given}})
     assert not res["ok"] and res["where"] == "given"
+
+
+def test_copied_inequality_is_not_an_answer():
+    """問題の不等式を書き写しただけの答えは、範囲の答えとして読まない（正解にしない）。"""
+    for text in ("x^2-2x-3>=0", "(x+1)(x-3) \\geqq 0"):
+        with pytest.raises(mc.AnswerError):
+            mc.parse_answer(text, "interval")
+    import sympy as sp
+    assert mc.parse_answer("x<=-1, 3<=x", "interval")[0] == sp.Union(sp.Interval(-sp.oo, -1), sp.Interval(3, sp.oo))

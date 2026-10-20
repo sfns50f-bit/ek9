@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 FORMATS = {"choice": "選択式", "input": "キーボード入力"}
+# 問題のレベル。中学は復習用（テンプレートは今後追加）
+LEVELS = {"jhs": "中学", "basic": "高校基礎", "common": "共通テスト", "exam": "入試標準"}
 # 端末ごとに出す形式。キーボードがあれば選択式も解ける
 DEVICES = {
     "phone": ("スマホ", ("choice",)),
@@ -40,11 +42,17 @@ class Sandbox(Protocol):
 
 @dataclass(frozen=True)
 class Subunit:
-    """小単元。数学ではテンプレート 1 つに当たる。"""
+    """小単元。数学ではテンプレート 1 つに当たる。
+
+    level：LEVELS のキー（中学・高校基礎・共通テスト・入試標準）
+    related：主な単元とは別に関係する単元の ID（複数の単元を組み合わせた問題の印）
+    """
 
     id: str
     label: str
     formats: tuple[str, ...]
+    level: str = ""
+    related: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -168,30 +176,47 @@ class Subject:
     def subunit_map(self) -> dict[str, tuple[Unit, Subunit]]:
         return {su.id: (u, su) for u in self.units() for su in u.subunits}
 
-    def templates_for(self, scope: str, fmt: str | None = None) -> list[str]:
-        """範囲（""・"unit:<ID>"・"tmpl:<ID>"）に入る小単元の ID。fmt を指定すればその形式に対応するものだけ。"""
+    def templates_for(self, scope: str, fmt: str | None = None, levels: str | list[str] = "") -> list[str]:
+        """範囲に入る小単元の ID。
+
+        scope：""（科目全体）、または "unit:<単元ID>" と "tmpl:<小単元ID>" をカンマでつないだもの（その和集合）
+        fmt を指定すればその形式に対応するもの、levels（カンマ区切りかリスト）を指定すればそのレベルのものだけ
+        """
+        parts = split_scope(scope)
+        units = {p[5:] for p in parts if p.startswith("unit:")}
+        tmpls = {p[5:] for p in parts if p.startswith("tmpl:")}
+        wanted_levels = set(levels.split(",") if isinstance(levels, str) else levels) - {""}
         out = []
         for unit in self.units():
             for su in unit.subunits:
-                if scope.startswith("unit:") and unit.id != scope[5:]:
-                    continue
-                if scope.startswith("tmpl:") and su.id != scope[5:]:
+                if parts and unit.id not in units and su.id not in tmpls:
                     continue
                 if fmt and fmt not in su.formats:
+                    continue
+                if wanted_levels and su.level not in wanted_levels:
                     continue
                 out.append(su.id)
         return out
 
+    def scope_valid(self, scope: str) -> bool:
+        """範囲の書き方が正しいか（知らない単元・小単元を含まないか）。"""
+        units = {u.id for u in self.units()}
+        tmpls = set(self.subunit_map())
+        return all((p.startswith("unit:") and p[5:] in units) or (p.startswith("tmpl:") and p[5:] in tmpls)
+                   for p in split_scope(scope))
+
     def scope_label(self, scope: str) -> str:
-        if scope.startswith("unit:"):
-            for unit in self.units():
-                if unit.id == scope[5:]:
-                    return unit.label
-        if scope.startswith("tmpl:"):
-            found = self.subunit_map().get(scope[5:])
-            if found:
-                return f"{found[0].label}／{found[1].label}"
-        return f"{self.name}（全体）"
+        parts = split_scope(scope)
+        if not parts:
+            return f"{self.name}（全体）"
+        labels = []
+        for p in parts:
+            if p.startswith("unit:"):
+                labels += [u.label for u in self.units() if u.id == p[5:]]
+            elif p.startswith("tmpl:") and p[5:] in self.subunit_map():
+                unit, su = self.subunit_map()[p[5:]]
+                labels.append(f"{unit.label}／{su.label}")
+        return "、".join(labels) or f"{self.name}（全体）"
 
     def label_of(self, template: str) -> str:
         found = self.subunit_map().get(template)
@@ -199,6 +224,14 @@ class Subject:
 
     def all_reject_codes(self) -> dict[str, str]:
         return {**REJECT_CODES, **self.reject_codes}
+
+
+def split_scope(scope: str) -> list[str]:
+    return [p.strip() for p in (scope or "").split(",") if p.strip()]
+
+
+def join_scope(parts: list[str]) -> str:
+    return ",".join(dict.fromkeys(p.strip() for p in parts if p and p.strip()))
 
 
 def grade_choice(problem: Any, response: str) -> Grade:

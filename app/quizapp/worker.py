@@ -24,11 +24,11 @@ from . import backup
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import Job, Passage, Problem, dumps, init_db, kv_json, kv_set, utcnow
-from .llm import LLMCancelled, LLMError, LLMUnavailable, OllamaClient
-from .runtime import ModelPlan, model_plan, resolve_think, think_settings
+from .llm import LLMCancelled, LLMError, LLMModelMissing, LLMRouter, LLMUnavailable, OllamaClient
+from .runtime import ModelPlan, apply_plan, plan_for_job, resolve_think, think_settings
 from .sandbox_client import SandboxClient, SandboxUnavailable
 from .subjects import get_subject
-from .subjects.base import Draft, GenContext, Rejected, Subject
+from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit
 
 log = logging.getLogger("worker")
 
@@ -46,7 +46,7 @@ class Cancelled(Exception):
 
 
 class Worker:
-    def __init__(self, settings: Settings, sessions: sessionmaker[Session], llm: OllamaClient,
+    def __init__(self, settings: Settings, sessions: sessionmaker[Session], llm: Any,
                  sandbox: SandboxClient, rng: random.Random | None = None) -> None:
         self.settings = settings
         self.sessions = sessions
@@ -146,12 +146,20 @@ class Worker:
             for job in s.execute(select(Job).where(Job.status == "cancelling")).scalars():
                 self._discard_drafts(s, job.id)
                 job.status, job.progress, job.finished_at = "cancelled", "", utcnow()
+            # 前の版で作った問題には、レベル・関連する単元を小単元から書き込む（列を足しただけでは空のまま）
+            for p in s.execute(select(Problem).where(Problem.level == "")).scalars():
+                su = self._subunit(p.subject, p.template)
+                if su is not None and su.level:
+                    p.level, p.related_units = su.level, ",".join(su.related)
 
-    def next_job_id(self) -> int | None:
+    def next_job_id(self, ollama_ok: bool = True) -> int | None:
+        """次に処理する依頼。Ollama につながらないときは、API のモデルだけを使う依頼を先に進める。"""
         with self.sessions() as s:
-            return s.execute(
-                select(Job.id).where(Job.status.in_(OPEN_STATUSES)).order_by(Job.created_at, Job.id).limit(1)
-            ).scalar_one_or_none()
+            for job in s.execute(select(Job).where(Job.status.in_(OPEN_STATUSES))
+                                 .order_by(Job.created_at, Job.id)).scalars():
+                if ollama_ok or not plan_for_job(self.settings, s, job).needs_ollama:
+                    return job.id
+        return None
 
     def _job(self, job_id: int) -> Job:
         with self.sessions() as s:
@@ -214,6 +222,12 @@ class Worker:
 
     # --- 保存 ---------------------------------------------------------------
 
+    @staticmethod
+    def _subunit(subject_id: str, template: str) -> Subunit | None:
+        subject = get_subject(subject_id)
+        found = subject.subunit_map().get(template) if subject else None
+        return found[1] if found else None
+
     def save_drafts(self, job: Job, drafts: list[Draft], plan: ModelPlan) -> None:
         with self.sessions.begin() as s:
             passages: dict[int, Passage] = {}
@@ -232,8 +246,10 @@ class Worker:
                                   source_url=str(p.get("source_url", "")))
                 s.add(passage)
                 passages[id(draft.passage)] = passage
+        su = self._subunit(job.subject, draft.template)
         s.add(Problem(
             subject=job.subject, unit=draft.unit, template=draft.template, format=draft.format,
+            level=su.level if su else "", related_units=",".join(su.related) if su else "",
             status="draft", job_id=job.id, passage=passage, question=draft.question,
             choices_json=dumps(draft.choices), answer_json=dumps(draft.answer), answer_display=draft.answer_display,
             input_hint=draft.input_hint, explanation=draft.explanation, hint=draft.hint, source=draft.source,
@@ -243,10 +259,11 @@ class Worker:
 
     def save_rejected(self, job: Job, subject: Subject, template: str, exc: Rejected, plan: ModelPlan) -> None:
         p = exc.partial
-        unit = subject.subunit_map().get(template, (None, None))[0]
+        unit, su = subject.subunit_map().get(template, (None, None))
         with self.sessions.begin() as s:
             s.add(Problem(
                 subject=job.subject, unit=unit.id if unit else "", template=template, format=job.format,
+                level=su.level if su else "", related_units=",".join(su.related) if su else "",
                 status="rejected", job_id=job.id, question=str(p.get("question", "")),
                 explanation=str(p.get("explanation", "")), hint=str(p.get("hint", "")),
                 params_json=dumps(p.get("params", {})), params_key="",
@@ -262,12 +279,15 @@ class Worker:
         if subject is None:
             self._finish(job_id, "failed", f"未知の科目です: {job.subject}")
             return
-        templates = subject.templates_for(job.scope, job.format)
+        templates = subject.templates_for(job.scope, job.format, job.levels)
         if not templates:
-            self._finish(job_id, "failed", "この範囲・形式に対応する小単元がありません")
+            self._finish(job_id, "failed", "この範囲・形式・レベルに対応する小単元がありません")
             return
-        with self.sessions() as s:
-            plan = model_plan(self.settings, s)
+        with self.sessions.begin() as s:
+            row = s.get(Job, job_id)
+            plan = plan_for_job(self.settings, s, row)
+            if not row.gen_model:
+                apply_plan(row, plan)
             choices = think_settings(s)
         if hasattr(self.llm, "think_for"):
             env_think = self.settings.think
@@ -426,9 +446,7 @@ class Worker:
     def run_once(self) -> bool:
         """1 件の依頼を処理する。仕事がなければ False。"""
         self.maybe_backup()
-        if not self.check_ollama():
-            return False
-        job_id = self.next_job_id()
+        job_id = self.next_job_id(self.check_ollama())
         if job_id is None:
             return False
         if hasattr(self.llm, "should_abort"):
@@ -440,6 +458,13 @@ class Worker:
             log.info("job %s cancelled", job_id)
             self.finish_cancel(job_id)
             self.set_status(f"依頼 #{job_id} を取り消しました", job_id)
+        except LLMModelMissing as exc:  # 待っても直らないので失敗で止める
+            log.warning("job %s failed: %s", job_id, exc)
+            with self.sessions.begin() as s:  # 検証できない下書きは捨てる（合格済みの問題は残す）
+                self._discard_drafts(s, job_id)
+                s.get(Job, job_id).made = s.execute(select(func.count()).select_from(Problem).where(
+                    Problem.job_id == job_id, Problem.status == "ready")).scalar_one()
+            self._finish(job_id, "failed", str(exc))
         except (LLMUnavailable, SandboxUnavailable) as exc:
             log.warning("job %s waiting: %s", job_id, exc)
             self.unavailable_until = time.monotonic() + self.settings.retry_seconds
@@ -492,8 +517,9 @@ def main() -> None:
     settings = Settings()
     ensure_or_exit(settings.data_dir, skip=settings.skip_data_check)
     sessions = init_db(settings.database_path)
-    llm = OllamaClient(settings.ollama_base_url, timeout=settings.llm_timeout, num_ctx=settings.num_ctx,
-                       num_predict=settings.num_predict, keep_alive=settings.keep_alive, think=settings.think)
+    ollama = OllamaClient(settings.ollama_base_url, timeout=settings.llm_timeout, num_ctx=settings.num_ctx,
+                          num_predict=settings.num_predict, keep_alive=settings.keep_alive, think=settings.think)
+    llm = LLMRouter(ollama)  # API の提供元を足すときはここに登録する
     Worker(settings, sessions, llm, SandboxClient(settings.sandbox_url)).run_forever()
 
 
