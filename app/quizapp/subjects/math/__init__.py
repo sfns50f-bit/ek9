@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import random
 import re
 from typing import Any
@@ -22,6 +23,7 @@ from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Su
 from . import prompts
 from .catalog import MISTAKES, UNITS, template_info
 
+logger = logging.getLogger(__name__)
 N_DISTRACTORS = 3
 MAX_ROLLS = 30
 FIX_ROUNDS = 1  # 文章の確認で落ちたとき、直しを頼む回数
@@ -129,7 +131,7 @@ class MathSubject(Subject):
         steps = [] if ctx.is_test else inst.steps
         user = prompts.gen_user(inst.task, [textcheck.first(g) for g in inst.givens], answer_latex, steps, fmt)
         # 作成役に送った文章をそのまま残す（表記が崩れたとき、送った側か受け取った側かを見分けるため）
-        log[0]["detail"] = "作成役に送った文章:\n" + user[:4000]
+        log[0]["detail"] = "作成役に送った文章:\n" + user[:4000] + "\n\n（システムの指示）\n" + prompts.GEN_SYSTEM
         out = self._chat(ctx, prompts.GEN_SYSTEM, user)
         # 文章の確認で落ちたら、同じ数値のまま、指摘した点だけを直させる（作り直しより速く、成功しやすい）
         for round_no in range(FIX_ROUNDS + 1):
@@ -138,7 +140,7 @@ class MathSubject(Subject):
                                            for k in ("question", "explanation", "hint"))
             partial.update(question=question, explanation=explanation, hint=hint)
             problem = _check_text(inst, answer_latex, question, explanation, hint, ctx.sandbox,
-                                  sp.srepr(inst.answer), choice=fmt == "choice")
+                                  sp.srepr(inst.answer), choice=fmt == "choice", is_test=ctx.is_test)
             if problem is None:
                 break
             code, step, summary = problem
@@ -220,13 +222,14 @@ class MathSubject(Subject):
                 break
             except LLMError as exc:
                 out = {"_error": str(exc), "_raw": getattr(exc, "raw", "")}
-        verdict = str(out.get("verdict") or "")
+        # 1 行目だけを見る（指示の「「問題なし」または「問題あり」」を書き写したときに誤って弾かないよう）
+        verdict = next((ln.strip(" 　。.*「」") for ln in str(out.get("verdict") or "").splitlines() if ln.strip()), "")
         issues = str(out.get("issues") or "").strip()
         raw = out.get("_raw") or f"[[verdict]]\n{verdict}\n[[issues]]\n{issues}"
-        if "問題あり" in verdict:
+        if verdict.startswith("問題あり"):
             return VerifyResult(False, f"{model}: 解説に誤りがあると指摘（{issues[:300] or '理由なし'}）", issues,
                                 "explanation_review", raw=raw)
-        if "問題なし" in verdict:
+        if verdict.startswith("問題なし"):
             return VerifyResult(True, f"{model}: 解説に誤りは見つからなかった", issues, raw=raw)
         # 見直しの結果が読めないときは、それだけで不合格にはしない（検証役の答えは全回一致している）
         return VerifyResult(True, f"{model}: 見直しの結果を読めなかった（{out.get('_error') or verdict[:60]}）",
@@ -258,7 +261,8 @@ class MathSubject(Subject):
 
 
 def _check_text(inst: Any, answer_latex: str, question: str, explanation: str, hint: str,
-                sandbox: Any = None, answer_srepr: str = "", *, choice: bool = False) -> tuple[str, str, str] | None:
+                sandbox: Any = None, answer_srepr: str = "", *, choice: bool = False,
+                is_test: bool = False) -> tuple[str, str, str] | None:
     """LLM が書いた文章の確認。問題があれば (理由の種類, 段階, 説明)、なければ None。"""
     if not (question and explanation and hint):
         return "llm_output", "文章", "問題文・解説・ヒントのどれかが空です"
@@ -280,16 +284,19 @@ def _check_text(inst: Any, answer_latex: str, question: str, explanation: str, h
     issues = (latexfix.question_problems(question, choice=choice) + latexfix.problems(hint, field="ヒント")
               + latexfix.problems(explanation, field="解説"))
     body = _ANSWER_LINE_RE.sub("", explanation)
-    if len(re.sub(r"\s", "", body)) < 40:
+    # 検証のテスト（正解をずらし、解き方の要点を渡さない）では、解説の長さと途中式は確かめない
+    # （ずらした正解に合わせた解説は途中式が合わないので、検証より前に落ちてテストにならない）
+    if not is_test and len(re.sub(r"\s", "", body)) < 40:
         issues.append("解説が短すぎる（解き方の要点の各段階を、途中式も省かずに書く）")
     if issues:
         return "text_format", "表記の確認", "表記の崩れ: " + "／".join(dict.fromkeys(issues))
     # 解説の数どうしの「=」が正しいか（58 - (-21) \cdot \frac{1}{2} = 79 のような途中式の誤り）
-    if sandbox is not None and hasattr(sandbox, "equalities"):
+    if not is_test and sandbox is not None and hasattr(sandbox, "equalities"):
         segments = [(m.group(1) or m.group(2) or "") for m in _MATH_RE.finditer(explanation)]
         try:
             res = sandbox.equalities(segments)
-        except Exception:
+        except Exception as exc:  # 確かめられないときは通す（検証役と問題検証モードで拾う）
+            logger.warning("解説の途中式を確かめられませんでした: %s", exc)
             res = {}
         bad = res.get("mismatches") or []
         if bad:
@@ -331,6 +338,9 @@ def _answer_candidates(answer: str, work: str) -> list[str]:
     answer 欄が「@35/4」のように崩れていても、work の最後が「S = 35/4」なら救える（実機の gemma4:e4b で多かった）。
     """
     out = [answer.strip()] if answer.strip() else []
+    first_line = next((ln.strip() for ln in answer.splitlines() if ln.strip()), "")
+    if first_line and first_line != answer.strip():  # 「3\n\n以上です」のような書き添え
+        out.append(first_line)
     boxed = _BOXED_RE.findall(work)
     if boxed:
         out.append(boxed[-1].strip())

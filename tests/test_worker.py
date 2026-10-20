@@ -348,6 +348,8 @@ def test_llm_call_timings_are_recorded_for_status(settings, sessions, sandbox):
     with sessions() as s:
         labels = [c["label"] for c in kv_json(s, "llm_calls")]
     assert labels == ["作成"] * 2 + ["検証"] * 4 + ["見直し"] * 2
+    j = all_jobs(sessions)[-1]
+    assert (j.gen_calls, j.verify_calls) == (2, 6)  # 解説の見直しは検証の時間に数える（作成の 1 問あたりを膨らませない）
 
 
 def test_no_duplicate_numbers(settings, sessions, sandbox):
@@ -714,3 +716,8 @@ def test_impossible_distractors_are_not_offered(sandbox):
             for c in choices:
                 if not c["correct"]:
                     assert ok(sp.sympify(values[c["text"].strip("$")])), (tid, c["text"])
+
+
+def all_jobs(sessions):
+    with sessions() as s:
+        return list(s.execute(select(Job).order_by(Job.id)).scalars())

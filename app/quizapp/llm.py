@@ -108,7 +108,8 @@ def _fix_controls(value: Any) -> Any:
 # （" \\ / b f n r t u）しか出せなくなる。モデルが \\circ や \\angle を 1 本のバックスラッシュで書こうとすると
 # \\top・\\times・\\rho・ngle・\\u00b0 のように別の文字に押し曲げられて、LaTeX が壊れていた。
 # そこで JSON を使わず、[[question]] のような見出しで区切った平文で書かせる（バックスラッシュはそのまま届く）。
-_TAG_RE = re.compile(r"^[ \t]*\[\[([A-Za-z_]+)\]\][ \t]*(.*)$", re.M)
+# 見出しの揺れも読む：**[[question]]**、## [[question]]、[[ Question ]]:
+_TAG_RE = re.compile(r"^[ \t#>*_]*\[\[\s*([A-Za-z_]+)\s*\]\][*_ \t:：]*(.*)$", re.M)
 _FENCE_RE = re.compile(r"^\s*```[A-Za-z]*\s*$", re.M)
 
 
@@ -125,8 +126,11 @@ def parse_tagged(text: str, schema: dict[str, Any]) -> dict[str, Any]:
     """[[key]] の見出しで区切った出力を dict にする。見出しがなければ JSON として読んでみる。"""
     raw = text or ""
     body = _THINK_RE.sub("", raw)
+    if "</think>" in body:  # 開きタグがないまま思考が出てきたとき（チャットのテンプレートが <think> を付けた）
+        body = body.rsplit("</think>", 1)[1]
+    body = body.split("<think>", 1)[0]  # 閉じていない思考の続きは捨てる
     keys = list(schema.get("properties", {}))
-    found = [m for m in _TAG_RE.finditer(body) if m.group(1) in keys]
+    found = [m for m in _TAG_RE.finditer(body) if m.group(1).lower() in keys]
     if not found:
         try:
             data = extract_json(body)
@@ -137,7 +141,8 @@ def parse_tagged(text: str, schema: dict[str, Any]) -> dict[str, Any]:
         for i, m in enumerate(found):
             end = found[i + 1].start() if i + 1 < len(found) else len(body)
             value = (m.group(2) + "\n" + body[m.end():end]).strip()
-            data.setdefault(m.group(1), _FENCE_RE.sub("", value).strip())
+            # 同じ見出しが何度も出たら後のものを使う（前回の出力を書き写してから直したものを書く、など）
+            data[m.group(1).lower()] = _FENCE_RE.sub("", value).strip()
     missing = [k for k in schema.get("required", []) if not str(data.get(k, "")).strip()]
     if missing:
         raise LLMError("出力に " + "・".join(f"[[{k}]]" for k in missing) + " がありません", raw=raw)

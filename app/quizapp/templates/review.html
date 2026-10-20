@@ -27,9 +27,11 @@
     <a class="button secondary" href="/review/export.md?{{ qs }}" target="_blank">Markdown で表示</a>
     <a class="button secondary" href="/review/export.md?{{ qs }}&download=1">Markdown を保存</a>
   </div>
-  <details>
+  <p class="muted small">Markdown は、冒頭に「{{ "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。" }}」を付けて書き出します（絞り込んだ問題、新しい順に最大 500 問）。Claude などのチャットにそのまま貼れます。</p>
+</form>
+<details class="card">
     <summary>前に作った問題の手入れ</summary>
-    <p class="small">表記の直し：度の記号の揺れ（^\top・^° など）、\\sin のような二重のバックスラッシュ、文字どおりの「\n」などを、作成のときと同じ方法でまとめて直します（数式の意味は変えません。LLM は使いません）。</p>
+    <p class="small">表記の直し：度の記号の揺れ（^\top・^° など）、\\sin のような二重のバックスラッシュ、文字どおりの「\n」などを、作成のときと同じ方法でまとめて直します（数式の意味は変えません。LLM は使いません）。直す前の文章は各問題の「検証の記録」に残ります。念のため、先にバックアップを取ってください（README の「バックアップ」の「いますぐ取るとき」）。</p>
     <form method="post" action="/review/normalize" onsubmit="return confirm('ストックと削除した問題の表記をまとめて直しますか？')">
       <button type="submit" class="secondary small">表記をまとめて直す</button></form>
     <p class="small">表記の点検で引っかかる問題は、「状態」で「{{ options.statuses.issues }}」を選ぶと一覧になります。直せないものは削除して、「作る」から作り直してください。</p>
@@ -38,9 +40,7 @@
     <form method="post" action="/review/delete-ids" onsubmit="return confirm('書いた番号の問題を削除しますか？')">
       <label>番号を指定して削除（例: 8, 163, 221）<input type="text" name="ids" inputmode="numeric" autocomplete="off"></label>
       <button type="submit" class="secondary small">削除する</button></form>
-  </details>
-  <p class="muted small">Markdown は、冒頭に「{{ "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。" }}」を付けて書き出します（絞り込んだ問題、新しい順に最大 500 問）。Claude などのチャットにそのまま貼れます。</p>
-</form>
+</details>
 
 {% if not problems %}<p class="muted">当てはまる問題はありません。</p>{% endif %}
 {% for p in problems %}

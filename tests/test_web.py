@@ -569,3 +569,27 @@ def test_explanation_review_setting(client, sessions):
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1", "review_shown": "1",
                                    "review": "on"})
     assert all_rows(sessions, Job)[-1].explanation_review is True
+
+
+def test_templates_have_no_nested_forms():
+    """<form> の中に <form> を書くと、ブラウザは内側を無視する（テストの POST では気づけない）。"""
+    from html.parser import HTMLParser
+
+    class Depth(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = self.max = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "form":
+                self.depth += 1
+                self.max = max(self.max, self.depth)
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.depth -= 1
+
+    for path in (Path(__file__).resolve().parents[1] / "app/quizapp/templates").glob("*.html"):
+        parser = Depth()
+        parser.feed(path.read_text())
+        assert parser.max <= 1, path.name

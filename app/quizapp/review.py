@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import latexfix
-from .db import Problem
+from .db import Problem, dumps
 from .subjects import all_subjects, get_subject
 from .subjects.base import FORMATS, LEVELS
 
@@ -68,7 +68,12 @@ def normalize_all(s: Session) -> int:
     changed = 0
     for p in s.execute(select(Problem).where(Problem.status.in_(("ready", "deleted")))).scalars():
         new = {f: latexfix.normalize(getattr(p, f) or "") for f in TEXT_FIELDS}
-        if any(new[f] != (getattr(p, f) or "") for f in TEXT_FIELDS):
+        before = {f: getattr(p, f) or "" for f in TEXT_FIELDS if new[f] != (getattr(p, f) or "")}
+        if before:
+            # 直す前の文章は記録に残す（問題の「作り方と検証の記録」で見られる）
+            p.verification_json = dumps(p.verification + [{
+                "step": "表記の直し", "ok": True, "summary": "問題検証モードで表記をまとめて直した（直す前の文章は「詳しく」）",
+                "detail": "\n\n".join(f"[{f}]\n{v}" for f, v in before.items())}])
             for f, v in new.items():
                 setattr(p, f, v)
             changed += 1

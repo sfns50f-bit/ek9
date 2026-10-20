@@ -12,7 +12,7 @@ DEGREES = [r"$A = 120^\top$", r"$A = 120^\rho$", r"$A = 120^\theta$", r"$A = 120
 
 @pytest.mark.parametrize("text", DEGREES)
 def test_degree_variants_become_circ(text):
-    assert normalize(text) == r"$A = 120^\circ$"
+    assert normalize("角 " + text) == r"角 $A = 120^\circ$"
 
 
 def test_other_repairs_keep_real_math():
@@ -25,11 +25,31 @@ def test_other_repairs_keep_real_math():
     assert normalize(r"$\ngle BAC = 30^\circ$") == r"$\angle BAC = 30^\circ$"
 
 
+def test_normalize_keeps_real_math():
+    """本当の指数・LaTeX の改行・\\nearrow などは変えない（レビューで見つかった誤った直し）。"""
+    for text in (r"$2^\theta$ と $3^\rho$", r"$10^{o}$", r"$\nearrow$ と $\searrow$ と $\nexists$ と $\ngtr$",
+                 r"$\begin{cases} x+y=1 \\x-y=3 \end{cases}$", r"$$x = 3$$ と \(y\)"):
+        assert normalize(text) == text, text
+    assert normalize(r"$$60^\top$$ の角") == r"$$60^\circ$$ の角"  # $$…$$ も数式として直す
+
+
+def test_valid_katex_is_not_flagged():
+    ok = (r"$\searrow$、$\nearrow$、$\boldsymbol{a}$、$\lvert x \rvert$、$\Longrightarrow$、$\deg$、$\pmod{3}$、"
+          r"$\frac12$、$\dfrac{a}{b}$、$\begin{cases} x=1 \\ y=2 \end{cases}$、$$x^2$$")
+    assert problems(ok) == []
+
+
+def test_more_breakages_are_found():
+    found = " ".join(problems(r"$\frac{\cos A}$ と ¶ と $\x-y$ と $rac{1}{2}$ と $$3回$$"))
+    for word in ("引数", "¶", r"\x", "バックスラッシュが抜けている", "日本語"):
+        assert word in found, word
+
+
 def test_problems_found():
     found = " ".join(problems(r"$3回$ と $\root{148}$ と 边长 と \$5", field="問題文", choice=True))
     for word in ("日本語", r"\root", "中国語", r"\$"):
         assert word in found, word
-    assert "奇数" in " ".join(problems("$x$ と $y"))
+    assert "数が合わず" in " ".join(problems("$x$ と $y"))
     assert "制御文字" in " ".join(problems("a\x07b"))
     assert "改行" in " ".join(problems("$a =\n b$"))
     assert "示せ" in " ".join(problems("途中の計算過程も示せ。", choice=True))

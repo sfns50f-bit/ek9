@@ -178,3 +178,16 @@ def test_tagged_output_parsing():
     assert parse_tagged(text, schema) == {"question": "問題 $x^2$", "hint": "公式", "explanation": "解説"}
     with pytest.raises(LLMError, match="hint"):
         parse_tagged("[[question]]\nq\n[[explanation]]\ne", schema)
+
+
+def test_tagged_output_variants():
+    from quizapp.llm import parse_tagged
+
+    schema = {"properties": {"question": {}, "hint": {}}, "required": ["question", "hint"]}
+    assert parse_tagged("**[[question]]**\nQ\n## [[ Hint ]]:\nH", schema) == {"question": "Q", "hint": "H"}
+    # 同じ見出しが 2 回出たら後のもの（前回の出力を書き写してから直したものを書いた）
+    assert parse_tagged("[[question]]\nold\n[[hint]]\nold\n[[question]]\nnew\n[[hint]]\nnew", schema) == \
+        {"question": "new", "hint": "new"}
+    # 開きタグのない思考、閉じていない思考
+    assert parse_tagged("下書き\n</think>[[question]]\nQ\n[[hint]]\nH", schema) == {"question": "Q", "hint": "H"}
+    assert parse_tagged("[[question]]\nQ\n[[hint]]\nH\n<think>まだ考え中", schema) == {"question": "Q", "hint": "H"}

@@ -130,7 +130,7 @@ class Worker:
             if job is None:
                 return
             for c in calls:
-                role = "verify" if c.get("label") == "検証" else "gen"
+                role = "verify" if c.get("label") in ("検証", "見直し") else "gen"  # 解説の見直しは検証の時間に数える
                 setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
                 setattr(job, f"{role}_eval_s", (getattr(job, f"{role}_eval_s") or 0.0) + float(c.get("eval_s") or 0))
                 setattr(job, f"{role}_load_s", (getattr(job, f"{role}_load_s") or 0.0) + float(c.get("load_s") or 0))
