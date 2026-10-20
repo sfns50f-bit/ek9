@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import resource
 from typing import Any, Callable
 
-import sympy as sp  # noqa: F401 - forkserver で先読みしておく
+import sympy as sp  # forkserver で先読みしておく
 
 from . import mathcheck as mc
 
@@ -83,10 +84,50 @@ def task_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "latex": mc.to_latex(obj, kind, str(payload.get("var") or var))}
 
 
+# 解説の数式のうち、数どうしの「=」だけを確かめる。度・対数・組合せ・添え字・不等号などを含む式は、
+# 読み違えて「等しくない」と誤判定しやすいので確かめない（見逃しは検証役と問題検証モードで拾う）
+_SKIP_RE = re.compile(r"circ|°|度|log|ln|<|>|\\le|\\ge|\\ne|approx|fallingdotseq|≒|≈|_|mathrm|binom|"
+                      r"\\int|\\sum|\\lim|\\pm|\\mp|\\to|!|[A-Za-z]\(|\\text")
+
+
+def task_equalities(payload: dict[str, Any]) -> dict[str, Any]:
+    """segments（$…$ の中身の一覧）の「A = B = C」のうち、両辺が数で値が違うものを返す。"""
+    segments = payload.get("segments") or []
+    if not isinstance(segments, list):
+        raise mc.AnswerError("segments は一覧で渡してください")
+    bad = []
+    for seg in segments[:40]:
+        seg = str(seg)[:300]
+        if "=" not in seg or _SKIP_RE.search(seg):
+            continue
+        sides = [p.strip() for p in seg.split("=")]
+        values = []
+        for side in sides:
+            try:
+                obj, _var = mc.parse_answer(side, "value")
+                values.append(obj if not getattr(obj, "free_symbols", True) else None)
+            except BaseException:  # 読めない辺は確かめない
+                values.append(None)
+        for k in range(len(sides) - 1):
+            a, b = values[k], values[k + 1]
+            if a is None or b is None:
+                continue
+            try:
+                fa, fb = complex(sp.N(a, 30)), complex(sp.N(b, 30))
+            except BaseException:
+                continue
+            rough = "." in sides[k] or "." in sides[k + 1]  # 小数で書いた近似値は丸めを許す
+            tol = (0.006 if rough else 1e-9) * max(1.0, abs(fa))
+            if abs(fa - fb) > tol:
+                bad.append(f"{sides[k]} = {sides[k + 1]}")
+    return {"ok": True, "mismatches": bad}
+
+
 TASKS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "distinct": task_distinct,
     "compare": task_compare,
     "preview": task_preview,
+    "equalities": task_equalities,
 }
 
 

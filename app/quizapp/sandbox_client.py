@@ -41,6 +41,9 @@ class SandboxClient:
     def preview(self, text: str, kind: str, var: str = "x") -> dict[str, Any]:
         return self._post("preview", {"text": text, "kind": kind, "var": var})
 
+    def equalities(self, segments: list[str]) -> dict[str, Any]:
+        return self._post("equalities", {"segments": segments})
+
     def healthy(self) -> bool:
         try:
             return httpx.get(f"{self.base_url}/healthz", timeout=3).status_code == 200

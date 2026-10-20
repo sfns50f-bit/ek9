@@ -50,6 +50,8 @@ class Instance:
     fmt: Callable[[Any], str] = L
     # 解説に入っていなければならない正解の書き方（省略時は fmt(answer)）
     checks: Callable[[Any], list[str]] | None = None
+    # 誤答として出してよい値か（確率なら 0〜1、長さ・面積なら正）。ありえない値の誤答は選択肢に出さない
+    valid: Callable[[Any], bool] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def answer_checks(self, value: Any = None) -> list[str]:
@@ -132,14 +134,22 @@ def coef_term(c: Any, body: str) -> str:
     return f"{L(c)}{body}"
 
 
-def triangle_givens(b: int, c: int, A: int) -> list[Any]:
-    """三角形 ABC の 2 辺とその間の角。∠BAC や「CA = 3」のような書き方も同じ値として認める。
+def positive(v: Any) -> bool:
+    return bool(sp.sympify(v).is_positive)
 
-    （値の書き換えは数字で確かめる。辺や角の取り違えは検証役が解いて気づく）
+
+def probability(v: Any) -> bool:
+    v = sp.sympify(v)
+    return bool(v.is_nonnegative and (v - 1).is_nonpositive)
+
+
+def triangle_givens(b: int, c: int, A: int) -> list[Any]:
+    """三角形 ABC の 2 辺とその間の角。辺は CA・AB の名前で書かせる（b・c と書かせると、どちらがどの辺かを
+    取り違えた問題文になることがあった）。∠BAC や「AC = 3」のような書き方も同じ値として認める。
     """
     return [
-        [f"b = {b}", f"CA = {b}", f"AC = {b}"],
-        [f"c = {c}", f"AB = {c}", f"BA = {c}"],
+        [f"CA = {b}", f"AC = {b}"],
+        [f"AB = {c}", f"BA = {c}"],
         [f"A = {A}^\\circ", f"{A}^\\circ",
          # 度の記号を書かない・弧度法で書く場合も、値が変わっていなければ認める
          *(f"{name} = {v}" for name in ("A", "\\angle A", "\\angle BAC", "\\angle CAB")
@@ -245,7 +255,7 @@ def trig_cosine(rng: random.Random) -> Instance:
     sq = b ** 2 + c ** 2 - 2 * b * c * cos
     ans = sp.sqrt(sq)
     return Instance(
-        task="三角形 ABC で、2辺とその間の角から残りの辺 a = BC の長さを余弦定理で求める問題",
+        task="三角形 ABC で、2辺 CA, AB とその間の角 A から、残りの辺 BC の長さを余弦定理で求める問題",
         givens=triangle_givens(b, c, A),
         answer=ans,
         candidates=[
@@ -255,12 +265,13 @@ def trig_cosine(rng: random.Random) -> Instance:
             Cand(sp.sqrt(b ** 2 + c ** 2), "partial"),
         ],
         steps=[
-            "余弦定理 a^2 = b^2 + c^2 - 2bc\\cos A",
+            "余弦定理 a^2 = b^2 + c^2 - 2bc\\cos A（a = BC, b = CA, c = AB）",
             f"\\cos {A}^\\circ = {L(cos)} なので a^2 = {L(b**2)} + {L(c**2)} - 2 \\cdot {b} \\cdot {c} \\cdot "
             f"\\left({L(cos)}\\right) = {L(sq)}",
             f"a > 0 より a = {L(ans)}",
         ],
         params={"A": A, "b": b, "c": c},
+        valid=positive,
         input_hint=HINT_NUM,
     )
 
@@ -272,7 +283,7 @@ def trig_area(rng: random.Random) -> Instance:
     sin = _SIN[A]
     ans = sp.Rational(1, 2) * b * c * sin
     return Instance(
-        task="三角形 ABC で、2辺 b = CA, c = AB とその間の角 A から面積 S を求める問題",
+        task="三角形 ABC で、2辺 CA, AB とその間の角 A から面積 S を求める問題",
         givens=triangle_givens(b, c, A),
         answer=ans,
         candidates=[
@@ -282,9 +293,10 @@ def trig_area(rng: random.Random) -> Instance:
             Cand(sp.Rational(1, 4) * b * c * sin, "coef"),
         ],
         steps=[
-            "面積の公式 S = \\frac{1}{2} bc \\sin A",
+            "面積の公式 S = \\frac{1}{2} bc \\sin A（b = CA, c = AB）",
             f"\\sin {A}^\\circ = {L(sin)} なので S = \\frac{{1}}{{2}} \\cdot {b} \\cdot {c} \\cdot {L(sin)} = {L(ans)}",
         ],
+        valid=positive,
         params={"A": A, "b": b, "c": c},
         input_hint=HINT_NUM,
     )
@@ -334,7 +346,7 @@ _TRIALS = [("1個のさいころを投げる", "1の目が出る", sp.Rational(1
             ["赤玉1個", "白玉3個"])]
 
 
-@template("ma-case-repeat", unit="ma-case", label="反復試行の確率", level="common")
+@template("ma-case-repeat", unit="ma-case", label="反復試行の確率", level="basic")
 def case_repeat(rng: random.Random) -> Instance:
     trial, event, p, extra = rng.choice(_TRIALS)
     n = rng.randint(3, 6)
@@ -359,6 +371,7 @@ def case_repeat(rng: random.Random) -> Instance:
             f"\\left({L(q)}\\right)^{{{n - k}}} = {L(ans)}",
         ],
         params={"trial": trial, "event": event, "p": str(p), "n": n, "k": k},
+        valid=probability,
         input_hint="確率を分数 a/b の形で入力",
     )
 
@@ -367,7 +380,7 @@ def case_repeat(rng: random.Random) -> Instance:
 # 数学II 式と証明・複素数と方程式
 # ---------------------------------------------------------------------------
 
-@template("m2-poly-vieta", unit="m2-poly", label="解と係数の関係", level="common", related=('m1-quad',))
+@template("m2-poly-vieta", unit="m2-poly", label="解と係数の関係", level="basic", related=('m1-quad',))
 def poly_vieta(rng: random.Random) -> Instance:
     while True:  # 重解にならないようにする（「2つの解」と書けるように）
         p = rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
@@ -383,6 +396,9 @@ def poly_vieta(rng: random.Random) -> Instance:
                  Cand(sp.Integer(t ** 2 - 2 * s), "swap"), Cand(sp.Integer(s ** 2 - t), "coef")]
         steps = [f"解と係数の関係より \\alpha + \\beta = {L(s)}, \\alpha\\beta = {L(t)}",
                  f"\\alpha^2 + \\beta^2 = (\\alpha + \\beta)^2 - 2\\alpha\\beta = {L(ans)}"]
+        if p * p < 4 * q:  # 判別式が負：2 つの解は虚数なので、α^2 + β^2 が負になることもある
+            steps.append("判別式が負なので 2 つの解は虚数である。虚数の 2 乗は負になることがあるので、"
+                         "\\alpha^2 + \\beta^2 が負の値になってもおかしくない（そのことを解説で一言ふれる）")
     else:
         target = r"\frac{1}{\alpha} + \frac{1}{\beta}"
         ans = sp.Rational(s, t)
@@ -825,6 +841,7 @@ def int_area(rng: random.Random) -> Instance:
             f"= {coef}\\frac{{1}}{{6}}\\left({be} - \\left({al}\\right)\\right)^3 = {L(ans)}",
         ],
         params={"al": al, "be": be, "k": k, "curve": str(curve), "line": str(line)},
+        valid=positive,
         input_hint=HINT_NUM,
     )
 

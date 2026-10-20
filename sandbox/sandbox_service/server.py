@@ -27,6 +27,7 @@ TIMEOUTS = {
     "compare": float(os.environ.get("SANDBOX_COMPARE_TIMEOUT", "10")),
     "distinct": float(os.environ.get("SANDBOX_DISTINCT_TIMEOUT", "20")),
     "preview": 5.0,
+    "equalities": float(os.environ.get("SANDBOX_EQUALITIES_TIMEOUT", "15")),
 }
 MAX_BODY = 200_000
 MAX_RESULT = 2_000_000

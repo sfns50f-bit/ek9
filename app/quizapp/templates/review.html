@@ -5,6 +5,8 @@
 {{ status_nav(page) }}
 {% if msg == "deleted" %}<p class="notice">削除しました。この問題は今後出題しません（回答の記録は残ります）。</p>{% endif %}
 {% if msg == "restored" %}<p class="notice">ストックに戻しました。</p>{% endif %}
+{% if msg == "normalized" %}<p class="notice">{{ n }} 問の表記を直しました。下は、直したあとも表記の点検で引っかかる問題です（直せないもの：KaTeX にない命令、数式の中の日本語、中国語の字など）。</p>{% endif %}
+{% if msg == "deleted_ids" %}<p class="notice">{{ n }} 問を削除しました（今後出題しません。回答の記録は残ります）。足りない分は「作る」から作成を依頼してください。</p>{% endif %}
 {% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) %}
 <form method="get" action="/review" class="card filters">
   <h1>問題検証モード</h1>
@@ -27,6 +29,18 @@
   </div>
   <p class="muted small">Markdown は、冒頭に「{{ "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。" }}」を付けて書き出します（絞り込んだ問題、新しい順に最大 500 問）。Claude などのチャットにそのまま貼れます。</p>
 </form>
+<details class="card">
+    <summary>前に作った問題の手入れ</summary>
+    <p class="small">表記の直し：度の記号の揺れ（^\top・^° など）、\\sin のような二重のバックスラッシュ、文字どおりの「\n」などを、作成のときと同じ方法でまとめて直します（数式の意味は変えません。LLM は使いません）。直す前の文章は各問題の「検証の記録」に残ります。念のため、先にバックアップを取ってください（README の「バックアップ」の「いますぐ取るとき」）。</p>
+    <form method="post" action="/review/normalize" onsubmit="return confirm('ストックと削除した問題の表記をまとめて直しますか？')">
+      <button type="submit" class="secondary small">表記をまとめて直す</button></form>
+    <p class="small">表記の点検で引っかかる問題は、「状態」で「{{ options.statuses.issues }}」を選ぶと一覧になります。直せないものは削除して、「作る」から作り直してください。</p>
+    <form method="post" action="/review/delete-issues" onsubmit="return confirm('表記の点検で引っかかるストックの問題を、まとめて削除しますか？')">
+      <button type="submit" class="secondary small">表記の点検で引っかかる問題をまとめて削除する</button></form>
+    <form method="post" action="/review/delete-ids" onsubmit="return confirm('書いた番号の問題を削除しますか？')">
+      <label>番号を指定して削除（例: 8, 163, 221）<input type="text" name="ids" inputmode="numeric" autocomplete="off"></label>
+      <button type="submit" class="secondary small">削除する</button></form>
+</details>
 
 {% if not problems %}<p class="muted">当てはまる問題はありません。</p>{% endif %}
 {% for p in problems %}
@@ -37,6 +51,7 @@
     <span>{{ lab.level }}</span><span>{{ lab.format }}</span><span>{{ p.created_at | localtime }}</span>
     {% if p.reported %}<span class="tag ng">報告あり</span>{% endif %}
   </div>
+  {% if f.status == "issues" %}{% for i in issues(p) %}<p class="notice warn small">{{ i }}</p>{% endfor %}{% endif %}
   {% if p.passage and p.passage.body %}<details><summary>本文</summary>{{ math(p.passage.body) }}</details>{% endif %}
   {{ math(p.question, "question") }}
   {% if p.choices %}

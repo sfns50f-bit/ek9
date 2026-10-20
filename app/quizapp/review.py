@@ -12,14 +12,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import Problem
+from . import latexfix
+from .db import Problem, dumps
 from .subjects import all_subjects, get_subject
 from .subjects.base import FORMATS, LEVELS
 
 COOKIE = "review"
 # 書き出しの冒頭に付ける依頼文（Claude などのチャットにそのまま貼って評価してもらう）
 EXPORT_REQUEST = "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。"
-STATUSES = {"ready": "ストック（検証に合格）", "deleted": "削除した問題", "rejected": "検証で不合格"}
+STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストックのうち表記の点検で引っかかる問題",
+            "deleted": "削除した問題", "rejected": "検証で不合格"}
+TEXT_FIELDS = ("question", "hint", "explanation")
 
 
 def token(password: str) -> str:
@@ -34,7 +37,8 @@ def allowed(password: str, cookie: str | None) -> bool:
 
 def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
           status: str = "ready", limit: int = 200, offset: int = 0) -> list[Problem]:
-    q = select(Problem).where(Problem.status == (status if status in STATUSES else "ready"))
+    status = status if status in STATUSES else "ready"
+    q = select(Problem).where(Problem.status == ("ready" if status == "issues" else status))
     if subject:
         q = q.where(Problem.subject == subject)
     if unit:
@@ -45,7 +49,48 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
         q = q.where(Problem.template.in_(templates))
     if gen_model:
         q = q.where(Problem.gen_model == gen_model)
-    return list(s.execute(q.order_by(Problem.id.desc()).offset(offset).limit(limit)).scalars())
+    q = q.order_by(Problem.id.desc())
+    if status == "issues":  # 表記の点検は Python で行うので、全部読んでから絞る
+        hits = [p for p in s.execute(q).scalars() if text_issues(p)]
+        return hits[offset:offset + limit]
+    return list(s.execute(q.offset(offset).limit(limit)).scalars())
+
+
+def text_issues(problem: Problem) -> list[str]:
+    """問題文・ヒント・解説の表記の崩れ（latexfix）。作成のときと同じ点検。"""
+    return (latexfix.question_problems(problem.question, choice=problem.format == "choice")
+            + latexfix.problems(problem.hint, field="ヒント") + latexfix.problems(problem.explanation, field="解説"))
+
+
+def normalize_all(s: Session) -> int:
+    """ストックと削除した問題の問題文・ヒント・解説に、作成のときと同じ表記の直し（latexfix.normalize）をかける。
+    直した問題の数を返す。数式の意味は変えない（度の記号の揺れ・\\sin・文字どおりの \\n など）。"""
+    changed = 0
+    for p in s.execute(select(Problem).where(Problem.status.in_(("ready", "deleted")))).scalars():
+        new = {f: latexfix.normalize(getattr(p, f) or "") for f in TEXT_FIELDS}
+        before = {f: getattr(p, f) or "" for f in TEXT_FIELDS if new[f] != (getattr(p, f) or "")}
+        if before:
+            # 直す前の文章は記録に残す（問題の「作り方と検証の記録」で見られる）
+            p.verification_json = dumps(p.verification + [{
+                "step": "表記の直し", "ok": True, "summary": "問題検証モードで表記をまとめて直した（直す前の文章は「詳しく」）",
+                "detail": "\n\n".join(f"[{f}]\n{v}" for f, v in before.items())}])
+            for f, v in new.items():
+                setattr(p, f, v)
+            changed += 1
+    return changed
+
+
+def delete_ids(s: Session, text: str) -> list[int]:
+    """「12, 34 56」のように書いた番号の問題（ストックのものだけ）を削除にする。削除した番号を返す。"""
+    import re
+
+    done = []
+    for pid in dict.fromkeys(int(n) for n in re.findall(r"\d+", text or "")):
+        p = s.get(Problem, pid)
+        if p is not None and p.status == "ready":
+            p.status = "deleted"
+            done.append(pid)
+    return done
 
 
 def labels(problem: Problem) -> dict[str, str]:

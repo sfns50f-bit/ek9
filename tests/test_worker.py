@@ -347,7 +347,9 @@ def test_llm_call_timings_are_recorded_for_status(settings, sessions, sandbox):
     make_worker(settings, sessions, sandbox, llm).run_once()
     with sessions() as s:
         labels = [c["label"] for c in kv_json(s, "llm_calls")]
-    assert labels == ["作成"] * 2 + ["検証"] * 4
+    assert labels == ["作成"] * 2 + ["検証"] * 4 + ["見直し"] * 2
+    j = all_jobs(sessions)[-1]
+    assert (j.gen_calls, j.verify_calls) == (2, 6)  # 解説の見直しは検証の時間に数える（作成の 1 問あたりを膨らませない）
 
 
 def test_no_duplicate_numbers(settings, sessions, sandbox):
@@ -402,7 +404,7 @@ def test_cancel_during_generation_stops_within_seconds(settings, sessions, sandb
 
 def test_cancel_keeps_problems_that_already_passed(settings, sessions, sandbox):
     with sessions.begin() as s:
-        save_overrides(s, {"verify_count": "1"})
+        save_overrides(s, {"verify_count": "1", "review": "off"})
     llm = SlowLLM(sessions)
     llm.slow_from = 4  # 作成 3 回と 1 問目の検証は速く、2 問目の検証で止まる
     jid = add_job(sessions, count=3)
@@ -622,3 +624,100 @@ def test_missing_verifier_model_discards_drafts(settings, sessions, sandbox):
     j = job(sessions, jid)
     assert j.status == "failed" and "見つかりません" in j.error and j.made == 0
     assert problems(sessions, status="draft") == []
+
+
+def test_explanation_review_rejects_flagged_explanations(settings, sessions, sandbox):
+    """検証役が全回一致したあと、検証役のモデルで解説を 1 回見直す。誤りを指摘されたら不合格。"""
+    llm = OracleLLM(sessions)
+    add_job(sessions, count=1, verify_count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.reviews == ["gemma4:e4b"] and len(problems(sessions, status="ready")) == 1
+    llm = OracleLLM(sessions)
+    llm.review_verdict = "問題あり"
+    jid = add_job(sessions, count=1, gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b", verify_count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    rejected = [p for p in problems(sessions, status="rejected") if p.job_id == jid]
+    assert rejected and all(p.reject_code == "explanation_review" for p in rejected)
+    assert any(e["step"] == "解説の見直し" and not e["ok"] for e in rejected[0].verification)
+    # 見直しを切った依頼ではしない
+    llm = OracleLLM(sessions)
+    add_job(sessions, count=1, gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b", verify_count=1,
+            explanation_review=False)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.reviews == []
+
+
+class SloppyLLM(OracleLLM):
+    """作成役が、1 回目は表記の崩れた文章を書き、直しを頼まれると正しく書く。"""
+
+    def __init__(self, sessions, mess):
+        super().__init__(sessions)
+        self.mess = mess
+        self.fix_requests = []
+
+    def chat_json(self, model, system, user, schema, **kw):
+        out = super().chat_json(model, system, user, schema, **kw)
+        if "hint" in schema["properties"]:
+            if "直してほしい点" in user:
+                self.fix_requests.append(user.split("直してほしい点: ", 1)[1].split("\n", 1)[0])
+            else:
+                out = self.mess(out)
+        return out
+
+
+def test_broken_notation_is_normalized_or_sent_back_for_fixing(settings, sessions, sandbox):
+    # 直せる崩れ（度の記号の揺れ・\\sin）は機械的に直して合格
+    def degrees(out):
+        return {**out, "explanation": out["explanation"].replace("まず", "角は $30^\\top$。\\\\sin を使う。まず")}
+
+    llm = SloppyLLM(sessions, degrees)
+    add_job(sessions, scope="tmpl:m2-explog-base", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    p = problems(sessions, status="ready")[0]
+    assert "30^\\circ" in p.explanation and "\\\\sin" not in p.explanation and llm.fix_requests == []
+    # 直せない崩れ（数式の中の日本語、KaTeX にない命令）は、直しを頼む
+    def japanese(out):
+        return {**out, "hint": "$底の変換$ と $\\root{2}$ を使う。"}
+
+    llm = SloppyLLM(sessions, japanese)
+    add_job(sessions, scope="tmpl:m2-explog-base", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert len(llm.fix_requests) == 1 and "日本語" in llm.fix_requests[0] and "\\root" in llm.fix_requests[0]
+    assert len(problems(sessions, status="ready")) == 2
+
+
+def test_wrong_equation_in_explanation_is_sent_back(settings, sessions, sandbox):
+    def wrong(out):
+        return {**out, "explanation": "途中で $58 - (-21) \\cdot \\frac{1}{2} = 79$ となる。\n" + out["explanation"]}
+
+    llm = SloppyLLM(sessions, wrong)
+    add_job(sessions, scope="tmpl:m2-explog-base", count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert len(llm.fix_requests) == 1 and "等しくありません" in llm.fix_requests[0]
+
+
+def test_impossible_distractors_are_not_offered(sandbox):
+    """確率の誤答は 0〜1、面積・長さの誤答は正の値だけ。"""
+    import sympy as sp
+    from quizapp.subjects.base import GenContext
+    from quizapp.subjects.math import MathSubject
+    from quizapp.subjects.math.templates import TEMPLATES
+
+    sub = MathSubject()
+    for tid, ok in (("ma-case-repeat", lambda v: 0 <= v <= 1), ("m2-int-area", lambda v: v > 0),
+                    ("m1-trig-area", lambda v: v > 0), ("m1-trig-cosine", lambda v: v > 0)):
+        for seed in range(25):
+            ctx = GenContext(llm=None, sandbox=sandbox, gen_model="m", rng=random.Random(seed), is_test=False,
+                             existing_keys=lambda t: set())
+            inst, choices, _key = sub._instance(ctx, tid, "choice")
+            assert len(choices) == 4
+            rebuilt = TEMPLATES[tid](random.Random(inst.params["seed"]))
+            values = {inst.fmt(c.value): c.value for c in rebuilt.candidates}
+            for c in choices:
+                if not c["correct"]:
+                    assert ok(sp.sympify(values[c["text"].strip("$")])), (tid, c["text"])
+
+
+def all_jobs(sessions):
+    with sessions() as s:
+        return list(s.execute(select(Job).order_by(Job.id)).scalars())

@@ -26,7 +26,7 @@ def provider_of(model: str) -> tuple[str, str]:
     return "ollama", model
 
 
-KEYS = ("gen_model", "verify_model", "verify_count", "verify_model_2")
+KEYS = ("gen_model", "verify_model", "verify_count", "verify_model_2", "review")
 MAX_VERIFY_COUNT = 5
 
 
@@ -36,6 +36,8 @@ class ModelPlan:
     verify_model: str
     verify_count: int
     verify_model_2: str  # 空なら使わない。使うときは 1 回だけ解かせる
+    # 解説の見直し：検証役が全回一致したあと、検証役のモデルに解説を読ませて誤りを探させる（1 回だけ）
+    review: bool = True
 
     @property
     def verify_runs(self) -> list[str]:
@@ -82,6 +84,7 @@ def model_plan(settings: Settings, session: Session) -> ModelPlan:
         verify_count=_count(o["verify_count"], settings.verify_count),
         # 画面で「使わない」を選んだときは "-" を保存する
         verify_model_2="" if v2 == "-" else (v2 or settings.verify_model_2),
+        review=o["review"] != "off",
     )
 
 
@@ -94,6 +97,7 @@ def plan_for_job(settings: Settings, session: Session, job: object) -> ModelPlan
         verify_model=job.verify_model or settings.verify_model,  # type: ignore[attr-defined]
         verify_count=_count(str(job.verify_count), settings.verify_count),  # type: ignore[attr-defined]
         verify_model_2=job.verify_model_2,  # type: ignore[attr-defined]
+        review=bool(getattr(job, "explanation_review", True)),
     )
 
 
@@ -103,12 +107,13 @@ def apply_plan(job: object, plan: ModelPlan) -> None:
     job.verify_model = plan.verify_model  # type: ignore[attr-defined]
     job.verify_count = plan.verify_count  # type: ignore[attr-defined]
     job.verify_model_2 = plan.verify_model_2  # type: ignore[attr-defined]
+    job.explanation_review = plan.review  # type: ignore[attr-defined]
 
 
 # --- 思考モード（モデルごと） ----------------------------------------------------
 # 画面で一度選ぶとモデルごとに保存され、そのモデルを使うたびに同じ設定になる。
 # 選んでいないモデルは「自動」：qwen3 系（qwen3.5 も含む）は切る。gemma4 などはモデルの既定のまま
-# （gemma4 は think=false を送ると JSON スキーマの指定が効かなくなる不具合があったため）。
+# （JSON スキーマで出力させていたころ、gemma4 は think=false で JSON の指定が効かなくなる不具合があった）。
 THINK_CHOICES = {"auto": "自動", "off": "切る", "on": "切らない（考えさせる）"}
 THINK_OFF_PREFIXES = ("qwen3",)
 

@@ -537,3 +537,59 @@ def test_review_level_filter_includes_problems_from_before_levels(client, settin
     w = Worker(settings, sessions, OracleLLM(sessions), sandbox)
     w.recover()  # worker の起動時にレベルを書き込む
     assert {p.level for p in all_rows(sessions, Problem)} == {"common"}
+
+
+def test_review_tools_for_existing_problems(client, settings, sessions, sandbox):
+    """前に作った問題の表記をまとめて直し、直せないものを一覧にして、番号でまとめて削除できる。"""
+    stock_up(settings, sessions, sandbox, scope="tmpl:m1-trig-area", count=3)
+    a, b, c = [p.id for p in all_rows(sessions, Problem)]
+    with sessions.begin() as s:
+        s.get(Problem, a).question = "$A = 120^\\top$、$CA = 3$ のとき面積を求めよ。"
+        s.get(Problem, b).hint = "$3回$ と $\\root{2}$"
+    client.post("/review/normalize")
+    with sessions() as s:
+        assert s.get(Problem, a).question.startswith("$A = 120^\\circ$")
+    text = client.get("/review?status=issues").text
+    assert f"#{b}" in text and f"#{a}" not in text and "日本語" in text
+    md = client.get("/review/export.md?status=issues").text
+    assert f"#{b}" in md and f"#{c}" not in md
+    client.post("/review/delete-ids", data={"ids": f"{a}, {c} 9999"})
+    with sessions() as s:
+        assert [s.get(Problem, i).status for i in (a, b, c)] == ["deleted", "ready", "deleted"]
+    client.post("/review/delete-issues")
+    with sessions() as s:
+        assert s.get(Problem, b).status == "deleted"
+
+
+def test_explanation_review_setting(client, sessions):
+    r = client.post("/status/models", data={"review": "off"}, follow_redirects=True)
+    assert "解説の見直し <strong>しない" in r.text
+    client.post("/generate", data={"subject": "math", "format": "choice", "count": "1"})
+    assert all_rows(sessions, Job)[-1].explanation_review is False
+    client.post("/generate", data={"subject": "math", "format": "choice", "count": "1", "review_shown": "1",
+                                   "review": "on"})
+    assert all_rows(sessions, Job)[-1].explanation_review is True
+
+
+def test_templates_have_no_nested_forms():
+    """<form> の中に <form> を書くと、ブラウザは内側を無視する（テストの POST では気づけない）。"""
+    from html.parser import HTMLParser
+
+    class Depth(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = self.max = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "form":
+                self.depth += 1
+                self.max = max(self.max, self.depth)
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.depth -= 1
+
+    for path in (Path(__file__).resolve().parents[1] / "app/quizapp/templates").glob("*.html"):
+        parser = Depth()
+        parser.feed(path.read_text())
+        assert parser.max <= 1, path.name

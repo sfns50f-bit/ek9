@@ -416,7 +416,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                  levels: Annotated[list[str], Form()] = [], format: str = Form("choice"),  # noqa: A002, B006
                  count: str = Form("10"), gen_model: str = Form(""), verify_model: str = Form(""),
                  verify_count: str = Form(""), verify_model_2: str = Form(""), gen_model_text: str = Form(""),
-                 verify_model_text: str = Form(""), verify_model_2_text: str = Form("")) -> Response:
+                 verify_model_text: str = Form(""), verify_model_2_text: str = Form(""),
+                 review: str = Form(""), review_shown: str = Form("")) -> Response:
         sub = subject_or_404(subject)
         scope_s, levels_s = form_scope(sub, scope), form_levels(levels)
         if format not in sub.formats or not sub.scope_valid(scope_s):
@@ -436,6 +437,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                 verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(verify_count, plan.verify_count))),
                 verify_model_2="" if verify_model_2.strip() == "-" else (verify_model_2.strip()[:128]
                                                                           or plan.verify_model_2),
+                # チェックを外すと送られないので、欄を出したこと（review_shown）で見分ける
+                review=(review == "on") if review_shown else plan.review,
             )
             job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=format,
                       count=max(1, min(MAX_JOB, _int(count, 10))))
@@ -555,10 +558,11 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.post("/status/models")
     def save_models(gen_model: str = Form(""), verify_model: str = Form(""), verify_count: str = Form(""),
-                    verify_model_2: str = Form("")) -> Response:
+                    verify_model_2: str = Form(""), review: str = Form("on")) -> Response:
         with sessions.begin() as s:
             runtime.save_overrides(s, {"gen_model": gen_model, "verify_model": verify_model,
-                                       "verify_count": verify_count, "verify_model_2": verify_model_2})
+                                       "verify_count": verify_count, "verify_model_2": verify_model_2,
+                                       "review": "off" if review == "off" else "on"})
         return redirect("/status/models?msg=saved#models")
 
     @app.post("/status/think")
@@ -594,7 +598,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.get("/review")
     def review_page(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
-                    status: str = "ready", page: int = 1, msg: str = "") -> Response:
+                    status: str = "ready", page: int = 1, msg: str = "", n: int = 0) -> Response:
         if not review_ok(request):
             return redirect("/review/login")
         f = review_filters(subject, unit, level, gen_model, status)
@@ -607,7 +611,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             options = review.filter_options(s)
         return render(request, "review.html", page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
-                      locked=bool(settings.review_password), msg=msg)
+                      issues=review.text_issues, locked=bool(settings.review_password), msg=msg, n=n)
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
@@ -626,6 +630,34 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             text = review.to_markdown(rows, shown)
         headers = {"Content-Disposition": 'attachment; filename="problems.md"'} if download else {}
         return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+    @app.post("/review/normalize")
+    def review_normalize(request: Request) -> Response:
+        """前に作った問題の表記をまとめて直す（作成のときと同じ機械的な直し。LLM は使わない）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions.begin() as s:
+            n = review.normalize_all(s)
+        return redirect(f"/review?status=issues&msg=normalized&n={n}")
+
+    @app.post("/review/delete-ids")
+    def review_delete_ids(request: Request, ids: str = Form("")) -> Response:
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions.begin() as s:
+            done = review.delete_ids(s, ids)
+        return redirect(f"/review?msg=deleted_ids&n={len(done)}")
+
+    @app.post("/review/delete-issues")
+    def review_delete_issues(request: Request) -> Response:
+        """表記の点検で引っかかるストックの問題をまとめて削除する（作り直しは「作る」から依頼する）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions.begin() as s:
+            hits = review.query(s, status="issues", limit=100000)
+            for p in hits:
+                p.status = "deleted"
+        return redirect(f"/review?msg=deleted_ids&n={len(hits)}")
 
     @app.post("/review/{pid}/delete")
     def review_delete(request: Request, pid: int, back: str = Form("/review")) -> Response:
