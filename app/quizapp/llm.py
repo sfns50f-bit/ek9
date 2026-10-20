@@ -103,6 +103,47 @@ def _fix_controls(value: Any) -> Any:
     return value
 
 
+# --- 出力の形 -----------------------------------------------------------------
+# Ollama の format（JSON スキーマ）を使うと、文字列の中のバックスラッシュの後ろに JSON で許される文字
+# （" \\ / b f n r t u）しか出せなくなる。モデルが \\circ や \\angle を 1 本のバックスラッシュで書こうとすると
+# \\top・\\times・\\rho・ngle・\\u00b0 のように別の文字に押し曲げられて、LaTeX が壊れていた。
+# そこで JSON を使わず、[[question]] のような見出しで区切った平文で書かせる（バックスラッシュはそのまま届く）。
+_TAG_RE = re.compile(r"^[ \t]*\[\[([A-Za-z_]+)\]\][ \t]*(.*)$", re.M)
+_FENCE_RE = re.compile(r"^\s*```[A-Za-z]*\s*$", re.M)
+
+
+def tagged_instructions(schema: dict[str, Any]) -> str:
+    """見出しつきの平文で出力させるための指示（システムプロンプトの最後に付ける）。"""
+    lines = ["", "出力の形（JSON は使わない。数式のバックスラッシュは 1 本のまま書く）:"]
+    for key, prop in schema.get("properties", {}).items():
+        lines += [f"[[{key}]]", f"（{prop.get('description', key)}をここに書く）"]
+    lines.append("見出し [[…]] は上のとおり 1 行に書き、この形以外のもの（前置き・まとめ・``` など）は書かない。")
+    return "\n".join(lines)
+
+
+def parse_tagged(text: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """[[key]] の見出しで区切った出力を dict にする。見出しがなければ JSON として読んでみる。"""
+    raw = text or ""
+    body = _THINK_RE.sub("", raw)
+    keys = list(schema.get("properties", {}))
+    found = [m for m in _TAG_RE.finditer(body) if m.group(1) in keys]
+    if not found:
+        try:
+            data = extract_json(body)
+        except LLMError:
+            raise LLMError("出力に見出し（[[" + "]] [[".join(keys) + "]]）が見つかりません", raw=raw) from None
+    else:
+        data = {}
+        for i, m in enumerate(found):
+            end = found[i + 1].start() if i + 1 < len(found) else len(body)
+            value = (m.group(2) + "\n" + body[m.end():end]).strip()
+            data.setdefault(m.group(1), _FENCE_RE.sub("", value).strip())
+    missing = [k for k in schema.get("required", []) if not str(data.get(k, "")).strip()]
+    if missing:
+        raise LLMError("出力に " + "・".join(f"[[{k}]]" for k in missing) + " がありません", raw=raw)
+    return data
+
+
 class OllamaClient:
     def __init__(self, base_url: str, *, timeout: float = 900, num_ctx: int = 8192,
                  num_predict: int = 6144, keep_alive: str = "15m", think: bool | None = None) -> None:
@@ -121,8 +162,10 @@ class OllamaClient:
 
     def chat_json(self, model: str, system: str, user: str, schema: dict[str, Any], *,
                   temperature: float = 0.7) -> dict[str, Any]:
-        """JSON スキーマ付きで 1 回問い合わせる。
+        """1 回問い合わせて、schema の項目を持つ dict を返す。
 
+        Ollama の format（JSON スキーマ）は使わず、[[項目名]] の見出しで区切った平文で書かせて読む
+        （tagged_instructions / parse_tagged。理由は上の「出力の形」）。
         応答はストリーミングで受け取り、別のスレッドで読む。呼び出し中も約 1 秒ごとに
         should_abort() を確かめ、真なら接続を切って LLMCancelled を投げる（接続が切れると
         Ollama は生成をやめるので、デスクトップの GPU も止まる）。
@@ -130,11 +173,10 @@ class OllamaClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": [
-                {"role": "system", "content": system},
+                {"role": "system", "content": system + "\n" + tagged_instructions(schema)},
                 {"role": "user", "content": user},
             ],
             "stream": True,
-            "format": schema,
             "keep_alive": self.keep_alive,
             "options": {
                 "temperature": temperature,
@@ -142,8 +184,7 @@ class OllamaClient:
                 "num_predict": self.num_predict,
             },
         }
-        # 思考モードはモデルごとに決める（runtime.think_for。qwen3 系は切る、gemma4 は切らない）。
-        # gemma4 では think=false を送ると format（JSON スキーマ）が効かなくなる不具合があったため。
+        # 思考モードはモデルごとに決める（runtime.think_for。qwen3 系は切る、gemma4 はモデルの既定のまま）
         think = self.think_for(model) if self.think_for is not None else self.think
         if think is not None:
             body["think"] = think
@@ -167,7 +208,7 @@ class OllamaClient:
         raw = "".join(state.get("content", []))
         if final.get("done_reason") == "length":
             raise LLMError(f"出力の上限（num_predict={self.num_predict}）で途中で切れました", raw=raw)
-        return extract_json(raw)
+        return parse_tagged(raw, schema)
 
     def _stream(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         """POST して、改行区切りの JSON の応答を読み切る。取り消し・時間切れのときは接続を切る。"""

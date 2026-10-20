@@ -17,7 +17,7 @@ import random
 import re
 from typing import Any
 
-from ... import textcheck
+from ... import latexfix, textcheck
 from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import prompts
 from .catalog import MISTAKES, UNITS, template_info
@@ -46,7 +46,9 @@ class MathSubject(Subject):
     name = "数学"
     formats = ("choice", "input")
     mistakes = MISTAKES
-    reject_codes = {"answer_leak": "問題文・ヒントに正解が書かれている"}
+    reject_codes = {"answer_leak": "問題文・ヒントに正解が書かれている",
+                    "text_format": "表記の崩れ（KaTeX にない命令・$ の対応・数式の中の日本語・中国語の字など）",
+                    "explanation_math": "解説の途中式の誤り（数どうしの = が等しくない）"}
     test_format = "input"  # 検証のテスト（正解をずらした問題）に対応する
 
     def units(self) -> list[Unit]:
@@ -85,6 +87,8 @@ class MathSubject(Subject):
             for i in range(1, len(values)):
                 if (0, i) in equal or any((j, i) in equal for j in chosen):
                     continue
+                if inst.valid is not None and not inst.valid(values[i]):
+                    continue  # ありえない値（1 を超える確率、負の面積など）の誤答は出さない
                 text = textcheck.normalize(inst.fmt(values[i]))
                 if text in texts:  # 見た目が同じものも重複とみなす
                     continue
@@ -126,12 +130,12 @@ class MathSubject(Subject):
         out = self._chat(ctx, prompts.GEN_SYSTEM, user)
         # 文章の確認で落ちたら、同じ数値のまま、指摘した点だけを直させる（作り直しより速く、成功しやすい）
         for round_no in range(FIX_ROUNDS + 1):
-            question = textcheck.repair_latex(str(out.get("question") or "").strip())
-            explanation = textcheck.repair_latex(str(out.get("explanation") or "").strip())
-            hint = textcheck.repair_latex(str(out.get("hint") or "").strip())
+            # 意味を変えずに直せる表記の崩れ（度の記号の揺れ、\\sin、文字どおりの \n など）は機械的に直す
+            question, explanation, hint = (latexfix.normalize(textcheck.repair_latex(str(out.get(k) or "").strip()))
+                                           for k in ("question", "explanation", "hint"))
             partial.update(question=question, explanation=explanation, hint=hint)
             problem = _check_text(inst, answer_latex, question, explanation, hint, ctx.sandbox,
-                                  sp.srepr(inst.answer))
+                                  sp.srepr(inst.answer), choice=fmt == "choice")
             if problem is None:
                 break
             code, step, summary = problem
@@ -144,6 +148,8 @@ class MathSubject(Subject):
         log.append({"step": "問題文の確認", "ok": True,
                     "summary": f"テンプレートの式・値 {len(inst.givens)} 個がそのまま入っている"})
         log.append({"step": "解説の確認", "ok": True, "summary": "解説に正解が入っている（問題文・ヒントには書かれていない）"})
+        log.append({"step": "表記の確認", "ok": True,
+                    "summary": "数式の表記（KaTeX の命令・$ の対応・数式の中の日本語・中国語の字）と解説の数の等式に問題なし"})
 
         return Draft(
             unit=unit, template=template, format=fmt, question=question,
@@ -225,7 +231,7 @@ class MathSubject(Subject):
 
 
 def _check_text(inst: Any, answer_latex: str, question: str, explanation: str, hint: str,
-                sandbox: Any = None, answer_srepr: str = "") -> tuple[str, str, str] | None:
+                sandbox: Any = None, answer_srepr: str = "", *, choice: bool = False) -> tuple[str, str, str] | None:
     """LLM が書いた文章の確認。問題があれば (理由の種類, 段階, 説明)、なければ None。"""
     if not (question and explanation and hint):
         return "llm_output", "文章", "問題文・解説・ヒントのどれかが空です"
@@ -243,6 +249,25 @@ def _check_text(inst: Any, answer_latex: str, question: str, explanation: str, h
     if textcheck.missing(explanation, inst.answer_checks()) and (sandbox is None or not _explanation_has_value(
             sandbox, inst, answer_srepr, explanation)):
         return "text_answer", "解説の確認", f"解説に正解 ${answer_latex}$ が入っていません"
+    # 表記の崩れ（KaTeX にない命令、$ の対応、数式の中の日本語、中国語の字、選択式の「示せ」など）
+    issues = (latexfix.question_problems(question, choice=choice) + latexfix.problems(hint, field="ヒント")
+              + latexfix.problems(explanation, field="解説"))
+    body = _ANSWER_LINE_RE.sub("", explanation)
+    if len(re.sub(r"\s", "", body)) < 40:
+        issues.append("解説が短すぎる（解き方の要点の各段階を、途中式も省かずに書く）")
+    if issues:
+        return "text_format", "表記の確認", "表記の崩れ: " + "／".join(dict.fromkeys(issues))
+    # 解説の数どうしの「=」が正しいか（58 - (-21) \cdot \frac{1}{2} = 79 のような途中式の誤り）
+    if sandbox is not None and hasattr(sandbox, "equalities"):
+        segments = [(m.group(1) or m.group(2) or "") for m in _MATH_RE.finditer(explanation)]
+        try:
+            res = sandbox.equalities(segments)
+        except Exception:
+            res = {}
+        bad = res.get("mismatches") or []
+        if bad:
+            return ("explanation_math", "解説の確認",
+                    "解説の途中式の左右が等しくありません: " + "、".join(f"${b}$" for b in bad[:3]))
     return None
 
 

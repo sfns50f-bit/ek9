@@ -52,14 +52,16 @@ def test_triangle_givens_accept_common_ways_to_write_the_angle():
     from quizapp.subjects.math.templates import triangle_givens
 
     g = triangle_givens(6, 2, 30)
-    for q in ("$b=6$, $c=2$, $A=30^\\circ$", "$AC=6$, $AB=2$, $\\angle BAC = 30^{\\circ}$",
-              "CA = 6、AB = 2、∠A = 30°", "辺 b=6、c=2、角Aは30度"):
+    for q in ("$CA=6$, $AB=2$, $A=30^\\circ$", "$AC=6$, $AB=2$, $\\angle BAC = 30^{\\circ}$",
+              "CA = 6、AB = 2、∠A = 30°", "辺 CA=6、AB=2、角Aは30度"):
         assert textcheck.missing(q, g) == [], q
-    assert textcheck.missing("b=6, c=2, A=35°", g) == ["A = 30^\\circ"]
+    assert textcheck.missing("CA=6, AB=2, A=35°", g) == ["A = 30^\\circ"]
+    # 辺を b・c で書くと、どちらがどの辺かを取り違えることがあるので、CA・AB で書かせる
+    assert textcheck.missing("$b=6$, $c=2$, $A=30^\\circ$", g) == ["CA = 6", "AB = 2"]
     # 度の記号の書き方の揺れ、度の記号なし、弧度法も、値が同じなら認める
     for angle in ("$A=30\\circ$", "$A=30^o$", "A=30º", "A=30˚", "$A=30∘$", "$\\angle A=30$",
                   "$A=\\frac{\\pi}{6}$"):
-        assert textcheck.missing(f"$b=6$, $c=2$, {angle}", g) == [], angle
+        assert textcheck.missing(f"$CA=6$, $AB=2$, {angle}", g) == [], angle
 
 
 def test_vector_angles_cover_all_standard_angles():

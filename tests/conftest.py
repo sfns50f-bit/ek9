@@ -37,6 +37,9 @@ class InProcessSandbox:
     def preview(self, text, kind, var="x"):
         return self._run("preview", {"text": text, "kind": kind, "var": var})
 
+    def equalities(self, segments):
+        return self._run("equalities", {"segments": segments})
+
     def healthy(self):
         return self.up
 
@@ -97,13 +100,15 @@ class OracleLLM:
         self.calls.append((role, model))
         if role == "gen":
             self.n += 1
-            givens = re.findall(r"^- \$(.*)\$$", user, re.M)
+            givens = re.findall(r"^- (.*)$", user.split("正解:")[0], re.M)
             answer = re.search(r"^正解: \$(.*)\$$", user, re.M).group(1)
             if self.alter_givens:
                 givens = [re.sub(r"\d", lambda m: str((int(m.group()) + 1) % 10), g) for g in givens]
-            question = f"（問{self.n}）" + "、".join(f"${g}$" for g in givens) + " のとき、答えを求めよ。"
+            question = f"（問{self.n}）" + "、".join(givens) + " のとき、答えを求めよ。"
             return {"question": question, "hint": "公式を思い出そう。",
-                    "explanation": f"手順どおりに計算する。\n答え: ${answer}$"}
+                    "explanation": "まず使う公式を確かめ、与えられた値をそのまま代入する。\n"
+                                   "途中の計算を一つずつ進めて、最後に答えの形に整える。\n"
+                                   f"答え: ${answer}$"}
         question = user.split("問題:\n", 1)[1].split("\n\n答え方", 1)[0]
         if self.solve_answer is not None:
             return {"work": "...", "answer": self.solve_answer}
