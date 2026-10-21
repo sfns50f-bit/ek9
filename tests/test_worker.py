@@ -442,7 +442,9 @@ class AnswerStyleLLM(OracleLLM):
                    "boxed": {"work": f"計算すると \\boxed{{{ans}}}", "answer": ","},
                    # 実機の gemma4:e4b：answer 欄が崩れ、work の最後は正しい
                    "garbled": {"work": f"底の変換をして\nS = {ans}", "answer": f"@{ans}"},
-                   "unreadable": {"work": "わからない", "answer": "わかりません"}}[self.style]
+                   "unreadable": {"work": "わからない", "answer": "わかりません"},
+                   # 度で答える問題に弧度法で答える（実機の gemma4:e4b がベクトルのなす角で pi/6 と答えていた）
+                   "radians": {"work": "...", "answer": f"({ans})*pi/180"}}[self.style]
         return out
 
 
@@ -668,7 +670,7 @@ class SloppyLLM(OracleLLM):
 def test_broken_notation_is_normalized_or_sent_back_for_fixing(settings, sessions, sandbox):
     # 直せる崩れ（度の記号の揺れ・\\sin）は機械的に直して合格
     def degrees(out):
-        return {**out, "explanation": out["explanation"].replace("まず", "角は $30^\\top$。\\\\sin を使う。まず")}
+        return {**out, "explanation": out["explanation"].replace("まず", "角は $30^\\top$。$\\\\sin x$ を使う。まず")}
 
     llm = SloppyLLM(sessions, degrees)
     add_job(sessions, scope="tmpl:m2-explog-base", count=1)
@@ -721,3 +723,16 @@ def test_impossible_distractors_are_not_offered(sandbox):
 def all_jobs(sessions):
     with sessions() as s:
         return list(s.execute(select(Job).order_by(Job.id)).scalars())
+
+
+def test_degree_answer_given_in_radians_is_accepted(settings, sessions, sandbox):
+    add_job(sessions, scope="tmpl:mc-vec-angle", format="input", count=1)
+    make_worker(settings, sessions, sandbox, AnswerStyleLLM(sessions, "radians")).run_once()
+    p = problems(sessions, status="ready")[0]
+    assert any("弧度法" in e["summary"] for e in p.verification if e["step"] == "検証")
+    # 子供のキーボード入力の採点でも同じ
+    from quizapp.subjects.math import MathSubject
+
+    deg = int(p.answer["srepr"][8:-1])
+    assert MathSubject().grade(sandbox, p, f"{deg}*pi/180").correct
+    assert not MathSubject().grade(sandbox, p, f"{deg + 30}*pi/180").correct

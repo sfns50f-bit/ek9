@@ -58,3 +58,17 @@ def test_problems_found():
     # 正しい書き方は引っかからない（\text の中の日本語は表示できる）
     ok = r"$\frac{15\sqrt{3}}{2}$、$\angle A = 30^\circ$、$\text{9人}$、${}_{5}\mathrm{C}_{2}$、$\left(x - 1\right)$"
     assert problems(ok) == [] and question_problems("面積 $S$ を求めよ。", choice=True) == []
+
+
+def test_second_review_fixes():
+    """第 2 回の点検で見つかったもの：中国語の字・$ のない数式環境・$ のない答え・数式の外の命令など。"""
+    assert normalize("ヒント：计算する") == "ヒント：計算する"
+    assert normalize("\\begin{align*} a &= 1 \\end{align*}") == "$$\\begin{aligned} a &= 1 \\end{aligned}$$"
+    assert normalize("$$\\begin{align} a &= 1 \\end{align}$$") == "$$\\begin{aligned} a &= 1 \\end{aligned}$$"
+    assert normalize("答え: \\frac{8}{3}") == "答え: $\\frac{8}{3}$"
+    assert normalize("答え: $3$") == "答え: $3$" and normalize("答え: 3 通り") == "答え: 3 通り"
+    assert normalize("△ABC で $A = 120^\\rho$") == "△ABC で $A = 120^\\circ$"
+    found = " ".join(problems("\\int_{-2}^{1} f(x)dx と $3\\left(x + 0\\right)$ と 与えられた解き方の要点に従うと 2 点形の式 $°$"))
+    for word in ("数式の外", "+ 0", "解き方の要点", "点と傾きの式", "中身のない"):
+        assert word in found, word
+    assert problems("$10 - 0.5$ と 2 点間の距離の式 と $x^2 - 4x + 3 = 0$") == []
