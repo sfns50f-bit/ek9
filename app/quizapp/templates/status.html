@@ -14,6 +14,8 @@
       {{ worker.text or "" }}</td></tr>
     <tr><th>sandbox</th><td>{{ mark(sandbox_ok) }} {{ "動いています" if sandbox_ok else "つながりません（キーボード入力の採点ができません）" }}</td></tr>
     <tr><th>順番待ち</th><td>{{ jobs_open }} 件</td></tr>
+    {% if api.configured %}<tr><th>API の利用額</th><td>今月 ${{ "%.2f" | format(api.spent) }} ／ 上限 ${{ "%.2f" | format(api.monthly) }}
+      {% if api.worker.text %}<div class="muted small">API の順番待ち：{{ api.worker.text }}</div>{% endif %}</td></tr>{% endif %}
     <tr><th>モデル（設定）</th><td>作成 {{ plan.gen_model }}／検証 {{ plan.verify_label }}
       <a class="small" href="/status/models">変える</a></td></tr>
     <tr><th>データ</th><td>{{ settings.database_path }}</td></tr>

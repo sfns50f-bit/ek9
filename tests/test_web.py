@@ -612,3 +612,20 @@ def test_review_filters_by_date_and_id_and_export_shows_creation_date(client, se
     assert f"#{b}）" in md and f"#{c}）" in md and f"#{a}）" not in md
     text = client.get(f"/review?id_from={b}&id_to={b}").text
     assert f"#{b}" in text and "作成 2026/10/21 01:00" in text and f"#{c}<" not in text
+
+
+def test_api_section_limits_and_models(client, settings, sessions):
+    from quizapp.db import dumps, kv_set
+    from quizapp.runtime import api_limits, month_key
+
+    assert "API は使えるように設定されていません" in client.get("/status/models").text
+    with sessions.begin() as s:
+        kv_set(s, "api", dumps({"configured": True, "models": ["anthropic/claude-haiku-5-5"]}))
+        kv_set(s, "api_spend", dumps({month_key(settings): 1.25}))
+    text = client.get("/status/models").text
+    assert "$1.25" in text and "$5.00" in text and "anthropic/claude-haiku-5-5" in text
+    client.post("/status/api", data={"monthly": "10", "per_job": "0.5"})
+    with sessions() as s:
+        assert api_limits(settings, s) == (10.0, 0.5)
+    assert 'value="anthropic/claude-haiku-5-5"' in client.get("/generate").text  # 作る画面で選べる
+    assert "今月 $1.25" in client.get("/status").text

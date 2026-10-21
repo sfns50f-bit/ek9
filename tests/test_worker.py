@@ -736,3 +736,61 @@ def test_degree_answer_given_in_radians_is_accepted(settings, sessions, sandbox)
     deg = int(p.answer["srepr"][8:-1])
     assert MathSubject().grade(sandbox, p, f"{deg}*pi/180").correct
     assert not MathSubject().grade(sandbox, p, f"{deg + 30}*pi/180").correct
+
+
+class PricedApi(OracleLLM):
+    """API の提供元のふり。呼び出しごとに 0.01 ドルかかる。"""
+
+    budget_check = None
+
+    def chat_json(self, model, system, user, schema, **kw):
+        if self.budget_check is not None:
+            self.budget_check()
+        out = super().chat_json(model, system, user, schema, **kw)
+        self.priced = getattr(self, "priced", []) + [{"model": f"anthropic/{model}", "label": "", "cost_usd": 0.01,
+                                                         "eval_s": 1.0, "load_s": 0.0}]
+        return out
+
+    def pop_calls(self):
+        calls, self.priced = getattr(self, "priced", []), []
+        return calls
+
+
+def test_api_and_ollama_lanes_and_monthly_budget(settings, sessions, sandbox):
+    """API の依頼と Ollama の依頼は別の順番待ち。API の利用額を記録し、月の上限に達したら止める。"""
+    from quizapp.db import kv_set
+    from quizapp.llm import LLMRouter
+    from quizapp.runtime import api_spend, month_key, save_api_limits
+
+    api = PricedApi(sessions)
+    ollama_job = add_job(sessions, count=1)
+    api_job = add_job(sessions, count=1, gen_model="anthropic/claude-haiku-5-5",
+                      verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w_api = Worker(settings, sessions, LLMRouter(OracleLLM(sessions), {"anthropic": api}), sandbox,
+                   rng=random.Random(1), lane="api")
+    assert w_api.next_job_id() == api_job
+    w_api.run_once()
+    assert job(sessions, api_job).status == "done" and job(sessions, ollama_job).status == "pending"
+    j = job(sessions, api_job)
+    assert j.api_cost_usd == pytest.approx(0.03)  # 作成・検証・見直しの 3 回
+    with sessions() as s:
+        assert api_spend(s)[month_key(settings)] == pytest.approx(0.03)
+    w_ollama = Worker(settings, sessions, OracleLLM(sessions), sandbox, rng=random.Random(1), lane="ollama")
+    w_ollama.last_backup_check = 1e18
+    assert w_ollama.next_job_id() == ollama_job
+    # 月の上限（画面で変えた値）に達したら、API の依頼は「上限に達しました」で止まる
+    with sessions.begin() as s:
+        save_api_limits(s, "0.05", "0")
+        kv_set(s, "api_spend", '{"%s": 0.05}' % month_key(settings))
+    over = add_job(sessions, count=1, gen_model="anthropic/claude-haiku-5-5",
+                   verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w_api.run_once()
+    assert job(sessions, over).status == "failed" and "上限" in job(sessions, over).error
+    assert problems(sessions, status="draft") == []
+    # 1 回の依頼の上限
+    with sessions.begin() as s:
+        save_api_limits(s, "100", "0.015")
+    capped = add_job(sessions, count=3, gen_model="anthropic/claude-haiku-5-5",
+                     verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w_api.run_once()
+    assert job(sessions, capped).status == "failed" and "この依頼" in job(sessions, capped).error

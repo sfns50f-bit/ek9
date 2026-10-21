@@ -30,6 +30,9 @@ x-app-env: &app-env
   RETRY_PERCENT: ${RETRY_PERCENT:-30}
   DISPLAY_TZ: ${DISPLAY_TZ:-Asia/Tokyo}
   REVIEW_PASSWORD: ${REVIEW_PASSWORD:-}
+  # API の利用額の上限（ドル）。画面にも出すので web と worker の両方に渡す（キーは worker だけ。下の worker を参照）
+  API_MONTHLY_LIMIT_USD: ${API_MONTHLY_LIMIT_USD:-5}
+  API_JOB_LIMIT_USD: ${API_JOB_LIMIT_USD:-0}
 
 x-logging: &logging
   # SD カードを傷めないよう、ログは小さく保つ
@@ -77,8 +80,15 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "quizapp.worker"]
+    environment:
+      <<: *app-env
+      # Anthropic（Claude）の API。キーは worker だけに渡す（子供が使う画面の web には渡さない）
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODELS: ${ANTHROPIC_MODELS:-claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5}
+      ANTHROPIC_PRICES: ${ANTHROPIC_PRICES:-claude-haiku-5-5=0.10/0.50,claude-sonnet-5-5=2/10,claude-opus-5-5=4/20}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-low}
     networks:
-      - default   # Ollama（デスクトップPC）へ。後のフェーズで公共の資料取得にも使う
+      - default   # Ollama（デスクトップPC）と Anthropic の API へ。後のフェーズで公共の資料取得にも使う
       - sandbox
     mem_limit: 256m
     memswap_limit: 256m

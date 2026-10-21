@@ -5,6 +5,7 @@
 {{ status_nav(page) }}
 {% if msg == "saved" %}<p class="notice">設定を保存しました。次の依頼から使われます（作る画面の初期値になります）。</p>{% endif %}
 {% if msg == "think" %}<p class="notice">思考モードの設定を保存しました。次の依頼から使われます。</p>{% endif %}
+{% if msg == "api" %}<p class="notice">API の利用額の上限を保存しました。</p>{% endif %}
 {% if msg == "test" %}<p class="notice">検証のテストを順番待ちに入れました。下の「検証のテスト」に結果が出ます。</p>{% endif %}
 <section class="card" id="models">
   <h2>モデルと検証の回数（作る画面の初期値）</h2>
@@ -36,6 +37,25 @@
     {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルから選べます。</p>{% endif %}
     <button type="submit" class="primary">保存</button>
   </form>
+</section>
+
+<section class="card" id="api">
+  <h2>API（Anthropic）</h2>
+  {% if api.configured %}
+  <p class="small">今月（{{ api.month }}）の利用額 <strong>${{ "%.2f" | format(api.spent) }}</strong> ／ 上限 <strong>${{ "%.2f" | format(api.monthly) }}</strong>
+    {% if api.spent >= api.monthly %}<span class="tag ng">上限に達しています</span>{% endif %}</p>
+  <p class="muted small">選べるモデル：{{ api.models | join("、") }}（「作る」画面のモデルの欄で選べます。Ollama の依頼とは別の順番待ちで、同時に進みます）
+    {% if api.worker.text %}<br>API の順番待ち：{{ api.worker.text }}{% endif %}</p>
+  <form method="post" action="/status/api">
+    <label>月の上限（ドル） <input type="number" name="monthly" value="{{ "%.2f" | format(api.monthly) }}" min="0" step="0.5" inputmode="decimal"></label>
+    <label>1 回の依頼の上限（ドル。0 なら上限なし） <input type="number" name="per_job" value="{{ "%.2f" | format(api.per_job) }}" min="0" step="0.1" inputmode="decimal"></label>
+    <button type="submit" class="primary">保存</button>
+  </form>
+  <p class="muted small">上限は呼び出しの前に確かめます（超えそうな依頼は「上限に達しました」で止まります。1 回の呼び出しの分だけ少し超えることがあります）。
+    念のため、Anthropic のコンソールでも利用額の上限を設定してください。</p>
+  {% else %}
+  <p class="small">API は使えるように設定されていません（.env に ANTHROPIC_API_KEY を書くと使えます。README の「API で作る」）。</p>
+  {% endif %}
 </section>
 
 <section class="card" id="think">
