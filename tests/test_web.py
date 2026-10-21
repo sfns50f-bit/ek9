@@ -64,10 +64,10 @@ def test_web_process_does_not_load_the_llm_client():
     root = Path(__file__).resolve().parents[1]
     code = ("import sys; sys.path[:0]=['app']; import quizapp.web, quizapp.stock, quizapp.review;"
             " from quizapp.subjects import all_subjects; [s.units() for s in all_subjects()];"
-            " print('quizapp.llm' in sys.modules, 'sympy' in sys.modules)")
+            " print('quizapp.llm' in sys.modules, 'sympy' in sys.modules, 'anthropic' in sys.modules)")
     out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=True)
-    # sympy も読まない（小単元の一覧は templates.py を ast で読む。web のメモリと起動時間のため）
-    assert out.stdout.strip() == "False False"
+    # sympy も読まない（小単元の一覧は templates.py を ast で読む。web のメモリと起動時間のため）。API の SDK も読まない
+    assert out.stdout.strip() == "False False False"
 
 
 def test_blank_count_uses_default(client, settings, sessions, sandbox):
