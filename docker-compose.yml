@@ -87,6 +87,7 @@ services:
       ANTHROPIC_MODELS: ${ANTHROPIC_MODELS:-claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5}
       ANTHROPIC_PRICES: ${ANTHROPIC_PRICES:-claude-haiku-5-5=0.10/0.50,claude-sonnet-5-5=2/10,claude-opus-5-5=4/20}
       ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-low}
+      ANTHROPIC_MAX_TOKENS: ${ANTHROPIC_MAX_TOKENS:-16000}
     networks:
       - default   # Ollama（デスクトップPC）と Anthropic の API へ。後のフェーズで公共の資料取得にも使う
       - sandbox

@@ -400,6 +400,10 @@ class LLMRouter:
         """Ollama のモデル（つながらなければ LLMUnavailable）。API のモデルは api_models() で別に出す。"""
         return self.providers["ollama"].list_models()
 
+    def pending_cost(self) -> float:
+        """API の提供元で、まだ集計していない呼び出しの料金（上限の確認に足す）。"""
+        return sum(c.pending_cost() for c in self.providers.values() if hasattr(c, "pending_cost"))
+
     def api_models(self) -> list[str]:
         """設定済みの API の提供元のモデル（「提供元/モデル名」）。"""
         names = []

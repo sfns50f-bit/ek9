@@ -98,14 +98,14 @@ _BARE_DEG_RE = re.compile(r"(\d)\s*[°º˚∘]")
 _ZH_TO_JA = str.maketrans({
     "计": "計", "边": "辺", "长": "長", "时": "時", "题": "題", "问": "問", "间": "間", "设": "設", "则": "則",
     "线": "線", "积": "積", "两": "両", "选": "選", "项": "項", "说": "説", "对": "対", "应": "応", "关": "関",
-    "实": "実", "现": "現", "习": "習", "简": "簡", "单": "単", "种": "種", "据": "拠", "图": "図", "数": "数",
+    "实": "実", "现": "現", "习": "習", "简": "簡", "单": "単", "种": "種", "图": "図", "数": "数",
 })
 # $ で囲まれていない数式の環境。画面の KaTeX は $$…$$ などの中しか表示しないので、$$\begin{aligned}…$$ に直す
 _BARE_ENV_RE = re.compile(r"\\begin\{(align\*?|aligned|equation\*?|eqnarray\*?|gather\*?|gathered|cases)\}"
                           r"(.*?)\\end\{\1\}", re.S)
 _ENV_RENAME = {"align": "aligned", "align*": "aligned", "equation": "aligned", "equation*": "aligned",
                "eqnarray": "aligned", "eqnarray*": "aligned", "gather": "gathered", "gather*": "gathered"}
-_ANSWER_LINE_RE = re.compile(r"^(答え\s*[:：]\s*)([^$\n]+?)\s*$", re.M)
+_ANSWER_LINE_RE = re.compile(r"^(答え[ \t]*[:：][ \t]*)([^$\n]+?)[ \t]*$", re.M)
 _CJK_ANY_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 
 
@@ -123,7 +123,8 @@ def _fix_environments(s: str) -> str:
 
 def _wrap_answer_line(s: str) -> str:
     """「答え: 13/2」のように $ のない答えの行を「答え: $13/2$」にする（日本語が入っていないときだけ）。"""
-    return _ANSWER_LINE_RE.sub(lambda m: m.group(0) if _CJK_ANY_RE.search(m.group(2))
+    # 日本語・% （KaTeX ではコメントの始まり）・Markdown の * が入っているときは囲まない
+    return _ANSWER_LINE_RE.sub(lambda m: m.group(0) if _CJK_ANY_RE.search(m.group(2)) or re.search(r"[%*]", m.group(2))
                                else f"{m.group(1)}${m.group(2)}$", s)
 
 
@@ -132,6 +133,7 @@ def normalize(text: str) -> str:
     s = str(text or "").translate(_ZH_TO_JA)
     s = _CTRL_LETTER_RE.sub(lambda m: "\\" + _CTRL_LETTER[m.group()], s)
     s = _UNICODE_ESC_RE.sub(lambda m: chr(int(m.group(1), 16)), s)
+    s = _wrap_answer_line(s)  # 先に $ で囲む（そのあとの度の記号の直しが数式の中として効くように）
     cmds = katex_commands()
     s = _DOUBLE_BS_RE.sub(lambda m: "\\" + m.group(1) if m.group(1) in cmds else m.group(0), s)
     deg = _DEG[bool(_ANGLE_CONTEXT_RE.search(s))]
@@ -140,7 +142,6 @@ def normalize(text: str) -> str:
     s = re.sub(r"\\ngle(?![A-Za-z])", r"\\angle", s)  # \angle が \n＋gle になったもの
     s = _LITERAL_NL_RE.sub("\n", s)
     s = _fix_environments(s)
-    s = _wrap_answer_line(s)
     return s
 
 
@@ -160,7 +161,8 @@ _WRONG_TERMS = [
     (re.compile(r"二乗差の積分"), "正しい公式の名前（例: 1/6 公式）"),
 ]
 # 「(x + 0)」「- 0」のような不要な項
-_ZERO_TERM_RE = re.compile(r"(?<![\d.\w])[+-]\s*0(?![\d.])\s*(?=\\right\)|\)|$|=|\\,)")
+# 「(x + 0)」のような因数だけを見る（「8 - 0 = 8」「y - 0 = 2(x-1)」のような計算の途中は正しいので見ない）
+_ZERO_TERM_RE = re.compile(r"(?:\\left)?\(\s*[a-z]\s*[+-]\s*0(?![\d.])\s*(?:\\right)?\)")
 # 制御文字になって消えたバックスラッシュの名残（\frac → rac{、\begin → egin{、\times → imes など）
 _RESIDUE_RE = re.compile(r"(?<![\\A-Za-z])(rac\s*\{|egin\s*\{|imes(?![A-Za-z])|heta(?![A-Za-z])|qrt\s*\{)")
 _FRAC_RE = re.compile(r"\\(?:d|t|c)?frac(?![A-Za-z])|\\binom(?![A-Za-z])")

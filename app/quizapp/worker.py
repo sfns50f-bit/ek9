@@ -485,6 +485,10 @@ class Worker:
 
     def run_once(self) -> bool:
         """1 件の依頼を処理する。仕事がなければ False。"""
+        if self.lane == "api" and time.monotonic() < self.unavailable_until:
+            # API が混み合っている・sandbox が止まっているときは、待ち時間が過ぎるまで次の依頼に手をつけない
+            # （すぐに取りかかると、料金のかかる呼び出しを繰り返してしまう）
+            return False
         if self.lane != "api":  # API の順番待ちは Ollama の状態を見ない。バックアップも Ollama 側でだけ取る
             self.maybe_backup()
         job_id = self.next_job_id(self.check_ollama() if self.lane != "api" else True)
@@ -525,10 +529,11 @@ class Worker:
 
     def check_api_budget(self, job_id: int) -> None:
         """API を呼ぶ前に、今月の利用額と、この依頼の利用額が上限に達していないかを確かめる。"""
+        pending = self.llm.pending_cost() if hasattr(self.llm, "pending_cost") else 0.0  # まだ集計していない分
         with self.sessions() as s:
             monthly, per_job = api_limits(self.settings, s)
-            spent = api_spend(s).get(month_key(self.settings), 0.0)
-            job_cost = s.get(Job, job_id).api_cost_usd or 0.0
+            spent = api_spend(s).get(month_key(self.settings), 0.0) + pending
+            job_cost = (s.get(Job, job_id).api_cost_usd or 0.0) + pending
         if spent >= monthly:
             raise LLMBudgetExceeded(f"今月の API の利用額が上限（${monthly:.2f}）に達しました（${spent:.2f}）。"
                                     "「状態 → モデルと思考モード」で上限を変えられます")
@@ -560,8 +565,9 @@ class Worker:
                 with self.sessions() as s:
                     waiting = s.execute(select(func.count()).select_from(Job)
                                         .where(Job.status.in_(OPEN_STATUSES))).scalar_one()
-                if waiting and time.monotonic() < self.unavailable_until and self.lane != "api":
-                    self.set_status(f"Ollama につながるのを待っています（順番待ち {waiting} 件）")
+                if waiting and time.monotonic() < self.unavailable_until:
+                    what = "API（または sandbox）" if self.lane == "api" else "Ollama"
+                    self.set_status(f"{what}につながるのを待っています（順番待ち {waiting} 件）")
                 else:
                     self.set_status("待機中（依頼なし）")
                 time.sleep(3)

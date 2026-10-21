@@ -794,3 +794,23 @@ def test_api_and_ollama_lanes_and_monthly_budget(settings, sessions, sandbox):
                      verify_model="anthropic/claude-haiku-5-5", verify_count=1)
     w_api.run_once()
     assert job(sessions, capped).status == "failed" and "この依頼" in job(sessions, capped).error
+
+
+def test_api_lane_pauses_while_unavailable(settings, sessions, sandbox):
+    """API の順番待ちは、API や sandbox が止まっている間は待つ（料金のかかる呼び出しをすぐに繰り返さない）。"""
+    from quizapp.llm import LLMRouter
+
+    api = PricedApi(sessions)
+    jid = add_job(sessions, count=1, gen_model="anthropic/claude-haiku-5-5",
+                  verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w = Worker(settings, sessions, LLMRouter(OracleLLM(sessions), {"anthropic": api}), sandbox,
+               rng=random.Random(1), lane="api")
+    sandbox.up = False
+    assert w.run_once()
+    assert job(sessions, jid).status == "waiting"
+    calls = len(api.calls)
+    assert not w.run_once()  # 待ち時間の間は手をつけない
+    assert len(api.calls) == calls
+    sandbox.up = True
+    w.unavailable_until = 0
+    assert w.run_once() and job(sessions, jid).status == "done"

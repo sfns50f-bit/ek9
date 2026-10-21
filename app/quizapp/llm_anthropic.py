@@ -63,6 +63,22 @@ def cost_usd(prices: dict[str, tuple[float, float]], model: str, usage: Any) -> 
     return (tokens_in * inp + written * inp * CACHE_WRITE + read * inp * CACHE_READ + tokens_out * outp) / 1e6
 
 
+def _usage_cost(prices: dict[str, tuple[float, float]], served: str, usage: Any) -> float:
+    """断られて別のモデルが続けた（fallback）ときは、usage.iterations にモデルごとの使用量がある。それを合計する。"""
+    iterations = getattr(usage, "iterations", None) or []
+    if iterations:
+        return sum(cost_usd(prices, getattr(it, "model", served) or served, it) for it in iterations)
+    return cost_usd(prices, served, usage)
+
+
+def _error_type(exc: Any) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error") if isinstance(body.get("error"), dict) else body
+        return str(err.get("type") or "")
+    return str(getattr(exc, "type", "") or "")
+
+
 class AnthropicClient:
     def __init__(self, api_key: str, *, models: list[str], prices: dict[str, tuple[float, float]],
                  effort: str = "low", max_tokens: int = 16000, timeout: float = 600, client: Any = None) -> None:
@@ -101,26 +117,42 @@ class AnthropicClient:
         if model in FALLBACK_MODELS:
             params.update(betas=[FALLBACK_BETA], fallbacks="default")
         started = time.monotonic()
+        stream_ref: Any = None
         try:
             with self.client.beta.messages.stream(**params) as stream:
+                stream_ref = stream
                 for _event in stream:
                     if self.should_abort is not None and self.should_abort():
                         raise LLMCancelled("取り消されました")  # with を抜けると接続が閉じ、生成も止まる
                 message = stream.get_final_message()
         except LLMCancelled:
+            # 途中まで出力した分も料金がかかるので、そこまでの使用量を記録してから止める
+            snapshot = getattr(stream_ref, "current_message_snapshot", None) if stream_ref is not None else None
+            if snapshot is not None and getattr(snapshot, "usage", None) is not None:
+                self._record(model, model, time.monotonic() - started, snapshot.usage, "cancelled")
             raise
         except anthropic.NotFoundError as exc:
             raise LLMModelMissing(f"モデル {model} が Anthropic の API に見つかりません（{exc.message}）") from exc
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
             raise LLMModelMissing(f"Anthropic の API キーが使えません（.env の ANTHROPIC_API_KEY を確かめてください）: "
                                   f"{exc.message}") from exc
+        except anthropic.BadRequestError as exc:
+            # 依頼の設定の誤り（このモデルで使えない指定、残高不足など）。問題ごとに作り直しても直らないので止める
+            raise LLMModelMissing(f"Anthropic の API が受け付けませんでした（{model}）: {exc.message}") from exc
         except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError) as exc:
             raise LLMUnavailable(f"Anthropic の API に今つながりません: {exc}") from exc
         except anthropic.APIStatusError as exc:
-            if exc.status_code >= 500:
-                raise LLMUnavailable(f"Anthropic の API がエラーを返しました（{exc.status_code}）") from exc
+            kind = _error_type(exc)
+            if exc.status_code == 402 or kind == "billing_error":
+                raise LLMModelMissing(f"Anthropic の API の支払いの設定を確かめてください: {exc.message}") from exc
+            if exc.status_code >= 500 or kind in ("overloaded_error", "api_error", "rate_limit_error"):
+                # ストリーミングの途中の「混み合っています」などは、待ってから続きから
+                raise LLMUnavailable(f"Anthropic の API が混み合っています（{kind or exc.status_code}）") from exc
             raise LLMError(f"Anthropic の API がエラーを返しました（{exc.status_code}）: {exc.message}") from exc
-        text = "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
+        # 断られて別のモデルが続きを書いた（fallback）ときは、最後の fallback より後の文章だけを使う
+        blocks = list(message.content)
+        last_fallback = max((i for i, b in enumerate(blocks) if getattr(b, "type", "") == "fallback"), default=-1)
+        text = "".join(b.text for b in blocks[last_fallback + 1:] if getattr(b, "type", "") == "text")
         self._record(model, getattr(message, "model", model) or model, time.monotonic() - started, message.usage,
                      message.stop_reason)
         if message.stop_reason == "max_tokens":
@@ -139,8 +171,12 @@ class AnthropicClient:
             "cut_off": stop_reason == "max_tokens",
             "cache_read": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
             "cache_write": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
-            "cost_usd": round(cost_usd(self.prices, served, usage), 6),
+            "cost_usd": round(_usage_cost(self.prices, served, usage), 6),
         })
+
+    def pending_cost(self) -> float:
+        """記録したが、まだ worker が集計していない（pop_calls していない）呼び出しの料金。上限の確認に足す。"""
+        return sum(float(c.get("cost_usd") or 0) for c in self.calls)
 
     def pop_calls(self) -> list[dict[str, Any]]:
         calls, self.calls = self.calls, []

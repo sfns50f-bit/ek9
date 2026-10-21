@@ -147,11 +147,15 @@ def api_limits(settings: Settings, session: Session) -> tuple[float, float]:
 
 
 def save_api_limits(session: Session, monthly: str, per_job: str) -> None:
+    import math
+
     for key, text in (("api_monthly_limit", monthly), ("api_job_limit", per_job)):
         try:
-            kv_set(session, f"setting_{key}", str(max(0.0, float(text))))
+            value = float(text)
         except ValueError:
             continue
+        if math.isfinite(value):  # inf・nan は受け付けない
+            kv_set(session, f"setting_{key}", str(max(0.0, value)))
 
 
 # --- 思考モード（モデルごと） ----------------------------------------------------

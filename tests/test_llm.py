@@ -301,3 +301,12 @@ def test_anthropic_cancel_stops_streaming():
     client.should_abort = lambda: True
     with pytest.raises(LLMCancelled):
         client.chat_json("claude-haiku-5-5", "s", "u", SCHEMA)
+
+
+def test_anthropic_bad_request_and_billing_fail_fast():
+    """400（このモデルで使えない指定など）・402（支払い）は、問題ごとに作り直しても直らないので依頼を止める。"""
+    from quizapp.llm import LLMModelMissing
+
+    for status in (400, 402):
+        with pytest.raises(LLMModelMissing):
+            _anthropic_client(FakeAnthropic("", status=status)).chat_json("claude-haiku-5-5", "s", "u", SCHEMA)

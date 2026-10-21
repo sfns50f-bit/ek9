@@ -72,3 +72,13 @@ def test_second_review_fixes():
     for word in ("数式の外", "+ 0", "解き方の要点", "点と傾きの式", "中身のない"):
         assert word in found, word
     assert problems("$10 - 0.5$ と 2 点間の距離の式 と $x^2 - 4x + 3 = 0$") == []
+
+
+def test_third_review_false_positives_and_wrap():
+    """正しい計算の途中（8 - 0 = 8 など）は「不要な項」としない。答えの行の囲み方は文章を変えない。"""
+    for ok in (r"$\left[x^3\right]_0^2 = 8 - 0 = 8$", r"$y - 0 = 2(x-1)$", r"$\frac{1}{2}(4 - 0)$"):
+        assert problems(ok) == [], ok
+    assert normalize("答え: 1/3\n\n以上より") == "答え: $1/3$\n\n以上より"
+    for same in ("答え:\n**x = 3**", "答え: 10%", "根据", "据える"):
+        assert normalize(same) == same.replace("根据", "根据"), same
+    assert normalize("答え: 120°") == "答え: $120^\\circ$" == normalize(normalize("答え: 120°"))
