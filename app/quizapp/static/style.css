@@ -107,7 +107,7 @@ label.check.inline { display: inline-flex; margin-right: 12px; }
 fieldset.levels { border: 0; padding: 0; margin: 10px 0; }
 fieldset.levels legend { font-weight: 600; }
 details.models { border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
-input[list] { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 16px; padding: 10px;
+input[list], input[type=date] { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 16px; padding: 10px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); min-height: 48px; }
 /* 状態のページの切り替え */
 .subnav { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }

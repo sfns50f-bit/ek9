@@ -593,3 +593,22 @@ def test_templates_have_no_nested_forms():
         parser = Depth()
         parser.feed(path.read_text())
         assert parser.max <= 1, path.name
+
+
+def test_review_filters_by_date_and_id_and_export_shows_creation_date(client, settings, sessions, sandbox):
+    """最近作った問題だけを書き出せる（作った日・管理番号）。書き出しに作成日時が入る。"""
+    from datetime import datetime
+
+    stock_up(settings, sessions, sandbox, count=3)
+    a, b, c = [p.id for p in all_rows(sessions, Problem)]
+    with sessions.begin() as s:
+        s.get(Problem, a).created_at = datetime(2026, 10, 10, 3, 0)   # 日本時間 10/10 12:00
+        s.get(Problem, b).created_at = datetime(2026, 10, 20, 16, 0)  # 日本時間 10/21 01:00
+        s.get(Problem, c).created_at = datetime(2026, 10, 22, 3, 0)
+    md = client.get("/review/export.md?date_from=2026-10-21&date_to=2026-10-21").text
+    assert f"#{b}" in md and f"#{a}" not in md and f"#{c}" not in md
+    assert "作成日時：2026/10/21 01:00" in md and "作成日: 2026-10-21〜2026-10-21" in md
+    md = client.get(f"/review/export.md?id_from={b}").text
+    assert f"#{b}）" in md and f"#{c}）" in md and f"#{a}）" not in md
+    text = client.get(f"/review?id_from={b}&id_to={b}").text
+    assert f"#{b}" in text and "作成 2026/10/21 01:00" in text and f"#{c}<" not in text

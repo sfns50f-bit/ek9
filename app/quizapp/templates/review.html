@@ -7,7 +7,7 @@
 {% if msg == "restored" %}<p class="notice">ストックに戻しました。</p>{% endif %}
 {% if msg == "normalized" %}<p class="notice">{{ n }} 問の表記を直しました。下は、直したあとも表記の点検で引っかかる問題です（直せないもの：KaTeX にない命令、数式の中の日本語、中国語の字など）。</p>{% endif %}
 {% if msg == "deleted_ids" %}<p class="notice">{{ n }} 問を削除しました（今後出題しません。回答の記録は残ります）。足りない分は「作る」から作成を依頼してください。</p>{% endif %}
-{% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) %}
+{% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) ~ "&date_from=" ~ f.date_from ~ "&date_to=" ~ f.date_to ~ "&id_from=" ~ f.id_from ~ "&id_to=" ~ f.id_to %}
 <form method="get" action="/review" class="card filters">
   <h1>問題検証モード</h1>
   <p class="muted small">正解・選択肢（誤答の間違いの種類）・ヒント・解説・作成役と検証役のモデルを確かめ、おかしな問題を削除します。
@@ -22,6 +22,10 @@
     {% for m in options.gen_models %}<option value="{{ m }}" {{ 'selected' if f.gen_model == m }}>{{ m }}</option>{% endfor %}</select></label>
   <label>状態 <select name="status">
     {% for key, label in options.statuses.items() %}<option value="{{ key }}" {{ 'selected' if f.status == key }}>{{ label }}</option>{% endfor %}</select></label>
+  <label>作った日（から） <input type="date" name="date_from" value="{{ f.date_from }}"></label>
+  <label>作った日（まで） <input type="date" name="date_to" value="{{ f.date_to }}"></label>
+  <label>管理番号（から） <input type="number" name="id_from" value="{{ f.id_from }}" min="1" inputmode="numeric" placeholder="例: 266"></label>
+  <label>管理番号（まで） <input type="number" name="id_to" value="{{ f.id_to }}" min="1" inputmode="numeric"></label>
   <div class="actions">
     <button type="submit" class="primary">絞り込む</button>
     <a class="button secondary" href="/review/export.md?{{ qs }}" target="_blank">Markdown で表示</a>
@@ -47,8 +51,8 @@
 {% set lab = labels(p) %}
 <section class="card review-item" id="p{{ p.id }}">
   <div class="meta small muted">
-    <span>#{{ p.id }}</span><span>{{ lab.subject }}／{{ lab.unit }}／{{ lab.subunit }}</span>
-    <span>{{ lab.level }}</span><span>{{ lab.format }}</span><span>{{ p.created_at | localtime }}</span>
+    <span>#{{ p.id }}</span><span>作成 {{ p.created_at | localtime("%Y/%m/%d %H:%M") }}</span><span>{{ lab.subject }}／{{ lab.unit }}／{{ lab.subunit }}</span>
+    <span>{{ lab.level }}</span><span>{{ lab.format }}</span>
     {% if p.reported %}<span class="tag ng">報告あり</span>{% endif %}
   </div>
   {% if f.status == "issues" %}{% for i in issues(p) %}<p class="notice warn small">{{ i }}</p>{% endfor %}{% endif %}

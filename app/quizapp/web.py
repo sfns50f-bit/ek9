@@ -59,6 +59,14 @@ def _failure(problem: Problem) -> dict[str, Any]:
     return {}
 
 
+def _date_text(value: str) -> str:
+    """「2026-10-21」の形の日付だけを通す（ほかは空）。"""
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").strftime("%Y-%m-%d") if value and value.strip() else ""
+    except ValueError:
+        return ""
+
+
 def _int(value: str, default: int) -> int:
     try:
         return int(str(value).strip())
@@ -592,20 +600,36 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     # --- 問題検証モード（親向け） ---------------------------------------------
 
-    def review_filters(subject: str, unit: str, level: str, gen_model: str, status: str) -> dict[str, str]:
+    def review_filters(subject: str, unit: str, level: str, gen_model: str, status: str,
+                       date_from: str = "", date_to: str = "", id_from: str = "", id_to: str = "") -> dict[str, str]:
         return {"subject": subject, "unit": unit, "level": level, "gen_model": gen_model,
-                "status": status if status in review.STATUSES else "ready"}
+                "status": status if status in review.STATUSES else "ready",
+                "date_from": _date_text(date_from), "date_to": _date_text(date_to),
+                "id_from": str(max(0, _int(id_from, 0)) or ""), "id_to": str(max(0, _int(id_to, 0)) or "")}
+
+    def review_query_args(f: dict[str, str]) -> dict[str, Any]:
+        """画面の絞り込み（日付は日本時間の日）を review.query の引数に。"""
+        def utc(day: str, plus: int = 0) -> datetime | None:
+            if not day:
+                return None
+            local = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=tz) + timedelta(days=plus)
+            return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+        return {"subject": f["subject"], "unit": f["unit"], "level": f["level"], "gen_model": f["gen_model"],
+                "status": f["status"], "since": utc(f["date_from"]), "until": utc(f["date_to"], 1),
+                "id_from": _int(f["id_from"], 0), "id_to": _int(f["id_to"], 0)}
 
     @app.get("/review")
     def review_page(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
-                    status: str = "ready", page: int = 1, msg: str = "", n: int = 0) -> Response:
+                    status: str = "ready", date_from: str = "", date_to: str = "", id_from: str = "",
+                    id_to: str = "", page: int = 1, msg: str = "", n: int = 0) -> Response:
         if not review_ok(request):
             return redirect("/review/login")
-        f = review_filters(subject, unit, level, gen_model, status)
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
         per = 50
         page = max(1, page)
         with sessions() as s:
-            rows = review.query(s, **f, limit=per + 1, offset=(page - 1) * per)
+            rows = review.query(s, **review_query_args(f), limit=per + 1, offset=(page - 1) * per)
             for p in rows:
                 _ = p.passage
             options = review.filter_options(s)
@@ -615,19 +639,22 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
-                      status: str = "ready", download: int = 0) -> Response:
+                      status: str = "ready", date_from: str = "", date_to: str = "", id_from: str = "",
+                      id_to: str = "", download: int = 0) -> Response:
         if not review_ok(request):
             return redirect("/review/login")
-        f = review_filters(subject, unit, level, gen_model, status)
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
         with sessions() as s:
-            rows = review.query(s, **f, limit=500)
+            rows = review.query(s, **review_query_args(f), limit=500)
             for p in rows:
                 _ = p.passage
             shown = {"科目": get_subject(subject).name if get_subject(subject) else "",
                      "単元": next((u.label for sub in all_subjects() for u in sub.units() if u.id == unit), unit),
                      "レベル": LEVELS.get(level, ""), "作成役": gen_model,
-                     "状態": review.STATUSES[f["status"]] if f["status"] != "ready" else ""}
-            text = review.to_markdown(rows, shown)
+                     "状態": review.STATUSES[f["status"]] if f["status"] != "ready" else "",
+                     "作成日": "〜".join([f["date_from"], f["date_to"]]) if f["date_from"] or f["date_to"] else "",
+                     "管理番号": f"#{f['id_from'] or '?'}〜#{f['id_to'] or '?'}" if f["id_from"] or f["id_to"] else ""}
+            text = review.to_markdown(rows, shown, lambda dt: localtime(dt, "%Y/%m/%d %H:%M"))
         headers = {"Content-Disposition": 'attachment; filename="problems.md"'} if download else {}
         return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
 
