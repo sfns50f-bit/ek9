@@ -21,6 +21,14 @@ def _int(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _float(name: str, default: float) -> float:
+    value = os.environ.get(name, "").strip()
+    try:
+        return float(value) if value else default
+    except ValueError:
+        return default
+
+
 def _str(name: str, default: str) -> str:
     value = os.environ.get(name, "").strip()
     return value or default
@@ -64,6 +72,21 @@ class Settings:
     low_stock: int = field(default_factory=lambda: _int("LOW_STOCK", 40))
     # 解き始めのセットに混ぜる「間違えた問題」の上限の割合（%）
     retry_percent: int = field(default_factory=lambda: _int("RETRY_PERCENT", 30))
+
+    # Anthropic（Claude）の API。キーがなければ API は使えない（worker だけに渡す。docker-compose.yml）
+    anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    # 選べるモデル（「作る」画面の候補。名前の頭に anthropic/ が付く）
+    anthropic_models: str = field(default_factory=lambda: _str(
+        "ANTHROPIC_MODELS", "claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5"))
+    # 料金（ドル／100 万トークン、入力/出力）。値上げ・値下げがあったらここを直す
+    anthropic_prices: str = field(default_factory=lambda: _str(
+        "ANTHROPIC_PRICES", "claude-haiku-5-5=0.10/0.50,claude-sonnet-5-5=2/10,claude-opus-5-5=4/20"))
+    # 考える量（low / medium / high）。考えた分も出力の料金になるので低め
+    anthropic_effort: str = field(default_factory=lambda: _str("ANTHROPIC_EFFORT", "low"))
+    anthropic_max_tokens: int = field(default_factory=lambda: _int("ANTHROPIC_MAX_TOKENS", 16000))
+    # 利用額の上限（ドル）。「状態 → モデルと思考モード」で変えられる（画面の値が優先）。1 回の依頼の上限は 0 なら上限なし
+    api_monthly_limit: float = field(default_factory=lambda: _float("API_MONTHLY_LIMIT_USD", 5.0))
+    api_job_limit: float = field(default_factory=lambda: _float("API_JOB_LIMIT_USD", 0.0))
 
     # 問題検証モード（/review。正解つきの一覧・削除・書き出し）のパスワード。空ならパスワードなしで入れる
     review_password: str = field(default_factory=lambda: os.environ.get("REVIEW_PASSWORD", "").strip())

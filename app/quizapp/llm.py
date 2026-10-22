@@ -35,6 +35,10 @@ class LLMModelMissing(RuntimeError):
     """
 
 
+class LLMBudgetExceeded(RuntimeError):
+    """API の利用額が上限に達した。待っても直らないので、その依頼は失敗で止める（LLMError ではない）。"""
+
+
 class LLMCancelled(RuntimeError):
     """呼び出し中に取り消された（should_abort が真になった）。"""
 
@@ -341,6 +345,7 @@ class LLMRouter:
         self._label = ""
         self._should_abort: Callable[[], bool] | None = None
         self._think_for: Callable[[str], bool | None] | None = None
+        self._budget_check: Callable[[], None] | None = None
 
     # worker が設定する属性（呼び出しの種類・取り消しの確認・思考モード）は、すべての提供元に配る
     def _broadcast(self, name: str, value: Any) -> None:
@@ -366,6 +371,15 @@ class LLMRouter:
         self._broadcast("should_abort", value)
 
     @property
+    def budget_check(self) -> Callable[[], None] | None:
+        return self._budget_check
+
+    @budget_check.setter
+    def budget_check(self, value: Callable[[], None] | None) -> None:
+        self._budget_check = value
+        self._broadcast("budget_check", value)
+
+    @property
     def think_for(self) -> Callable[[str], bool | None] | None:
         return self._think_for
 
@@ -383,16 +397,20 @@ class LLMRouter:
         return client.chat_json(name, system, user, schema, temperature=temperature)
 
     def list_models(self) -> list[dict[str, Any]]:
-        """Ollama のモデル（つながらなければ LLMUnavailable）と、設定済みの API のモデル。"""
-        models = self.providers["ollama"].list_models()
+        """Ollama のモデル（つながらなければ LLMUnavailable）。API のモデルは api_models() で別に出す。"""
+        return self.providers["ollama"].list_models()
+
+    def pending_cost(self) -> float:
+        """API の提供元で、まだ集計していない呼び出しの料金（上限の確認に足す）。"""
+        return sum(c.pending_cost() for c in self.providers.values() if hasattr(c, "pending_cost"))
+
+    def api_models(self) -> list[str]:
+        """設定済みの API の提供元のモデル（「提供元/モデル名」）。"""
+        names = []
         for provider, client in self.providers.items():
-            if provider == "ollama":
-                continue
-            try:
-                models += [{**m, "name": f"{provider}/{m['name']}"} for m in client.list_models()]
-            except Exception:  # API の一覧が取れなくても Ollama のモデルは使える
-                continue
-        return models
+            if provider != "ollama":
+                names += [f"{provider}/{m['name']}" for m in client.list_models()]
+        return names
 
     def pop_calls(self) -> list[dict[str, Any]]:
         calls: list[dict[str, Any]] = []

@@ -59,6 +59,14 @@ def _failure(problem: Problem) -> dict[str, Any]:
     return {}
 
 
+def _date_text(value: str) -> str:
+    """「2026-10-21」の形の日付だけを通す（ほかは空）。"""
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").strftime("%Y-%m-%d") if value and value.strip() else ""
+    except ValueError:
+        return ""
+
+
 def _int(value: str, default: int) -> int:
     try:
         return int(str(value).strip())
@@ -156,6 +164,15 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return {sub.id: {"name": sub.name, "units": scope_options(sub), "formats": list(sub.formats),
                          "counts": {f"{t}|{f}": n for (sid, t, f), n in counts.items() if sid == sub.id}}
                 for sub in all_subjects()}
+
+    def api_info(s: Session) -> dict[str, Any]:
+        """API の設定（worker が kv に書いたもの）と、今月の利用額・上限。"""
+        info = kv_json(s, "api", {}) or {}
+        monthly, per_job = runtime.api_limits(settings, s)
+        spent = runtime.api_spend(s).get(runtime.month_key(settings), 0.0)
+        return {"configured": bool(info.get("configured")), "models": list(info.get("models") or []),
+                "monthly": monthly, "per_job": per_job, "spent": spent, "month": runtime.month_key(settings),
+                "worker": kv_json(s, "worker_api", {}) or {}}
 
     def review_ok(request: Request) -> bool:
         return review.allowed(settings.review_password, request.cookies.get(review.COOKIE))
@@ -407,9 +424,11 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             data = picker_data(s, user_id(request))
             plan = runtime.model_plan(settings, s)
             ollama = kv_json(s, "ollama", {}) or {}
-        model_names = [m["name"] for m in ollama.get("models", [])]
+            api = api_info(s)
+        # 候補：Ollama にあるモデルと、API のモデル（「anthropic/…」）
+        model_names = [m["name"] for m in ollama.get("models", [])] + api["models"]
         return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plan=plan, model_names=model_names,
-                      max_verify=runtime.MAX_VERIFY_COUNT)
+                      max_verify=runtime.MAX_VERIFY_COUNT, api=api)
 
     @app.post("/generate")
     def generate(subject: str = Form(...), scope: Annotated[list[str], Form()] = [],  # noqa: B006
@@ -486,6 +505,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             "backup_last": localtime(last_backup, "%Y/%m/%d %H:%M") if last_backup else None,
             "backup_count": len(backup.list_backups(settings.backup_dir)),
             "backup_info": kv_json(s, "backup", {}) or {},
+            "api": api_info(s),
         }
 
     STATUS_PAGES = {"/status": "まとめ", "/status/models": "モデルと思考モード", "/status/quality": "検証の成績",
@@ -516,16 +536,26 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             ollama = kv_json(s, "ollama", {}) or {}
             tests = list(s.execute(select(Job).where(Job.is_test.is_(True)).order_by(Job.id.desc()).limit(5))
                          .scalars())
-        model_names = [m["name"] for m in ollama.get("models", [])]
+            api = api_info(s)
+        ollama_names = [m["name"] for m in ollama.get("models", [])]
+        model_names = ollama_names + api["models"]
         # 思考モードの一覧は、Ollama に今あるモデルだけ（保存した設定は消さないので、入れ直せば同じ設定が効く）
         think_rows = []
-        for name in model_names:
+        for name in ollama_names:
             effective = runtime.resolve_think(name, think_choices, settings.think)
             think_rows.append({"model": name, "choice": think_choices.get(name, "auto"),
                                "effective": {True: "考えさせる", False: "切る", None: "モデルの既定のまま"}[effective]})
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
-                      ollama=ollama, tests=tests, settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg)
+                      ollama=ollama, tests=tests, settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg,
+                      api=api)
+
+    @app.post("/status/api")
+    def save_api(monthly: str = Form(""), per_job: str = Form("")) -> Response:
+        """API の利用額の上限（ドル）。空の欄は変えない。"""
+        with sessions.begin() as s:
+            runtime.save_api_limits(s, monthly.strip(), per_job.strip())
+        return redirect("/status/models?msg=api#api")
 
     @app.get("/status/quality")
     def status_quality(request: Request, days: str = "30", from_job: str = "") -> Response:
@@ -592,20 +622,36 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     # --- 問題検証モード（親向け） ---------------------------------------------
 
-    def review_filters(subject: str, unit: str, level: str, gen_model: str, status: str) -> dict[str, str]:
+    def review_filters(subject: str, unit: str, level: str, gen_model: str, status: str,
+                       date_from: str = "", date_to: str = "", id_from: str = "", id_to: str = "") -> dict[str, str]:
         return {"subject": subject, "unit": unit, "level": level, "gen_model": gen_model,
-                "status": status if status in review.STATUSES else "ready"}
+                "status": status if status in review.STATUSES else "ready",
+                "date_from": _date_text(date_from), "date_to": _date_text(date_to),
+                "id_from": str(max(0, _int(id_from, 0)) or ""), "id_to": str(max(0, _int(id_to, 0)) or "")}
+
+    def review_query_args(f: dict[str, str]) -> dict[str, Any]:
+        """画面の絞り込み（日付は日本時間の日）を review.query の引数に。"""
+        def utc(day: str, plus: int = 0) -> datetime | None:
+            if not day:
+                return None
+            local = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=tz) + timedelta(days=plus)
+            return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+        return {"subject": f["subject"], "unit": f["unit"], "level": f["level"], "gen_model": f["gen_model"],
+                "status": f["status"], "since": utc(f["date_from"]), "until": utc(f["date_to"], 1),
+                "id_from": _int(f["id_from"], 0), "id_to": _int(f["id_to"], 0)}
 
     @app.get("/review")
     def review_page(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
-                    status: str = "ready", page: int = 1, msg: str = "", n: int = 0) -> Response:
+                    status: str = "ready", date_from: str = "", date_to: str = "", id_from: str = "",
+                    id_to: str = "", page: int = 1, msg: str = "", n: int = 0) -> Response:
         if not review_ok(request):
             return redirect("/review/login")
-        f = review_filters(subject, unit, level, gen_model, status)
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
         per = 50
         page = max(1, page)
         with sessions() as s:
-            rows = review.query(s, **f, limit=per + 1, offset=(page - 1) * per)
+            rows = review.query(s, **review_query_args(f), limit=per + 1, offset=(page - 1) * per)
             for p in rows:
                 _ = p.passage
             options = review.filter_options(s)
@@ -615,19 +661,22 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
-                      status: str = "ready", download: int = 0) -> Response:
+                      status: str = "ready", date_from: str = "", date_to: str = "", id_from: str = "",
+                      id_to: str = "", download: int = 0) -> Response:
         if not review_ok(request):
             return redirect("/review/login")
-        f = review_filters(subject, unit, level, gen_model, status)
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
         with sessions() as s:
-            rows = review.query(s, **f, limit=500)
+            rows = review.query(s, **review_query_args(f), limit=500)
             for p in rows:
                 _ = p.passage
             shown = {"科目": get_subject(subject).name if get_subject(subject) else "",
                      "単元": next((u.label for sub in all_subjects() for u in sub.units() if u.id == unit), unit),
                      "レベル": LEVELS.get(level, ""), "作成役": gen_model,
-                     "状態": review.STATUSES[f["status"]] if f["status"] != "ready" else ""}
-            text = review.to_markdown(rows, shown)
+                     "状態": review.STATUSES[f["status"]] if f["status"] != "ready" else "",
+                     "作成日": "〜".join([f["date_from"], f["date_to"]]) if f["date_from"] or f["date_to"] else "",
+                     "管理番号": f"#{f['id_from'] or '?'}〜#{f['id_to'] or '?'}" if f["id_from"] or f["id_to"] else ""}
+            text = review.to_markdown(rows, shown, lambda dt: localtime(dt, "%Y/%m/%d %H:%M"))
         headers = {"Content-Disposition": 'attachment; filename="problems.md"'} if download else {}
         return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
 

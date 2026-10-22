@@ -7,6 +7,7 @@ worker は依頼を処理するたびに読み直すので、次の依頼から�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -108,6 +109,53 @@ def apply_plan(job: object, plan: ModelPlan) -> None:
     job.verify_count = plan.verify_count  # type: ignore[attr-defined]
     job.verify_model_2 = plan.verify_model_2  # type: ignore[attr-defined]
     job.explanation_review = plan.review  # type: ignore[attr-defined]
+
+
+# --- API の利用額（ドル） ----------------------------------------------------------
+# 月ごとの合計を kv の api_spend（{"2026-10": 1.23}）に、上限を setting_api_monthly_limit / setting_api_job_limit に持つ。
+# 月の区切りは日本時間（DISPLAY_TZ）。
+
+
+def month_key(settings: Settings, now: datetime | None = None) -> str:
+    from zoneinfo import ZoneInfo
+
+    now = now or datetime.now(timezone.utc)
+    return now.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m")
+
+
+def api_spend(session: Session) -> dict[str, float]:
+    data = kv_json(session, "api_spend", {}) or {}
+    return {str(k): float(v) for k, v in data.items()}
+
+
+def add_api_spend(settings: Settings, session: Session, usd: float) -> None:
+    data = api_spend(session)
+    key = month_key(settings)
+    data[key] = round(data.get(key, 0.0) + usd, 6)
+    kv_set(session, "api_spend", dumps(data))
+
+
+def api_limits(settings: Settings, session: Session) -> tuple[float, float]:
+    """(月の上限, 1 回の依頼の上限)。画面で変えた値があればそれ、なければ .env。依頼の上限 0 は上限なし。"""
+    def value(key: str, default: float) -> float:
+        try:
+            return max(0.0, float(kv_get(session, f"setting_{key}")))
+        except ValueError:
+            return default
+
+    return value("api_monthly_limit", settings.api_monthly_limit), value("api_job_limit", settings.api_job_limit)
+
+
+def save_api_limits(session: Session, monthly: str, per_job: str) -> None:
+    import math
+
+    for key, text in (("api_monthly_limit", monthly), ("api_job_limit", per_job)):
+        try:
+            value = float(text)
+        except ValueError:
+            continue
+        if math.isfinite(value):  # inf・nan は受け付けない
+            kv_set(session, f"setting_{key}", str(max(0.0, value)))
 
 
 # --- 思考モード（モデルごと） ----------------------------------------------------

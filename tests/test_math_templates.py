@@ -65,8 +65,11 @@ def test_triangle_givens_accept_common_ways_to_write_the_angle():
 
 
 def test_vector_angles_cover_all_standard_angles():
-    seen = {int(TEMPLATES["mc-vec-angle"](random.Random(seed)).answer) for seed in range(300)}
-    assert seen == {30, 45, 60, 120, 135, 150}
+    import collections
+
+    seen = collections.Counter(int(TEMPLATES["mc-vec-angle"](random.Random(seed)).answer) for seed in range(700))
+    assert set(seen) == {30, 45, 60, 90, 120, 135, 150}
+    assert max(seen.values()) < 2 * min(seen.values())  # どの角もだいたい同じくらい出る
 
 
 def test_mistake_tags_are_known():
@@ -321,3 +324,14 @@ def test_answer_is_correct_by_another_method(tid):
     seeds = range(8) if tid == "m2-trig-synth" else SEEDS
     for seed in seeds:
         CHECKS[tid](TEMPLATES[tid](random.Random(seed)))
+
+
+def test_zero_root_is_written_as_x():
+    """根が 0 の因数は「(x + 0)」ではなく x と書く（第 2 回の点検 #290 など）。"""
+    from quizapp.subjects.math.templates import xf
+
+    assert xf(0) == "x" and xf(2) == "\\left(x - 2\\right)" and xf(-3) == "\\left(x + 3\\right)"
+    for seed in range(200):
+        for tid in ("m2-diff-extremum", "m1-quad-ineq", "m2-int-area"):
+            inst = TEMPLATES[tid](random.Random(seed))
+            assert "+ 0\\right" not in " ".join(inst.steps) and "- 0\\right" not in " ".join(inst.steps), tid

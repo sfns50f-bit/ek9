@@ -191,3 +191,122 @@ def test_tagged_output_variants():
     # 開きタグのない思考、閉じていない思考
     assert parse_tagged("下書き\n</think>[[question]]\nQ\n[[hint]]\nH", schema) == {"question": "Q", "hint": "H"}
     assert parse_tagged("[[question]]\nQ\n[[hint]]\nH\n<think>まだ考え中", schema) == {"question": "Q", "hint": "H"}
+
+
+class FakeAnthropic:
+    """Anthropic の Messages API（ストリーミング）のふりをする小さな HTTP サーバー。"""
+
+    def __init__(self, text, *, status=200, stop_reason="end_turn", model="claude-haiku-5-5"):
+        self.bodies, self.headers = [], []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):  # noqa: N802
+                outer.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                outer.headers.append(dict(self.headers))
+                if status != 200:
+                    body = json.dumps({"type": "error", "error": {"type": "not_found_error", "message": "model"}})
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body.encode())
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                usage = {"input_tokens": 100, "output_tokens": 0, "cache_creation_input_tokens": 1000,
+                         "cache_read_input_tokens": 0}
+                events = [
+                    ("message_start", {"type": "message_start", "message": {
+                        "id": "msg_1", "type": "message", "role": "assistant", "model": model, "content": [],
+                        "stop_reason": None, "stop_sequence": None, "usage": usage}}),
+                    ("content_block_start", {"type": "content_block_start", "index": 0,
+                                             "content_block": {"type": "text", "text": ""}}),
+                    ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                             "delta": {"type": "text_delta", "text": text}}),
+                    ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                    ("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop_reason,
+                                                                          "stop_sequence": None},
+                                       "usage": {"output_tokens": 500}}),
+                    ("message_stop", {"type": "message_stop"}),
+                ]
+                for name, data in events:
+                    self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
+                    self.wfile.flush()
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+
+def _anthropic_client(server, **kw):
+    import anthropic
+    from quizapp.llm_anthropic import AnthropicClient, parse_prices
+
+    sdk = anthropic.Anthropic(api_key="test-key", base_url=server.url, max_retries=0)
+    prices = parse_prices("claude-haiku-5-5=0.10/0.50,claude-sonnet-5-5=2/10")
+    return AnthropicClient("test-key", models=["claude-haiku-5-5"], prices=prices, client=sdk, **kw)
+
+
+def test_anthropic_client_reads_tagged_text_records_cost_and_caches_system():
+    server = FakeAnthropic("[[answer]]\n$120^\\circ$ と \\angle A")
+    client = _anthropic_client(server)
+    client.label = "検証"
+    assert client.chat_json("claude-haiku-5-5", "sys", "user", SCHEMA) == {"answer": "$120^\\circ$ と \\angle A"}
+    body = server.bodies[0]
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral"} and "[[answer]]" in body["system"][0]["text"]
+    assert body["output_config"] == {"effort": "low"} and "temperature" not in body and "fallbacks" not in body
+    (call,) = client.pop_calls()
+    # (100 × 0.10 + 1000 × 0.10 × 1.25 + 500 × 0.50) / 100 万 ドル
+    assert call["cost_usd"] == round((100 * 0.10 + 1000 * 0.10 * 1.25 + 500 * 0.50) / 1e6, 6)
+    assert call["model"] == "anthropic/claude-haiku-5-5" and call["label"] == "検証" and call["tokens"] == 500
+    server.server.shutdown()
+
+
+def test_anthropic_client_errors_fallbacks_and_budget():
+    from quizapp.llm import LLMError, LLMModelMissing
+    from quizapp.llm_anthropic import LLMBudgetExceeded
+
+    server = FakeAnthropic("[[answer]]\n1", model="claude-sonnet-5-5")
+    client = _anthropic_client(server)
+    client.chat_json("claude-sonnet-5-5", "sys", "user", SCHEMA)
+    # 断られたときにサーバー側で別のモデルが続ける（fallbacks）。対応するモデルだけ
+    assert server.bodies[0]["fallbacks"] == "default"
+    assert "server-side-fallback-2026-07-01" in server.headers[0].get("anthropic-beta", "")
+    with pytest.raises(LLMError, match="出力の上限"):
+        _anthropic_client(FakeAnthropic("[[answer]]\n1", stop_reason="max_tokens")).chat_json(
+            "claude-haiku-5-5", "s", "u", SCHEMA)
+    with pytest.raises(LLMModelMissing, match="見つかりません"):
+        _anthropic_client(FakeAnthropic("", status=404)).chat_json("claude-nope", "s", "u", SCHEMA)
+    client = _anthropic_client(server)
+
+    def over():
+        raise LLMBudgetExceeded("上限")
+
+    client.budget_check = over
+    n = len(server.bodies)
+    with pytest.raises(LLMBudgetExceeded):
+        client.chat_json("claude-haiku-5-5", "s", "u", SCHEMA)
+    assert len(server.bodies) == n  # 上限なら呼ばない
+
+
+def test_anthropic_cancel_stops_streaming():
+    server = FakeAnthropic("[[answer]]\n1")
+    client = _anthropic_client(server)
+    client.should_abort = lambda: True
+    with pytest.raises(LLMCancelled):
+        client.chat_json("claude-haiku-5-5", "s", "u", SCHEMA)
+
+
+def test_anthropic_bad_request_and_billing_fail_fast():
+    """400（このモデルで使えない指定など）・402（支払い）は、問題ごとに作り直しても直らないので依頼を止める。"""
+    from quizapp.llm import LLMModelMissing
+
+    for status in (400, 402):
+        with pytest.raises(LLMModelMissing):
+            _anthropic_client(FakeAnthropic("", status=status)).chat_json("claude-haiku-5-5", "s", "u", SCHEMA)

@@ -114,6 +114,7 @@ class Job(Base):
     verify_eval_s: Mapped[float] = mapped_column(Float, default=0.0)
     verify_load_s: Mapped[float] = mapped_column(Float, default=0.0)
     verified: Mapped[int] = mapped_column(Integer, default=0)  # 検証にかけた下書きの数
+    api_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)  # この依頼で使った API の料金（ドル）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

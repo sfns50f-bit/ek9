@@ -57,7 +57,7 @@
       <div>合格 {{ r.made }}／作成 {{ r.tried }}{% if r.pass_rate is not none %}（{{ r.pass_rate }}%）{% endif %}
         ・作成 1 問 {{ r.gen_per ~ "秒" if r.gen_per is not none else "—" }}
         ・検証 1 問 {{ r.verify_per ~ "秒" if r.verify_per is not none else "—" }}
-        ・読み込み {{ r.load_s }}秒</div>
+        ・読み込み {{ r.load_s }}秒{% if j.api_cost_usd %}・API の料金 ${{ "%.3f" | format(j.api_cost_usd) }}{% if r.made %}（1 問 ${{ "%.4f" | format(j.api_cost_usd / r.made) }}）{% endif %}{% endif %}</div>
       {% if r.codes %}<div class="muted">不合格：{% for code, n in r.codes %}{{ codes.get(code, code) }} {{ n }}{% if not loop.last %}、{% endif %}{% endfor %}</div>{% endif %}</li>
     {% else %}<li class="muted">まだありません</li>{% endfor %}
   </ul>

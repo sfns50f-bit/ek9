@@ -93,6 +93,12 @@ def signed(v: Any) -> str:
     return f"- {L(-v)}" if v.could_extract_minus_sign() else f"+ {L(v)}"
 
 
+def xf(r: Any) -> str:
+    """1 次の因数 (x - r)。r = 0 なら「(x + 0)」ではなく x と書く。"""
+    r = sp.sympify(r)
+    return "x" if r == 0 else f"\\left(x {signed(-r)}\\right)"
+
+
 def tex_tuple(t: Any) -> str:
     return r"\left(" + ", ".join(L(v) for v in t) + r"\right)"
 
@@ -187,7 +193,7 @@ def quad_vertex(rng: random.Random) -> Instance:
             Cand(sp.Tuple(-p, -q), "sign"),
         ],
         steps=[
-            f"平方完成すると y = {L(a)}\\left(x {signed(-p)}\\right)^2 {signed(q)}",
+            f"平方完成すると y = {L(a)}{xf(p)}^2 {signed(q)}",
             f"頂点の座標は {tex_tuple(ans)}",
         ],
         params={"a": a, "p": p, "q": q},
@@ -227,7 +233,7 @@ def quad_ineq(rng: random.Random) -> Instance:
             Cand(between(-be, -al, not less, closed), "sign"),
         ],
         steps=[
-            f"左辺を因数分解すると \\left(x {signed(-al)}\\right)\\left(x {signed(-be)}\\right) {rel} 0",
+            f"左辺を因数分解すると {xf(al)}{xf(be)} {rel} 0",
             f"{L(al)} と {L(be)} が境目で、解は {tex_interval(ans)}",
         ],
         params={"al": al, "be": be, "rel": rel},
@@ -327,7 +333,7 @@ def case_comb(rng: random.Random) -> Instance:
             f"順番を区別しないので組合せ {{}}_{{{n}}}\\mathrm{{C}}_{{{r}}} を使う",
             f"{{}}_{{{n}}}\\mathrm{{C}}_{{{r}}} = \\frac{{{L(sp.ff(n, r))}}}{{{L(sp.factorial(r))}}} = {L(ans)}",
         ],
-        params={"n": n, "r": r, "what": what[1]},
+        params={"n": n, "r": r},  # 言い方（人・本・玉）は数値の重複の判定に入れない（同じ問題とみなす）
         input_hint="何通りかを整数で入力",
     )
 
@@ -671,7 +677,7 @@ def explog_equation(rng: random.Random) -> Instance:
                         options.append((c, p, q, r, k))
     c, p, q, r, k = rng.choice(options)
     r2 = p + q - r
-    eq = (f"\\log_{{{c}}} \\left(x {signed(-p)}\\right) + \\log_{{{c}}} \\left(x {signed(-q)}\\right) = {k}")
+    eq = (f"\\log_{{{c}}} {xf(p)} + \\log_{{{c}}} {xf(q)} = {k}")
     half = sp.Rational(c ** k + p + q, 2)
     fmt = lambda v: tex_set_eq(v)  # noqa: E731
     return Instance(
@@ -687,8 +693,8 @@ def explog_equation(rng: random.Random) -> Instance:
         ],
         steps=[
             f"真数条件より x > {max(p, q)}",
-            f"左辺をまとめると \\log_{{{c}}} \\left(x {signed(-p)}\\right)\\left(x {signed(-q)}\\right) = {k} "
-            f"より \\left(x {signed(-p)}\\right)\\left(x {signed(-q)}\\right) = {c ** k}",
+            f"左辺をまとめると \\log_{{{c}}} {xf(p)}{xf(q)} = {k} "
+            f"より {xf(p)}{xf(q)} = {c ** k}",
             f"これを解くと x = {r}, {r2}",
             f"真数条件を満たすのは x = {r}",
         ],
@@ -725,7 +731,7 @@ def diff_tangent(rng: random.Random) -> Instance:
         ],
         steps=[
             f"y' = {poly(sp.diff(f, x))} なので、x = {t} での傾きは {L(m)}",
-            f"接線は y - \\left({L(ft)}\\right) = {L(m)}\\left(x {signed(-t)}\\right)",
+            f"接線は y - \\left({L(ft)}\\right) = {L(m)}{xf(t)}",
             f"整理すると y = {poly(ans)}",
         ],
         params={"f": str(f), "t": t},
@@ -758,7 +764,7 @@ def diff_extremum(rng: random.Random) -> Instance:
             Cand(f.subs(x, -(be if want_max else al)), "sign"),
         ],
         steps=[
-            f"f'(x) = {poly(sp.diff(f, x))} = 3\\left(x {signed(-al)}\\right)\\left(x {signed(-be)}\\right)",
+            f"f'(x) = {poly(sp.diff(f, x))} = 3{xf(al)}{xf(be)}",
             f"増減表より x = {al} で極大値 {L(fmax)}、x = {be} で極小値 {L(fmin)}",
         ],
         params={"al": al, "be": be, "d": d, "max": want_max},
@@ -836,8 +842,8 @@ def int_area(rng: random.Random) -> Instance:
         ],
         steps=[
             first,
-            f"S = \\left|\\int_{{{al}}}^{{{be}}} {L(abs(k)) if abs(k) != 1 else ''}\\left(x {signed(-al)}\\right)"
-            f"\\left(x {signed(-be)}\\right) dx\\right| "
+            f"S = \\left|\\int_{{{al}}}^{{{be}}} {L(abs(k)) if abs(k) != 1 else ''}{xf(al)}"
+            f"{xf(be)} dx\\right| "
             f"= {coef}\\frac{{1}}{{6}}\\left({be} - \\left({al}\\right)\\right)^3 = {L(ans)}",
         ],
         params={"al": al, "be": be, "k": k, "curve": str(curve), "line": str(line)},
@@ -882,7 +888,7 @@ def seq_arith(rng: random.Random) -> Instance:
 # ---------------------------------------------------------------------------
 
 _STD_ANGLES = {sp.Rational(1, 2): 60, -sp.Rational(1, 2): 120, sp.sqrt(2) / 2: 45, -sp.sqrt(2) / 2: 135,
-               sp.sqrt(3) / 2: 30, -sp.sqrt(3) / 2: 150}
+               sp.sqrt(3) / 2: 30, -sp.sqrt(3) / 2: 150, sp.Integer(0): 90}
 
 
 def _vector_pairs() -> list[tuple[tuple[int, int], tuple[int, int], int]]:
@@ -890,7 +896,7 @@ def _vector_pairs() -> list[tuple[tuple[int, int], tuple[int, int], int]]:
     from fractions import Fraction
 
     found = []
-    comps = [(i, j) for i in range(-4, 5) for j in range(-4, 5) if (i, j) != (0, 0)]
+    comps = [(i, j) for i in range(-5, 6) for j in range(-5, 6) if (i, j) != (0, 0)]
     for a in comps:
         for b in comps:
             if a >= b:
@@ -903,7 +909,7 @@ def _vector_pairs() -> list[tuple[tuple[int, int], tuple[int, int], int]]:
 
 def _sqrt3_vector(rng: random.Random, direction: int) -> tuple[Any, Any]:
     """向きが 30° の倍数のベクトル。成分は整数か √3 を含む（例: (√3, 1), (-2, 0)）。"""
-    k = rng.choice([1, 2])
+    k = rng.choice([1, 2, 3])
     rad = sp.rad(direction)
     return (sp.nsimplify(2 * k * sp.cos(rad)), sp.nsimplify(2 * k * sp.sin(rad)))
 
@@ -913,7 +919,8 @@ _PAIRS: list[tuple[tuple[int, int], tuple[int, int], int]] = []
 
 @template("mc-vec-angle", unit="mc-vec", label="ベクトルのなす角", level="common")
 def vec_angle(rng: random.Random) -> Instance:
-    theta = rng.choice([30, 45, 60, 120, 135, 150])
+    # 正解の角が偏らないよう、7 つの角から同じ確率で選ぶ（90° は内積が 0 になる組）
+    theta = rng.choice([30, 45, 60, 90, 120, 135, 150])
     if theta in (45, 135):
         if not _PAIRS:
             _PAIRS.extend(_vector_pairs())
@@ -926,6 +933,7 @@ def vec_angle(rng: random.Random) -> Instance:
     na, nb = sp.sqrt(a[0] ** 2 + a[1] ** 2), sp.sqrt(b[0] ** 2 + b[1] ** 2)
     angles = sorted(_STD_ANGLES.values())
     neighbor = angles[(angles.index(theta) + 1) % len(angles)]
+    previous = angles[angles.index(theta) - 1]
     return Instance(
         task="成分で表された2つのベクトルのなす角 θ（0° ≦ θ ≦ 180°）を求める問題",
         givens=[f"\\vec{{a}} = {tex_tuple(a)}", f"\\vec{{b}} = {tex_tuple(b)}"],
@@ -935,6 +943,7 @@ def vec_angle(rng: random.Random) -> Instance:
             Cand(sp.Integer(abs(90 - theta)), "swap"),
             Cand(sp.Integer(neighbor), "calc"),
             Cand(sp.Integer(180 - neighbor), "calc"),
+            Cand(sp.Integer(previous), "calc"),
         ],
         steps=[
             f"\\vec{{a}} \\cdot \\vec{{b}} = {L(dot)}, |\\vec{{a}}| = {L(na)}, |\\vec{{b}}| = {L(nb)}",

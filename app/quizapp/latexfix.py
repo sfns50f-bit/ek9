@@ -88,17 +88,52 @@ _DEG_SURE = (r"\\circ|\{\s*\\circ\s*\}|\\textcirc|\\degree|\\(?:text|mathrm)\s*\
              r"|\{[^{}]*(?:circ|°|deg)[^{}]*\}|[°º˚∘]")
 # 本当の指数のこともあるもの（2^θ、x^o など）。角度の話のときだけ度とみなす
 _DEG_MAYBE = r"\\(?:theta|rho|times)(?![A-Za-z])|o(?![A-Za-z])|\{\s*o\s*\}"
-_ANGLE_CONTEXT_RE = re.compile(r"角|∠|\\angle|°|\\circ|度|三角形|弧度")
+_ANGLE_CONTEXT_RE = re.compile(r"角|∠|\\angle|°|\\circ|度|三角形|△|弧度")
 _DEG = {flag: re.compile(r"(\d)\s*\^\s*(?:" + _DEG_SURE + ("|" + _DEG_MAYBE if flag else "") + ")")
         for flag in (False, True)}
 _BARE_DEG_RE = re.compile(r"(\d)\s*[°º˚∘]")
 
 
+# 中国語の簡体字のうち、日本語の字に置き換えても意味が変わらないもの（数学の文章で出てきたもの）
+_ZH_TO_JA = str.maketrans({
+    "计": "計", "边": "辺", "长": "長", "时": "時", "题": "題", "问": "問", "间": "間", "设": "設", "则": "則",
+    "线": "線", "积": "積", "两": "両", "选": "選", "项": "項", "说": "説", "对": "対", "应": "応", "关": "関",
+    "实": "実", "现": "現", "习": "習", "简": "簡", "单": "単", "种": "種", "图": "図", "数": "数",
+})
+# $ で囲まれていない数式の環境。画面の KaTeX は $$…$$ などの中しか表示しないので、$$\begin{aligned}…$$ に直す
+_BARE_ENV_RE = re.compile(r"\\begin\{(align\*?|aligned|equation\*?|eqnarray\*?|gather\*?|gathered|cases)\}"
+                          r"(.*?)\\end\{\1\}", re.S)
+_ENV_RENAME = {"align": "aligned", "align*": "aligned", "equation": "aligned", "equation*": "aligned",
+               "eqnarray": "aligned", "eqnarray*": "aligned", "gather": "gathered", "gather*": "gathered"}
+_ANSWER_LINE_RE = re.compile(r"^(答え[ \t]*[:：][ \t]*)([^$\n]+?)[ \t]*$", re.M)
+_CJK_ANY_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+
+
+def _fix_environments(s: str) -> str:
+    def inside(body: str) -> str:  # 数式の中の align など → aligned（KaTeX は文中では align を表示できない）
+        return re.sub(r"\\(begin|end)\{(align\*?|equation\*?|eqnarray\*?|gather\*?)\}",
+                      lambda m: f"\\{m.group(1)}{{{_ENV_RENAME[m.group(2)]}}}", body)
+
+    def outside(t: str) -> str:
+        return _BARE_ENV_RE.sub(lambda m: "$$\\begin{" + _ENV_RENAME.get(m.group(1), m.group(1)) + "}" + m.group(2)
+                                + "\\end{" + _ENV_RENAME.get(m.group(1), m.group(1)) + "}$$", t)
+
+    return _map_math(s, inside, outside)
+
+
+def _wrap_answer_line(s: str) -> str:
+    """「答え: 13/2」のように $ のない答えの行を「答え: $13/2$」にする（日本語が入っていないときだけ）。"""
+    # 日本語・% （KaTeX ではコメントの始まり）・Markdown の * が入っているときは囲まない
+    return _ANSWER_LINE_RE.sub(lambda m: m.group(0) if _CJK_ANY_RE.search(m.group(2)) or re.search(r"[%*]", m.group(2))
+                               else f"{m.group(1)}${m.group(2)}$", s)
+
+
 def normalize(text: str) -> str:
     """意味を変えずに直せる表記の崩れを直す。"""
-    s = str(text or "")
+    s = str(text or "").translate(_ZH_TO_JA)
     s = _CTRL_LETTER_RE.sub(lambda m: "\\" + _CTRL_LETTER[m.group()], s)
     s = _UNICODE_ESC_RE.sub(lambda m: chr(int(m.group(1), 16)), s)
+    s = _wrap_answer_line(s)  # 先に $ で囲む（そのあとの度の記号の直しが数式の中として効くように）
     cmds = katex_commands()
     s = _DOUBLE_BS_RE.sub(lambda m: "\\" + m.group(1) if m.group(1) in cmds else m.group(0), s)
     deg = _DEG[bool(_ANGLE_CONTEXT_RE.search(s))]
@@ -106,6 +141,7 @@ def normalize(text: str) -> str:
                   lambda t: deg.sub(r"\1°", t))
     s = re.sub(r"\\ngle(?![A-Za-z])", r"\\angle", s)  # \angle が \n＋gle になったもの
     s = _LITERAL_NL_RE.sub("\n", s)
+    s = _fix_environments(s)
     return s
 
 
@@ -115,6 +151,18 @@ _CMD_RE = re.compile(r"\\([A-Za-z]+)")
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _TEXT_ARG_RE = re.compile(r"\\(?:text|textbf|textit|textrm|mathrm|operatorname|mbox)\s*\{[^{}]*\}")
 _PROVE_RE = re.compile(r"示せ|証明せよ|説明せよ|過程(?:も|を)")
+# 作成役への指示や要点そのものに触れた文（「与えられた解き方の要点に従うと」など）
+_META_RE = re.compile(r"解き方の要点|要点に(?:従|沿)|与えられた(?:解き方|正解|指示|要点)|指示に従|プロンプト|Python|テンプレート")
+# 誤った用語 → 正しい用語
+_WRONG_TERMS = [
+    (re.compile(r"2\s*点(?:形|間)の式|二点(?:形|間)の式"), "「点と傾きの式（点斜式）」または「2 点を通る直線の式」"),
+    (re.compile(r"微分方程式"), "「方程式」（f'(x)=0 は微分方程式ではない）"),
+    (re.compile(r"無理数を払"), "「分母を有理化する」"),
+    (re.compile(r"二乗差の積分"), "正しい公式の名前（例: 1/6 公式）"),
+]
+# 「(x + 0)」「- 0」のような不要な項
+# 「(x + 0)」のような因数だけを見る（「8 - 0 = 8」「y - 0 = 2(x-1)」のような計算の途中は正しいので見ない）
+_ZERO_TERM_RE = re.compile(r"(?:\\left)?\(\s*[a-z]\s*[+-]\s*0(?![\d.])\s*(?:\\right)?\)")
 # 制御文字になって消えたバックスラッシュの名残（\frac → rac{、\begin → egin{、\times → imes など）
 _RESIDUE_RE = re.compile(r"(?<![\\A-Za-z])(rac\s*\{|egin\s*\{|imes(?![A-Za-z])|heta(?![A-Za-z])|qrt\s*\{)")
 _FRAC_RE = re.compile(r"\\(?:d|t|c)?frac(?![A-Za-z])|\\binom(?![A-Za-z])")
@@ -173,9 +221,22 @@ def problems(text: str, *, field: str = "", choice: bool = False) -> list[str]:
         out.append(f"{name}に「\\$」がある（数式は $…$ で囲む）")
     if "$" in _prose(s).replace("\\$", ""):
         out.append(f"{name}の $ の数が合わず、数式の始まりと終わりが対応していない")
+    outside_cmds = [c for c in _CMD_RE.findall(_prose(s)) if c not in ("n",)]
+    if outside_cmds:
+        shown = "、".join(dict.fromkeys("\\" + c for c in outside_cmds))
+        out.append(f"{name}で数式の外に LaTeX の命令（{shown}）がある（数式は $…$ で囲む）")
+    if _META_RE.search(s):
+        out.append(f"{name}が作成の指示や「解き方の要点」そのものに触れている（指示には触れずに書く）")
+    for pattern, right in _WRONG_TERMS:
+        if pattern.search(s):
+            out.append(f"{name}の用語「{pattern.search(s).group(0)}」が誤り（{right}）")
     cmds = katex_commands()
     bad_cmds: list[str] = []
     for seg in _math_segments(s):
+        if not re.search(r"[0-9A-Za-z\\]", seg):
+            out.append(f"{name}に中身のない数式（${seg}$）がある")
+        if _ZERO_TERM_RE.search(seg):
+            out.append(f"{name}の数式 ${seg.strip()[:30]}$ に「+ 0」のような不要な項がある")
         short = seg.strip().replace("\n", " ")[:30]
         if "\n" in seg.strip() and "\\begin" not in seg and "\\\\" not in seg:
             out.append(f"{name}の数式 ${short}…$ の中で改行している")

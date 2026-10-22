@@ -442,7 +442,9 @@ class AnswerStyleLLM(OracleLLM):
                    "boxed": {"work": f"計算すると \\boxed{{{ans}}}", "answer": ","},
                    # 実機の gemma4:e4b：answer 欄が崩れ、work の最後は正しい
                    "garbled": {"work": f"底の変換をして\nS = {ans}", "answer": f"@{ans}"},
-                   "unreadable": {"work": "わからない", "answer": "わかりません"}}[self.style]
+                   "unreadable": {"work": "わからない", "answer": "わかりません"},
+                   # 度で答える問題に弧度法で答える（実機の gemma4:e4b がベクトルのなす角で pi/6 と答えていた）
+                   "radians": {"work": "...", "answer": f"({ans})*pi/180"}}[self.style]
         return out
 
 
@@ -668,7 +670,7 @@ class SloppyLLM(OracleLLM):
 def test_broken_notation_is_normalized_or_sent_back_for_fixing(settings, sessions, sandbox):
     # 直せる崩れ（度の記号の揺れ・\\sin）は機械的に直して合格
     def degrees(out):
-        return {**out, "explanation": out["explanation"].replace("まず", "角は $30^\\top$。\\\\sin を使う。まず")}
+        return {**out, "explanation": out["explanation"].replace("まず", "角は $30^\\top$。$\\\\sin x$ を使う。まず")}
 
     llm = SloppyLLM(sessions, degrees)
     add_job(sessions, scope="tmpl:m2-explog-base", count=1)
@@ -721,3 +723,94 @@ def test_impossible_distractors_are_not_offered(sandbox):
 def all_jobs(sessions):
     with sessions() as s:
         return list(s.execute(select(Job).order_by(Job.id)).scalars())
+
+
+def test_degree_answer_given_in_radians_is_accepted(settings, sessions, sandbox):
+    add_job(sessions, scope="tmpl:mc-vec-angle", format="input", count=1)
+    make_worker(settings, sessions, sandbox, AnswerStyleLLM(sessions, "radians")).run_once()
+    p = problems(sessions, status="ready")[0]
+    assert any("弧度法" in e["summary"] for e in p.verification if e["step"] == "検証")
+    # 子供のキーボード入力の採点でも同じ
+    from quizapp.subjects.math import MathSubject
+
+    deg = int(p.answer["srepr"][8:-1])
+    assert MathSubject().grade(sandbox, p, f"{deg}*pi/180").correct
+    assert not MathSubject().grade(sandbox, p, f"{deg + 30}*pi/180").correct
+
+
+class PricedApi(OracleLLM):
+    """API の提供元のふり。呼び出しごとに 0.01 ドルかかる。"""
+
+    budget_check = None
+
+    def chat_json(self, model, system, user, schema, **kw):
+        if self.budget_check is not None:
+            self.budget_check()
+        out = super().chat_json(model, system, user, schema, **kw)
+        self.priced = getattr(self, "priced", []) + [{"model": f"anthropic/{model}", "label": "", "cost_usd": 0.01,
+                                                         "eval_s": 1.0, "load_s": 0.0}]
+        return out
+
+    def pop_calls(self):
+        calls, self.priced = getattr(self, "priced", []), []
+        return calls
+
+
+def test_api_and_ollama_lanes_and_monthly_budget(settings, sessions, sandbox):
+    """API の依頼と Ollama の依頼は別の順番待ち。API の利用額を記録し、月の上限に達したら止める。"""
+    from quizapp.db import kv_set
+    from quizapp.llm import LLMRouter
+    from quizapp.runtime import api_spend, month_key, save_api_limits
+
+    api = PricedApi(sessions)
+    ollama_job = add_job(sessions, count=1)
+    api_job = add_job(sessions, count=1, gen_model="anthropic/claude-haiku-5-5",
+                      verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w_api = Worker(settings, sessions, LLMRouter(OracleLLM(sessions), {"anthropic": api}), sandbox,
+                   rng=random.Random(1), lane="api")
+    assert w_api.next_job_id() == api_job
+    w_api.run_once()
+    assert job(sessions, api_job).status == "done" and job(sessions, ollama_job).status == "pending"
+    j = job(sessions, api_job)
+    assert j.api_cost_usd == pytest.approx(0.03)  # 作成・検証・見直しの 3 回
+    with sessions() as s:
+        assert api_spend(s)[month_key(settings)] == pytest.approx(0.03)
+    w_ollama = Worker(settings, sessions, OracleLLM(sessions), sandbox, rng=random.Random(1), lane="ollama")
+    w_ollama.last_backup_check = 1e18
+    assert w_ollama.next_job_id() == ollama_job
+    # 月の上限（画面で変えた値）に達したら、API の依頼は「上限に達しました」で止まる
+    with sessions.begin() as s:
+        save_api_limits(s, "0.05", "0")
+        kv_set(s, "api_spend", '{"%s": 0.05}' % month_key(settings))
+    over = add_job(sessions, count=1, gen_model="anthropic/claude-haiku-5-5",
+                   verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w_api.run_once()
+    assert job(sessions, over).status == "failed" and "上限" in job(sessions, over).error
+    assert problems(sessions, status="draft") == []
+    # 1 回の依頼の上限
+    with sessions.begin() as s:
+        save_api_limits(s, "100", "0.015")
+    capped = add_job(sessions, count=3, gen_model="anthropic/claude-haiku-5-5",
+                     verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w_api.run_once()
+    assert job(sessions, capped).status == "failed" and "この依頼" in job(sessions, capped).error
+
+
+def test_api_lane_pauses_while_unavailable(settings, sessions, sandbox):
+    """API の順番待ちは、API や sandbox が止まっている間は待つ（料金のかかる呼び出しをすぐに繰り返さない）。"""
+    from quizapp.llm import LLMRouter
+
+    api = PricedApi(sessions)
+    jid = add_job(sessions, count=1, gen_model="anthropic/claude-haiku-5-5",
+                  verify_model="anthropic/claude-haiku-5-5", verify_count=1)
+    w = Worker(settings, sessions, LLMRouter(OracleLLM(sessions), {"anthropic": api}), sandbox,
+               rng=random.Random(1), lane="api")
+    sandbox.up = False
+    assert w.run_once()
+    assert job(sessions, jid).status == "waiting"
+    calls = len(api.calls)
+    assert not w.run_once()  # 待ち時間の間は手をつけない
+    assert len(api.calls) == calls
+    sandbox.up = True
+    w.unavailable_until = 0
+    assert w.run_once() and job(sessions, jid).status == "done"

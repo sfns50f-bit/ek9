@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from typing import Any
 
@@ -24,8 +25,26 @@ from . import backup
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import Job, Passage, Problem, dumps, init_db, kv_json, kv_set, utcnow
-from .llm import LLMCancelled, LLMError, LLMModelMissing, LLMRouter, LLMUnavailable, OllamaClient
-from .runtime import ModelPlan, apply_plan, plan_for_job, resolve_think, think_settings
+from .llm import (
+    LLMBudgetExceeded,
+    LLMCancelled,
+    LLMError,
+    LLMModelMissing,
+    LLMRouter,
+    LLMUnavailable,
+    OllamaClient,
+)
+from .runtime import (
+    ModelPlan,
+    add_api_spend,
+    api_limits,
+    api_spend,
+    apply_plan,
+    month_key,
+    plan_for_job,
+    resolve_think,
+    think_settings,
+)
 from .sandbox_client import SandboxClient, SandboxUnavailable
 from .subjects import get_subject
 from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit, VerifyResult
@@ -39,6 +58,10 @@ HEARTBEAT_SECONDS = 60
 LLM_CALLS_KEEP = 40
 VERIFY_STEP = "検証"
 REVIEW_STEP = "解説の見直し"
+# Ollama の依頼と API の依頼は別のスレッドで同時に処理する。kv の読み書き（呼び出しの記録・利用額）は 1 つずつ
+_KV_LOCK = threading.Lock()
+# 順番待ちの分け方：ollama＝作成役・検証役のどれかが Ollama のモデル、api＝全部 API のモデル、None＝両方（テスト用）
+LANES = ("ollama", "api")
 TEST_ATTEMPTS = 3  # 検証のテストで、検証の段階まで届く下書きを作るまでに試す回数
 
 
@@ -48,7 +71,9 @@ class Cancelled(Exception):
 
 class Worker:
     def __init__(self, settings: Settings, sessions: sessionmaker[Session], llm: Any,
-                 sandbox: SandboxClient, rng: random.Random | None = None) -> None:
+                 sandbox: SandboxClient, rng: random.Random | None = None, lane: str | None = None) -> None:
+        self.lane = lane
+        self.status_key = "worker_api" if lane == "api" else "worker"
         self.settings = settings
         self.sessions = sessions
         self.llm = llm
@@ -69,7 +94,7 @@ class Worker:
             return
         self._last_status, self._last_status_at = (text, job_id), now
         with self.sessions.begin() as s:
-            kv_set(s, "worker", dumps({"text": text, "job_id": job_id, "at": utcnow().isoformat()}))
+            kv_set(s, self.status_key, dumps({"text": text, "job_id": job_id, "at": utcnow().isoformat()}))
 
     def check_ollama(self, force: bool = False) -> bool:
         """Ollama の状態とダウンロード済みモデルを kv に記録する（web はこれを表示するだけ）。"""
@@ -123,12 +148,16 @@ class Worker:
         calls = self.llm.pop_calls() if hasattr(self.llm, "pop_calls") else []
         if not calls:
             return
-        with self.sessions.begin() as s:
+        cost = sum(float(c.get("cost_usd") or 0) for c in calls)
+        with _KV_LOCK, self.sessions.begin() as s:
             kept = (kv_json(s, "llm_calls", []) or []) + calls
             kv_set(s, "llm_calls", dumps(kept[-LLM_CALLS_KEEP:]))
+            if cost:
+                add_api_spend(self.settings, s, cost)  # 月ごとの API の利用額
             job = s.get(Job, job_id) if job_id is not None else None
             if job is None:
                 return
+            job.api_cost_usd = round((job.api_cost_usd or 0.0) + cost, 6)
             for c in calls:
                 role = "verify" if c.get("label") in ("検証", "見直し") else "gen"  # 解説の見直しは検証の時間に数える
                 setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
@@ -158,7 +187,10 @@ class Worker:
         with self.sessions() as s:
             for job in s.execute(select(Job).where(Job.status.in_(OPEN_STATUSES))
                                  .order_by(Job.created_at, Job.id)).scalars():
-                if ollama_ok or not plan_for_job(self.settings, s, job).needs_ollama:
+                needs = plan_for_job(self.settings, s, job).needs_ollama
+                if self.lane == "api" and needs or self.lane == "ollama" and not needs:
+                    continue  # もう一方の順番待ちの依頼
+                if ollama_ok or not needs:
                     return job.id
         return None
 
@@ -453,20 +485,27 @@ class Worker:
 
     def run_once(self) -> bool:
         """1 件の依頼を処理する。仕事がなければ False。"""
-        self.maybe_backup()
-        job_id = self.next_job_id(self.check_ollama())
+        if self.lane == "api" and time.monotonic() < self.unavailable_until:
+            # API が混み合っている・sandbox が止まっているときは、待ち時間が過ぎるまで次の依頼に手をつけない
+            # （すぐに取りかかると、料金のかかる呼び出しを繰り返してしまう）
+            return False
+        if self.lane != "api":  # API の順番待ちは Ollama の状態を見ない。バックアップも Ollama 側でだけ取る
+            self.maybe_backup()
+        job_id = self.next_job_id(self.check_ollama() if self.lane != "api" else True)
         if job_id is None:
             return False
         if hasattr(self.llm, "should_abort"):
             # 呼び出し中でも取り消しを確かめる（1 秒に 1 回まで。接続を切ると Ollama も生成をやめる）
             self.llm.should_abort = self._throttled_cancel_check(job_id)
+        if hasattr(self.llm, "budget_check"):
+            self.llm.budget_check = lambda: self.check_api_budget(job_id)
         try:
             self.process(job_id)
         except (Cancelled, LLMCancelled):
             log.info("job %s cancelled", job_id)
             self.finish_cancel(job_id)
             self.set_status(f"依頼 #{job_id} を取り消しました", job_id)
-        except LLMModelMissing as exc:  # 待っても直らないので失敗で止める
+        except (LLMModelMissing, LLMBudgetExceeded) as exc:  # 待っても直らないので失敗で止める
             log.warning("job %s failed: %s", job_id, exc)
             with self.sessions.begin() as s:  # 検証できない下書きは捨てる（合格済みの問題は残す）
                 self._discard_drafts(s, job_id)
@@ -488,6 +527,19 @@ class Worker:
                 self.llm.should_abort = None
         return True
 
+    def check_api_budget(self, job_id: int) -> None:
+        """API を呼ぶ前に、今月の利用額と、この依頼の利用額が上限に達していないかを確かめる。"""
+        pending = self.llm.pending_cost() if hasattr(self.llm, "pending_cost") else 0.0  # まだ集計していない分
+        with self.sessions() as s:
+            monthly, per_job = api_limits(self.settings, s)
+            spent = api_spend(s).get(month_key(self.settings), 0.0) + pending
+            job_cost = (s.get(Job, job_id).api_cost_usd or 0.0) + pending
+        if spent >= monthly:
+            raise LLMBudgetExceeded(f"今月の API の利用額が上限（${monthly:.2f}）に達しました（${spent:.2f}）。"
+                                    "「状態 → モデルと思考モード」で上限を変えられます")
+        if per_job > 0 and job_cost >= per_job:
+            raise LLMBudgetExceeded(f"この依頼の API の利用額が上限（${per_job:.2f}）に達しました（${job_cost:.2f}）")
+
     def _throttled_cancel_check(self, job_id: int):  # noqa: ANN202
         last = {"at": 0.0, "value": False}
 
@@ -499,9 +551,10 @@ class Worker:
 
         return check
 
-    def run_forever(self) -> None:
-        self.recover()
-        log.info("worker started")
+    def run_forever(self, recover: bool = True) -> None:
+        if recover:
+            self.recover()
+        log.info("worker started (lane=%s)", self.lane or "all")
         while True:
             try:
                 worked = self.run_once()
@@ -513,10 +566,26 @@ class Worker:
                     waiting = s.execute(select(func.count()).select_from(Job)
                                         .where(Job.status.in_(OPEN_STATUSES))).scalar_one()
                 if waiting and time.monotonic() < self.unavailable_until:
-                    self.set_status(f"Ollama につながるのを待っています（順番待ち {waiting} 件）")
+                    what = "API（または sandbox）" if self.lane == "api" else "Ollama"
+                    self.set_status(f"{what}につながるのを待っています（順番待ち {waiting} 件）")
                 else:
                     self.set_status("待機中（依頼なし）")
                 time.sleep(3)
+
+
+def make_llm(settings: Settings) -> LLMRouter:
+    """Ollama と、設定されていれば API の提供元を登録したクライアント（順番待ちごとに 1 つずつ作る）。"""
+    ollama = OllamaClient(settings.ollama_base_url, timeout=settings.llm_timeout, num_ctx=settings.num_ctx,
+                          num_predict=settings.num_predict, keep_alive=settings.keep_alive, think=settings.think)
+    providers: dict[str, Any] = {}
+    if settings.anthropic_api_key:  # API の提供元を足すときはここに登録する
+        from .llm_anthropic import AnthropicClient, parse_prices
+
+        providers["anthropic"] = AnthropicClient(
+            settings.anthropic_api_key, models=[m.strip() for m in settings.anthropic_models.split(",") if m.strip()],
+            prices=parse_prices(settings.anthropic_prices), effort=settings.anthropic_effort,
+            max_tokens=settings.anthropic_max_tokens, timeout=settings.llm_timeout)
+    return LLMRouter(ollama, providers)
 
 
 def main() -> None:
@@ -525,10 +594,17 @@ def main() -> None:
     settings = Settings()
     ensure_or_exit(settings.data_dir, skip=settings.skip_data_check)
     sessions = init_db(settings.database_path)
-    ollama = OllamaClient(settings.ollama_base_url, timeout=settings.llm_timeout, num_ctx=settings.num_ctx,
-                          num_predict=settings.num_predict, keep_alive=settings.keep_alive, think=settings.think)
-    llm = LLMRouter(ollama)  # API の提供元を足すときはここに登録する
-    Worker(settings, sessions, llm, SandboxClient(settings.sandbox_url)).run_forever()
+    sandbox = SandboxClient(settings.sandbox_url)
+    workers = {lane: Worker(settings, sessions, make_llm(settings), sandbox, lane=lane) for lane in LANES}
+    workers["ollama"].recover()
+    # 画面に出す API の情報（キーがあるか、選べるモデル）。キーそのものは書かない
+    with sessions.begin() as s:
+        kv_set(s, "api", dumps({"configured": bool(settings.anthropic_api_key),
+                                "models": workers["api"].llm.api_models()}))
+    # Ollama の依頼と API の依頼は、処理する頭が別なので同時に進める
+    threading.Thread(target=workers["api"].run_forever, kwargs={"recover": False}, daemon=True,
+                     name="worker-api").start()
+    workers["ollama"].run_forever(recover=False)
 
 
 if __name__ == "__main__":

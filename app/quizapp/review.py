@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from typing import Any
+from datetime import datetime
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,9 +37,19 @@ def allowed(password: str, cookie: str | None) -> bool:
 
 
 def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
-          status: str = "ready", limit: int = 200, offset: int = 0) -> list[Problem]:
+          status: str = "ready", since: datetime | None = None, until: datetime | None = None,
+          id_from: int = 0, id_to: int = 0, limit: int = 200, offset: int = 0) -> list[Problem]:
+    """絞り込み。since / until は作った日時（UTC。until は含まない）、id_from / id_to は管理番号（両端を含む）。"""
     status = status if status in STATUSES else "ready"
     q = select(Problem).where(Problem.status == ("ready" if status == "issues" else status))
+    if since is not None:
+        q = q.where(Problem.created_at >= since)
+    if until is not None:
+        q = q.where(Problem.created_at < until)
+    if id_from > 0:
+        q = q.where(Problem.id >= id_from)
+    if id_to > 0:
+        q = q.where(Problem.id <= id_to)
     if subject:
         q = q.where(Problem.subject == subject)
     if unit:
@@ -111,7 +122,8 @@ def mistake_label(problem: Problem, key: str | None) -> str:
     return (sub.mistakes.get(key or "", key or "") if sub else key or "") or "—"
 
 
-def to_markdown(problems: list[Problem], filters: dict[str, str]) -> str:
+def to_markdown(problems: list[Problem], filters: dict[str, str],
+                when: Callable[[datetime], str] = lambda dt: dt.strftime("%Y/%m/%d %H:%M")) -> str:
     """品質チェック用の Markdown。冒頭に依頼文、各問に問題文・選択肢・正解・解説・ヒント・モデル。"""
     lines = [EXPORT_REQUEST, ""]
     shown = [f"{k}: {v}" for k, v in filters.items() if v]
@@ -120,7 +132,8 @@ def to_markdown(problems: list[Problem], filters: dict[str, str]) -> str:
     for n, p in enumerate(problems, 1):
         lab = labels(p)
         lines += [f"## 問題 {n}（#{p.id}）{lab['subject']}／{lab['unit']}／{lab['subunit']}",
-                  "", f"- レベル：{lab['level']}／形式：{lab['format']}",
+                  "", f"- 作成日時：{when(p.created_at) if p.created_at else '—'}／管理番号：#{p.id}",
+                  f"- レベル：{lab['level']}／形式：{lab['format']}",
                   f"- 作成役：{p.gen_model or '—'}／検証役：{p.verify_models or '—'}", ""]
         if p.passage is not None and p.passage.body:
             lines += ["### 本文", "", p.passage.body.strip(), ""]

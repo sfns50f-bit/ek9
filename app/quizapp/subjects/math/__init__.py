@@ -207,6 +207,8 @@ class MathSubject(Subject):
         shown = res.get("given", {}).get("latex", tried[-1])
         if res.get("equal"):
             return VerifyResult(True, f"{model}: ${shown}$（一致）", work, raw=raw)
+        if _same_angle_in_radians(sandbox, ans, tried[-1]):
+            return VerifyResult(True, f"{model}: ${shown}$（弧度法で答えたが、同じ角なので一致とみなす）", work, raw=raw)
         return VerifyResult(False, f"{model}: ${shown}$（正解 ${ans['latex']}$ と不一致）", work, "solver_mismatch",
                             raw=raw)
 
@@ -257,7 +259,39 @@ class MathSubject(Subject):
         if res.get("approx"):
             return Grade(False, retry_message="小数の近似値ではなく、分数や √ を使った正確な値で答えてください")
         shown = res.get("given", {}).get("latex", "")
-        return Grade(bool(res.get("equal")), response_display=f"${shown}$" if shown else text)
+        equal = bool(res.get("equal")) or _same_angle_in_radians(sandbox, ans, text)
+        return Grade(equal, response_display=f"${shown}$" if shown else text)
+
+
+_DEGREES_SREPR_RE = re.compile(r"^Integer\((-?\d+)\)$")
+
+
+def _radian_srepr(ans: dict[str, Any]) -> str | None:
+    """答えが度（120^\\circ など）の問題で、同じ角を弧度法で表した式（sympy の srepr）。違えば None。
+
+    web からも使うので sympy を使わずに作る（120° → 2π/3 は Mul(Rational(2, 3), pi)）。
+    """
+    import math
+
+    m = _DEGREES_SREPR_RE.match(str(ans.get("srepr", "")))
+    if not m or not str(ans.get("latex", "")).rstrip().endswith("^\\circ"):
+        return None
+    deg = int(m.group(1))
+    g = math.gcd(deg, 180)
+    p, q = deg // g, 180 // g
+    return f"Mul(Rational({p}, {q}), pi)" if q != 1 else f"Mul(Integer({p}), pi)"
+
+
+def _same_angle_in_radians(sandbox: Any, ans: dict[str, Any], text: str) -> bool:
+    """度で答える問題に、同じ角を弧度法（π/6 など）で答えたか。検証役は度で答えるよう頼んでも弧度法で答えることがあった。"""
+    alt = _radian_srepr(ans)
+    if alt is None or not text:
+        return False
+    try:
+        res = sandbox.compare(ans["kind"], {"srepr": alt}, {"text": text}, var=ans.get("var", "x"))
+    except Exception:
+        return False
+    return bool(res.get("ok") and res.get("equal"))
 
 
 def _check_text(inst: Any, answer_latex: str, question: str, explanation: str, hint: str,

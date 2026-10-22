@@ -64,10 +64,10 @@ def test_web_process_does_not_load_the_llm_client():
     root = Path(__file__).resolve().parents[1]
     code = ("import sys; sys.path[:0]=['app']; import quizapp.web, quizapp.stock, quizapp.review;"
             " from quizapp.subjects import all_subjects; [s.units() for s in all_subjects()];"
-            " print('quizapp.llm' in sys.modules, 'sympy' in sys.modules)")
+            " print('quizapp.llm' in sys.modules, 'sympy' in sys.modules, 'anthropic' in sys.modules)")
     out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=True)
-    # sympy も読まない（小単元の一覧は templates.py を ast で読む。web のメモリと起動時間のため）
-    assert out.stdout.strip() == "False False"
+    # sympy も読まない（小単元の一覧は templates.py を ast で読む。web のメモリと起動時間のため）。API の SDK も読まない
+    assert out.stdout.strip() == "False False False"
 
 
 def test_blank_count_uses_default(client, settings, sessions, sandbox):
@@ -593,3 +593,39 @@ def test_templates_have_no_nested_forms():
         parser = Depth()
         parser.feed(path.read_text())
         assert parser.max <= 1, path.name
+
+
+def test_review_filters_by_date_and_id_and_export_shows_creation_date(client, settings, sessions, sandbox):
+    """最近作った問題だけを書き出せる（作った日・管理番号）。書き出しに作成日時が入る。"""
+    from datetime import datetime
+
+    stock_up(settings, sessions, sandbox, count=3)
+    a, b, c = [p.id for p in all_rows(sessions, Problem)]
+    with sessions.begin() as s:
+        s.get(Problem, a).created_at = datetime(2026, 10, 10, 3, 0)   # 日本時間 10/10 12:00
+        s.get(Problem, b).created_at = datetime(2026, 10, 20, 16, 0)  # 日本時間 10/21 01:00
+        s.get(Problem, c).created_at = datetime(2026, 10, 22, 3, 0)
+    md = client.get("/review/export.md?date_from=2026-10-21&date_to=2026-10-21").text
+    assert f"#{b}" in md and f"#{a}" not in md and f"#{c}" not in md
+    assert "作成日時：2026/10/21 01:00" in md and "作成日: 2026-10-21〜2026-10-21" in md
+    md = client.get(f"/review/export.md?id_from={b}").text
+    assert f"#{b}）" in md and f"#{c}）" in md and f"#{a}）" not in md
+    text = client.get(f"/review?id_from={b}&id_to={b}").text
+    assert f"#{b}" in text and "作成 2026/10/21 01:00" in text and f"#{c}<" not in text
+
+
+def test_api_section_limits_and_models(client, settings, sessions):
+    from quizapp.db import dumps, kv_set
+    from quizapp.runtime import api_limits, month_key
+
+    assert "API は使えるように設定されていません" in client.get("/status/models").text
+    with sessions.begin() as s:
+        kv_set(s, "api", dumps({"configured": True, "models": ["anthropic/claude-haiku-5-5"]}))
+        kv_set(s, "api_spend", dumps({month_key(settings): 1.25}))
+    text = client.get("/status/models").text
+    assert "$1.25" in text and "$5.00" in text and "anthropic/claude-haiku-5-5" in text
+    client.post("/status/api", data={"monthly": "10", "per_job": "0.5"})
+    with sessions() as s:
+        assert api_limits(settings, s) == (10.0, 0.5)
+    assert 'value="anthropic/claude-haiku-5-5"' in client.get("/generate").text  # 作る画面で選べる
+    assert "今月 $1.25" in client.get("/status").text
