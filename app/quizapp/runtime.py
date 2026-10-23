@@ -6,6 +6,7 @@ worker は依頼を処理するたびに読み直すので、次の依頼から�
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -27,8 +28,12 @@ def provider_of(model: str) -> tuple[str, str]:
     return "ollama", model
 
 
-KEYS = ("gen_model", "verify_model", "verify_count", "verify_model_2", "review")
+KEYS = ("gen_model", "verify_model", "verify_count", "verify_model_2", "review", "review_model")
 MAX_VERIFY_COUNT = 5
+# どの科目にもある役割（科目だけの役割は Subject.model_roles。英語の「本文作成」など）
+ROLES = {"gen": "作成", "verify": "検証", "review": "見直し"}
+# 科目ごとの設定（kv の subject_models）で、モデルのほかに持つもの：API の 1 日の上限（金額・回数。0 は上限なし）
+DAILY_KEYS = {"api_daily_usd": "API の 1 日の上限（ドル）", "api_daily_calls": "API の 1 日の上限（呼び出しの回数）"}
 
 
 @dataclass(frozen=True)
@@ -37,8 +42,27 @@ class ModelPlan:
     verify_model: str
     verify_count: int
     verify_model_2: str  # 空なら使わない。使うときは 1 回だけ解かせる
-    # 解説の見直し：検証役が全回一致したあと、検証役のモデルに解説を読ませて誤りを探させる（1 回だけ）
+    # 解説の見直し：検証役が全回一致したあと、見直し役のモデルに解説を読ませて誤りを探させる（1 回だけ）
     review: bool = True
+    review_model: str = ""  # 空なら検証役のモデル
+    # 科目だけの役割のモデル（(役割, モデル) の並び。英語の本文作成など）。設定がなければ作成役のモデル
+    extra: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def reviewer(self) -> str:
+        return self.review_model or self.verify_model
+
+    def model_for(self, role: str) -> str:
+        """役割のモデル。gen / verify / review と、科目だけの役割（なければ作成役のモデル）。"""
+        if role == "verify":
+            return self.verify_model
+        if role == "review":
+            return self.reviewer
+        return dict(self.extra).get(role) or self.gen_model
+
+    @property
+    def models(self) -> dict[str, str]:
+        return {"gen": self.gen_model, "verify": self.verify_model, "review": self.reviewer, **dict(self.extra)}
 
     @property
     def verify_runs(self) -> list[str]:
@@ -50,15 +74,24 @@ class ModelPlan:
 
     @property
     def needs_ollama(self) -> bool:
-        return any(provider_of(m)[0] == "ollama" for m in [self.gen_model, *self.verify_runs])
+        used = [self.gen_model, *self.verify_runs, *(m for _r, m in self.extra)]
+        if self.review:
+            used.append(self.reviewer)
+        return any(provider_of(m)[0] == "ollama" for m in used if m)
 
     @property
     def verify_label(self) -> str:
         label = f"{self.verify_model} ×{self.verify_count}"
         return label + (f" ＋ {self.verify_model_2} ×1" if self.verify_model_2 else "")
 
+    @property
+    def same_gen_verify(self) -> bool:
+        """作成役と検証役が同じモデル（見落としが重なりやすいので画面で注意を出す）。"""
+        return self.gen_model == self.verify_model
+
 
 def overrides(session: Session) -> dict[str, str]:
+    """全体の設定（既定値）。前の版の設定（全体で 1 つ）がそのまま既定値になる。"""
     return {key: kv_get(session, f"setting_{key}") for key in KEYS}
 
 
@@ -66,6 +99,36 @@ def save_overrides(session: Session, values: dict[str, str]) -> None:
     for key in KEYS:
         if key in values:
             kv_set(session, f"setting_{key}", values[key].strip())
+
+
+def subject_settings(session: Session) -> dict[str, dict[str, str]]:
+    """科目ごとの上書き {科目ID: {役割: モデル, "api_daily_usd": …}}。空の値は「全体の設定のまま」。"""
+    data = kv_json(session, "subject_models", {}) or {}
+    return {str(k): {str(r): str(m) for r, m in v.items() if str(m).strip()} for k, v in data.items()
+            if isinstance(v, dict)}
+
+
+def save_subject_settings(session: Session, subject_id: str, values: dict[str, str]) -> None:
+    """科目の上書きを保存する。values に入れなかった役割は消す（＝全体の設定に戻す）。"""
+    data = subject_settings(session)
+    data[subject_id] = {k: v.strip()[:128] for k, v in values.items() if v and v.strip()}
+    if not data[subject_id]:
+        data.pop(subject_id)
+    kv_set(session, "subject_models", dumps(data))
+
+
+def daily_limits(session: Session, subject_id: str) -> tuple[float, int]:
+    """科目の API の 1 日の上限（ドル、回数）。0 は上限なし。"""
+    o = subject_settings(session).get(subject_id, {})
+    try:
+        usd = max(0.0, float(o.get("api_daily_usd") or 0))
+    except ValueError:
+        usd = 0.0
+    try:
+        calls = max(0, int(o.get("api_daily_calls") or 0))
+    except ValueError:
+        calls = 0
+    return (usd if math.isfinite(usd) else 0.0), calls
 
 
 def _count(value: str, default: int) -> int:
@@ -76,29 +139,47 @@ def _count(value: str, default: int) -> int:
     return max(1, min(MAX_VERIFY_COUNT, n))
 
 
-def model_plan(settings: Settings, session: Session) -> ModelPlan:
+def model_plan(settings: Settings, session: Session, subject: object | None = None) -> ModelPlan:
+    """全体の設定（空の欄は .env）に、科目の上書きを重ねたもの。subject は Subject（なければ全体の設定）。"""
     o = overrides(session)
     v2 = o["verify_model_2"]
+    gen = o["gen_model"] or settings.gen_model
+    verify = o["verify_model"] or settings.verify_model
+    review_model = o["review_model"]
+    extra: list[tuple[str, str]] = []
+    if subject is not None:
+        mine = subject_settings(session).get(getattr(subject, "id", ""), {})
+        gen = mine.get("gen") or gen
+        verify = mine.get("verify") or verify
+        review_model = mine.get("review") or review_model
+        extra = [(role, mine[role]) for role in getattr(subject, "model_roles", {}) if mine.get(role)]
     return ModelPlan(
-        gen_model=o["gen_model"] or settings.gen_model,
-        verify_model=o["verify_model"] or settings.verify_model,
+        gen_model=gen,
+        verify_model=verify,
         verify_count=_count(o["verify_count"], settings.verify_count),
         # 画面で「使わない」を選んだときは "-" を保存する
         verify_model_2="" if v2 == "-" else (v2 or settings.verify_model_2),
         review=o["review"] != "off",
+        review_model="" if review_model == verify else review_model,
+        extra=tuple(extra),
     )
 
 
 def plan_for_job(settings: Settings, session: Session, job: object) -> ModelPlan:
-    """依頼で選んだモデル。依頼に記録がなければ（前の版で作った依頼）今の設定。"""
+    """依頼で選んだモデル。依頼に記録がなければ（前の版で作った依頼）今の設定（その科目の設定）。"""
     if not getattr(job, "gen_model", ""):
-        return model_plan(settings, session)
+        from .subjects import get_subject
+
+        return model_plan(settings, session, get_subject(getattr(job, "subject", "")))
+    extra = getattr(job, "extra_models", {}) or {}
     return ModelPlan(
         gen_model=job.gen_model,  # type: ignore[attr-defined]
         verify_model=job.verify_model or settings.verify_model,  # type: ignore[attr-defined]
         verify_count=_count(str(job.verify_count), settings.verify_count),  # type: ignore[attr-defined]
         verify_model_2=job.verify_model_2,  # type: ignore[attr-defined]
         review=bool(getattr(job, "explanation_review", True)),
+        review_model=getattr(job, "review_model", "") or "",
+        extra=tuple(sorted(extra.items())),
     )
 
 
@@ -109,6 +190,8 @@ def apply_plan(job: object, plan: ModelPlan) -> None:
     job.verify_count = plan.verify_count  # type: ignore[attr-defined]
     job.verify_model_2 = plan.verify_model_2  # type: ignore[attr-defined]
     job.explanation_review = plan.review  # type: ignore[attr-defined]
+    job.review_model = plan.review_model  # type: ignore[attr-defined]
+    job.extra_models_json = dumps(dict(plan.extra))  # type: ignore[attr-defined]
 
 
 # --- API の利用額（ドル） ----------------------------------------------------------
@@ -135,6 +218,32 @@ def add_api_spend(settings: Settings, session: Session, usd: float) -> None:
     kv_set(session, "api_spend", dumps(data))
 
 
+def day_key(settings: Settings, now: datetime | None = None) -> str:
+    from zoneinfo import ZoneInfo
+
+    now = now or datetime.now(timezone.utc)
+    return now.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d")
+
+
+API_DAILY_KEEP = 31  # 科目ごとの 1 日の記録を残す日数
+
+
+def api_daily(session: Session) -> dict[str, dict[str, dict[str, float]]]:
+    """科目ごと・日ごとの API の利用 {"2026-10-24": {"english": {"usd": 0.12, "calls": 30}}}（日本時間の日）。"""
+    data = kv_json(session, "api_daily", {}) or {}
+    return {str(d): {str(sub): {"usd": float(v.get("usd", 0)), "calls": float(v.get("calls", 0))}
+                     for sub, v in subs.items()} for d, subs in data.items() if isinstance(subs, dict)}
+
+
+def add_api_daily(settings: Settings, session: Session, subject_id: str, usd: float, calls: int) -> None:
+    data = api_daily(session)
+    today = data.setdefault(day_key(settings), {}).setdefault(subject_id, {"usd": 0.0, "calls": 0.0})
+    today["usd"] = round(today["usd"] + usd, 6)
+    today["calls"] += calls
+    keep = sorted(data)[-API_DAILY_KEEP:]
+    kv_set(session, "api_daily", dumps({d: data[d] for d in keep}))
+
+
 def api_limits(settings: Settings, session: Session) -> tuple[float, float]:
     """(月の上限, 1 回の依頼の上限)。画面で変えた値があればそれ、なければ .env。依頼の上限 0 は上限なし。"""
     def value(key: str, default: float) -> float:
@@ -147,8 +256,6 @@ def api_limits(settings: Settings, session: Session) -> tuple[float, float]:
 
 
 def save_api_limits(session: Session, monthly: str, per_job: str) -> None:
-    import math
-
     for key, text in (("api_monthly_limit", monthly), ("api_job_limit", per_job)):
         try:
             value = float(text)

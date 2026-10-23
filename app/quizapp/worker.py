@@ -36,12 +36,17 @@ from .llm import (
 )
 from .runtime import (
     ModelPlan,
+    add_api_daily,
     add_api_spend,
+    api_daily,
     api_limits,
     api_spend,
     apply_plan,
+    daily_limits,
+    day_key,
     month_key,
     plan_for_job,
+    provider_of,
     resolve_think,
     think_settings,
 )
@@ -73,6 +78,7 @@ class Worker:
     def __init__(self, settings: Settings, sessions: sessionmaker[Session], llm: Any,
                  sandbox: SandboxClient, rng: random.Random | None = None, lane: str | None = None) -> None:
         self.lane = lane
+        self.last_subject = ""  # 直前に処理した依頼の科目（同じ科目の依頼を続けて処理する）
         self.status_key = "worker_api" if lane == "api" else "worker"
         self.settings = settings
         self.sessions = sessions
@@ -157,9 +163,13 @@ class Worker:
             job = s.get(Job, job_id) if job_id is not None else None
             if job is None:
                 return
+            api_calls = sum(1 for c in calls if provider_of(str(c.get("model", "")))[0] != "ollama")
+            if api_calls or cost:  # 科目ごと・日ごとの API の利用（科目の 1 日の上限に使う）
+                add_api_daily(self.settings, s, job.subject, cost, api_calls)
             job.api_cost_usd = round((job.api_cost_usd or 0.0) + cost, 6)
             for c in calls:
-                role = "verify" if c.get("label") in ("検証", "見直し") else "gen"  # 解説の見直しは検証の時間に数える
+                # 解説・本文の見直しは検証の時間に数える
+                role = "verify" if c.get("label") in ("検証", "見直し", "本文の見直し") else "gen"
                 setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
                 setattr(job, f"{role}_eval_s", (getattr(job, f"{role}_eval_s") or 0.0) + float(c.get("eval_s") or 0))
                 setattr(job, f"{role}_load_s", (getattr(job, f"{role}_load_s") or 0.0) + float(c.get("load_s") or 0))
@@ -183,16 +193,24 @@ class Worker:
                     p.level, p.related_units = su.level, ",".join(su.related)
 
     def next_job_id(self, ollama_ok: bool = True) -> int | None:
-        """次に処理する依頼。Ollama につながらないときは、API のモデルだけを使う依頼を先に進める。"""
+        """次に処理する依頼。Ollama につながらないときは、API のモデルだけを使う依頼を先に進める。
+
+        直前に処理した依頼と同じ科目の依頼があれば、そちらを先にする（科目を交互に作ると、科目ごとに
+        モデルが違うときにローカルのモデルの入れ替えが増えるため）。なければ古い順。
+        """
         with self.sessions() as s:
+            ready: list[Job] = []
             for job in s.execute(select(Job).where(Job.status.in_(OPEN_STATUSES))
                                  .order_by(Job.created_at, Job.id)).scalars():
                 needs = plan_for_job(self.settings, s, job).needs_ollama
                 if self.lane == "api" and needs or self.lane == "ollama" and not needs:
                     continue  # もう一方の順番待ちの依頼
                 if ollama_ok or not needs:
-                    return job.id
-        return None
+                    ready.append(job)
+            if not ready:
+                return None
+            same = [j for j in ready if j.subject == self.last_subject]
+            return (same or ready)[0].id
 
     def _job(self, job_id: int) -> Job:
         with self.sessions() as s:
@@ -261,24 +279,51 @@ class Worker:
         found = subject.subunit_map().get(template) if subject else None
         return found[1] if found else None
 
-    def save_drafts(self, job: Job, drafts: list[Draft], plan: ModelPlan) -> None:
+    def save_drafts(self, job: Job, drafts: list[Draft], plan: ModelPlan,
+                    cache: dict[int, Passage] | None = None) -> None:
         with self.sessions.begin() as s:
-            passages: dict[int, Passage] = {}
+            passages = cache if cache is not None else {}
             for draft in drafts:
                 self._add_draft(s, job, draft, plan, passages)
 
+    def passages_for(self, template: str) -> list[dict[str, Any]]:
+        """小単元の本文と、それについている設問（不合格・削除のものを除く）。本文の使い回しに使う。"""
+        with self.sessions() as s:
+            rows = list(s.execute(select(Passage).where(Passage.template == template).order_by(Passage.id)).scalars())
+            questions: dict[int, list[str]] = {}
+            rejected: dict[int, int] = {}
+            for pid, q, status in s.execute(select(Problem.passage_id, Problem.question, Problem.status).where(
+                    Problem.passage_id.in_([r.id for r in rows]))):
+                if status in ("ready", "draft"):
+                    questions.setdefault(pid, []).append(q)
+                elif status == "rejected":
+                    rejected[pid] = rejected.get(pid, 0) + 1
+            return [{"id": r.id, "title": r.title, "body": r.body, "topic": r.topic, "status": r.status,
+                     "gen_model": r.gen_model, "questions": questions.get(r.id, []), "rejected": rejected.get(r.id, 0)}
+                    for r in rows]
+
+    @staticmethod
+    def _passage_row(s: Session, job: Job, p: dict[str, Any] | None, cache: dict[int, Passage]) -> Passage | None:
+        """下書きの本文（dict）の行。同じ dict は 1 つの行にまとめ、{"id": …} はすでにある本文を使う。"""
+        if p is None:
+            return None
+        passage = cache.get(id(p))
+        if passage is not None and passage.id is not None and passage not in s:
+            passage = s.get(Passage, passage.id)  # 前の書き込み（不合格の設問）で保存した本文
+        if passage is None and p.get("id"):
+            passage = s.get(Passage, int(p["id"]))
+        if passage is None:
+            passage = Passage(subject=job.subject, title=str(p.get("title", "")), body=str(p.get("body", "")),
+                              source_title=str(p.get("source_title", "")), source_url=str(p.get("source_url", "")),
+                              template=str(p.get("template", "")), topic=str(p.get("topic", "")),
+                              status=str(p.get("status", "")), gen_model=str(p.get("gen_model", "")),
+                              log_json=dumps(p.get("log", [])))
+            s.add(passage)
+        cache[id(p)] = passage
+        return passage
+
     def _add_draft(self, s: Session, job: Job, draft: Draft, plan: ModelPlan, passages: dict[int, Passage]) -> None:
-        passage = None
-        if draft.passage is not None:
-            # 同じ本文（同じ dict）の問題は 1 つの Passage にまとめる
-            passage = passages.get(id(draft.passage))
-            if passage is None:
-                p = draft.passage
-                passage = Passage(subject=job.subject, title=str(p.get("title", "")), body=str(p.get("body", "")),
-                                  source_title=str(p.get("source_title", "")),
-                                  source_url=str(p.get("source_url", "")))
-                s.add(passage)
-                passages[id(draft.passage)] = passage
+        passage = self._passage_row(s, job, draft.passage, passages)
         su = self._subunit(job.subject, draft.template)
         s.add(Problem(
             subject=job.subject, unit=draft.unit, template=draft.template, format=draft.format,
@@ -290,11 +335,14 @@ class Worker:
             verification_json=dumps(draft.log), gen_model=plan.gen_model,
         ))
 
-    def save_rejected(self, job: Job, subject: Subject, template: str, exc: Rejected, plan: ModelPlan) -> None:
+    def save_rejected(self, job: Job, subject: Subject, template: str, exc: Rejected, plan: ModelPlan,
+                      passage: dict[str, Any] | None = None, cache: dict[int, Passage] | None = None) -> None:
+        """不合格を残す。本文つきの設問なら本文にも結び付ける（本文は後で設問を足すのに使い回せる）。"""
         p = exc.partial
         unit, su = subject.subunit_map().get(template, (None, None))
         with self.sessions.begin() as s:
-            s.add(Problem(
+            row = self._passage_row(s, job, passage, cache if cache is not None else {})
+            s.add(Problem(passage=row,
                 subject=job.subject, unit=unit.id if unit else "", template=template, format=job.format,
                 level=su.level if su else "", related_units=",".join(su.related) if su else "",
                 status="rejected", job_id=job.id, question=str(p.get("question", "")),
@@ -380,7 +428,8 @@ class Worker:
     def _generate_phase(self, job: Job, subject: Subject, templates: list[str], n: int,
                         plan: ModelPlan, label: str) -> None:
         ctx = GenContext(llm=self.llm, sandbox=self.sandbox, gen_model=plan.gen_model, rng=self.rng,
-                         is_test=job.is_test, existing_keys=self.existing_keys)
+                         is_test=job.is_test, existing_keys=self.existing_keys, models=plan.models,
+                         review=plan.review and not job.is_test, passages=self.passages_for)
         order = list(templates)
         self.rng.shuffle(order)
         produced = 0
@@ -413,12 +462,14 @@ class Worker:
             finally:
                 self._save_llm_calls(job.id)
             drafts = made if isinstance(made, list) else [made]
-            # 同じ本文の設問のうち、作成の段階で使えないと分かったものは不合格として残す（ほかは検証へ）
+            # 同じ本文の設問のうち、作成の段階で使えないと分かったものは不合格として残す（ほかは検証へ）。
+            # 本文は同じ行にまとめる（不合格の設問だけの本文も残し、後で設問を足せるようにする）
+            cache: dict[int, Passage] = {}
             for d in drafts:
                 if d.rejected is not None:
-                    self.save_rejected(job, subject, d.template, d.rejected, plan)
+                    self.save_rejected(job, subject, d.template, d.rejected, plan, d.passage, cache)
             drafts = [d for d in drafts if d.rejected is None]
-            self.save_drafts(job, drafts, plan)
+            self.save_drafts(job, drafts, plan, cache)
             produced += len(drafts)
 
     def _verify_phase(self, job: Job, subject: Subject, drafts: list[Problem], plan: ModelPlan,
@@ -431,7 +482,7 @@ class Worker:
         # 検証役に解かせる回数分 → 全回一致したものだけ、検証役のモデルで解説の見直しを 1 回（検証のテストではしない）
         steps = [(model, VERIFY_STEP) for model in plan.verify_runs]
         if plan.review and not job.is_test:
-            steps.append((plan.verify_model, REVIEW_STEP))
+            steps.append((plan.reviewer, REVIEW_STEP))
         done = {d.id: 0 for d in drafts}  # 終わった段階の数
         try:
             for r, (model, step) in enumerate(steps, 1):
@@ -504,6 +555,7 @@ class Worker:
             self.llm.should_abort = self._throttled_cancel_check(job_id)
         if hasattr(self.llm, "budget_check"):
             self.llm.budget_check = lambda: self.check_api_budget(job_id)
+        self.last_subject = self._job(job_id).subject
         try:
             self.process(job_id)
         except (Cancelled, LLMCancelled):
@@ -538,7 +590,18 @@ class Worker:
         with self.sessions() as s:
             monthly, per_job = api_limits(self.settings, s)
             spent = api_spend(s).get(month_key(self.settings), 0.0) + pending
-            job_cost = (s.get(Job, job_id).api_cost_usd or 0.0) + pending
+            job = s.get(Job, job_id)
+            job_cost = (job.api_cost_usd or 0.0) + pending
+            day_usd, day_calls = daily_limits(s, job.subject)
+            today = api_daily(s).get(day_key(self.settings), {}).get(job.subject, {})
+        sub = get_subject(job.subject)
+        name = sub.name if sub else job.subject
+        if day_usd > 0 and today.get("usd", 0.0) + pending >= day_usd:
+            raise LLMBudgetExceeded(f"{name}の今日の API の利用額が上限（${day_usd:.2f}）に達しました"
+                                    f"（${today.get('usd', 0.0) + pending:.2f}）。「状態 → モデルと思考モード」の科目ごとの設定で変えられます")
+        if day_calls > 0 and today.get("calls", 0) >= day_calls:
+            raise LLMBudgetExceeded(f"{name}の今日の API の呼び出しが上限（{day_calls} 回）に達しました。"
+                                    "「状態 → モデルと思考モード」の科目ごとの設定で変えられます")
         if spent >= monthly:
             raise LLMBudgetExceeded(f"今月の API の利用額が上限（${monthly:.2f}）に達しました（${spent:.2f}）。"
                                     "「状態 → モデルと思考モード」で上限を変えられます")

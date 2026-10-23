@@ -72,7 +72,18 @@ class Passage(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     source_title: Mapped[str] = mapped_column(Text, default="")
     source_url: Mapped[str] = mapped_column(Text, default="")
+    # 本文を後から使い回すための記録（英語の読解：同じ本文に設問を足す）。前の版の本文は空
+    template: Mapped[str] = mapped_column(String(64), default="")
+    topic: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="")  # "ok"＝見直しを通った本文
+    gen_model: Mapped[str] = mapped_column(String(128), default="")  # 本文作成役のモデル
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    @property
+    def log(self) -> list[dict[str, Any]]:
+        return _loads(self.log_json, [])
+
+    log_json: Mapped[str] = mapped_column("log", Text, default="[]")  # 本文の作成・点検・見直しの記録
 
 
 class Job(Base):
@@ -107,6 +118,9 @@ class Job(Base):
     verify_count: Mapped[int] = mapped_column(Integer, default=0)
     verify_model_2: Mapped[str] = mapped_column(String(128), default="")
     explanation_review: Mapped[bool] = mapped_column(Boolean, default=True)  # 解説の見直しをするか
+    review_model: Mapped[str] = mapped_column(String(128), default="")  # 見直し役（空なら検証役のモデル）
+    # 科目だけの役割のモデル（英語の本文作成 {"passage": "anthropic/…"} など）
+    extra_models_json: Mapped[str] = mapped_column("extra_models", Text, default="{}")
     gen_calls: Mapped[int] = mapped_column(Integer, default=0)
     gen_eval_s: Mapped[float] = mapped_column(Float, default=0.0)
     gen_load_s: Mapped[float] = mapped_column(Float, default=0.0)
@@ -118,6 +132,10 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    @property
+    def extra_models(self) -> dict[str, str]:
+        return {str(k): str(v) for k, v in (_loads(self.extra_models_json, {}) or {}).items()}
 
 
 class Problem(Base):

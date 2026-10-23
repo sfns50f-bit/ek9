@@ -53,14 +53,21 @@ def _units() -> list[Unit]:
     return out
 
 
-def _chat(ctx: GenContext, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
-    """作成役を呼ぶ。出力が読めなかったときは、作り直しの回数を使わずに 1 回だけ呼び直す。"""
+def _chat(ctx: GenContext, system: str, user: str, schema: dict[str, Any], model: str = "") -> dict[str, Any]:
+    """作成役（model を渡せばそのモデル）を呼ぶ。出力が読めなかったときは、作り直しの回数を使わずに 1 回だけ呼び直す。"""
     from ...llm import LLMError
 
+    model = model or ctx.gen_model
     try:
-        return ctx.llm.chat_json(ctx.gen_model, system, user, schema, temperature=0.8)
+        return ctx.llm.chat_json(model, system, user, schema, temperature=0.8)
     except LLMError:
-        return ctx.llm.chat_json(ctx.gen_model, system, user, schema, temperature=0.8)
+        return ctx.llm.chat_json(model, system, user, schema, temperature=0.8)
+
+
+def _verdict(out: dict[str, Any]) -> tuple[str, str]:
+    """見直しの結果（1 行目が「問題なし／問題あり」で始まるか。指示を書き写したときに誤って弾かない）。"""
+    verdict = next((ln.strip(" 　。.*「」") for ln in str(out.get("verdict") or "").splitlines() if ln.strip()), "")
+    return verdict, str(out.get("issues") or "").strip()
 
 
 def _set_label(llm: Any, label: str) -> None:
@@ -182,9 +189,11 @@ class EnglishSubject(Subject):
     formats = ("choice", "input")
     mistakes = MISTAKES
     math_text = False  # 「$20」のような値段を数式として表示しない
+    model_roles = {"passage": "本文作成"}  # 読解の本文を書く役割（設定がなければ作成役のモデル）
     reject_codes = {
         "en_text": "英文・選択肢・解説の点検で落ちた（根拠の文が本文にない・日本語の混入・選択肢の重複など）",
         "en_no_passage": "本文を読まなくても解けた（常識で答えられる設問）",
+        "en_passage_review": "本文の見直しで誤りを指摘された（時系列・因果・矛盾・英文の誤り）",
         "en_review": "見直しで誤りを指摘された（正解が 1 つに決まらない・英文の誤り・解説の誤り）",
     }
     test_format = "choice"  # 検証のテスト：正解の印を誤答に移した問題を流す
@@ -200,60 +209,58 @@ class EnglishSubject(Subject):
         return self._vocab(ctx, template, fmt)
 
     def _reading(self, ctx: GenContext, template: str) -> list[Draft]:
+        """読解：本文作成役が本文を書く（または、設問の足りない本文を使い回す）→ 作成役が設問を書く。"""
         spec = READINGS[template]
         n = spec.questions
         existing = ctx.existing_keys(template)
+        stored = ctx.passages(template)
 
-        def keys(topic: str) -> list[str]:
-            return [_params_key(template, {"topic": topic, "q": i}) for i in range(1, n + 1)]
+        def key(topic: str, i: int) -> str:
+            return _params_key(template, {"topic": topic, "q": i})
 
-        topics = [t for t in TOPICS[template] if not set(keys(t)) & existing]
-        if not topics:
-            raise Rejected("duplicate", "この小単元の題材をすべて使いました（catalog.TOPICS に題材を足すと作れます）")
-        topic = ctx.rng.choice(topics)
-        params = {"topic": topic, "seed": ctx.rng.randrange(1 << 30), "test": ctx.is_test}
+        # 見直しを通った本文のうち、設問が足りないもの（設問が不合格になった本文）に設問を足す。
+        # 不合格が重なる本文（設問の数の 2 倍）は使わない
+        reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic") and len(p["questions"]) < n
+                    and p.get("rejected", 0) < 2 * n]
+        if reusable:
+            src = reusable[0]
+            topic, body, have = src["topic"], src["body"], list(src["questions"])
+            source: dict[str, Any] = {"id": src["id"]}
+            log: list[dict[str, Any]] = [{
+                "step": "本文", "ok": True,
+                "summary": f"前に作った本文 #{src['id']}（題材「{topic}」、{src.get('gen_model') or '—'} が作成）に設問を足す"
+                           f"（今 {len(have)} 問）"}]
+            passage_model = src.get("gen_model", "")
+        else:
+            used = {p.get("topic") for p in stored}
+            topics = [t for t in TOPICS[template] if t not in used and key(t, 1) not in existing]
+            if not topics:
+                raise Rejected("duplicate", "この小単元の題材をすべて使いました（catalog.TOPICS に題材を足すと作れます）")
+            topic = ctx.rng.choice(topics)
+            title, passage, log = self._write_passage(ctx, spec, template, topic)
+            body = f"{title}\n\n{passage}" if title else passage
+            passage_model = ctx.model("passage")
+            source = {"title": title, "body": body, "source_title": f"{passage_model} が書いた英文", "source_url": "",
+                      "template": template, "topic": topic, "status": "ok", "gen_model": passage_model, "log": log}
+            have = []
+        # 設問の番号（重複の判定に使う）。不合格になった設問の番号とも重ならないよう、不合格の数も足す
+        start = len(have) + (src.get("rejected", 0) if reusable else 0) + 1
+        params = {"topic": topic, "seed": ctx.rng.randrange(1 << 30), "test": ctx.is_test,
+                  "passage_model": passage_model}
         partial: dict[str, Any] = {"unit": "en-reading", "template": template, "format": "choice", "params": params}
-        schema = prompts.reading_schema(n)
-        user = prompts.reading_user(spec.genre, topic, spec.words, n, spec.question_style)
-        log: list[dict[str, Any]] = [{
-            "step": "題材", "ok": True, "summary": f"題材「{topic}」（{spec.words[0]}〜{spec.words[1]} 語・設問 {n} 問）"
-            + ("。検証のテストのため、正解の印を誤答に移します" if ctx.is_test else ""),
-            "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.READING_SYSTEM,
-        }]
-        out = _chat(ctx, prompts.READING_SYSTEM, user, schema)
-        for round_no in range(FIX_ROUNDS + 1):
-            title = check.normalize(str(out.get("title") or ""))
-            passage = check.normalize(str(out.get("passage") or ""))
-            qs = [parse_question(check.normalize(str(out.get(f"q{i}") or ""))) for i in range(1, n + 1)]
-            partial.update(question=qs[0]["question"] if qs else "", explanation=passage)
-            issues = self._passage_issues(spec, title, passage)
-            q_issues = [_question_issues(q, passage) for q in qs]
-            all_issues = issues + [f"設問 {i}: {x}" for i, xs in enumerate(q_issues, 1) for x in xs]
-            if not all_issues:
-                break
-            summary = "／".join(dict.fromkeys(all_issues))
-            last = round_no == FIX_ROUNDS
-            log.append({"step": "英文の点検", "ok": False, "summary": summary + ("" if last else "（直しを依頼します）")})
-            if last:
-                if issues:  # 本文がだめなら、設問もすべて使えない
-                    raise Rejected("en_text", summary, log, partial)
-                break
-            _set_label(ctx.llm, "直し")
-            out = _chat(ctx, prompts.READING_SYSTEM, prompts.fix_user(user, out, summary, list(schema["properties"])),
-                        schema)
+        qs, q_issues = self._write_questions(ctx, spec, body, have, n - len(have), log, partial)
 
-        body = f"{title}\n\n{passage}" if title else passage
-        source = {"title": title, "body": body, "source_title": f"{ctx.gen_model} が書いた英文", "source_url": ""}
         drafts = []
-        for i, (q, problems) in enumerate(zip(qs, q_issues), 1):
+        for i, (q, problems) in enumerate(zip(qs, q_issues), start):
             qlog = list(log)
-            draft_partial = {**partial, "question": q["question"], "explanation": q["explanation"], "hint": q["hint"]}
+            draft_partial = {**partial, "params": {**params, "q": i}, "question": q["question"],
+                             "explanation": q["explanation"], "hint": q["hint"]}
             if problems:
                 summary = "設問の点検で落ちた: " + "／".join(dict.fromkeys(problems))
-                drafts.append(self._rejected_draft(template, "en_text", summary, qlog, draft_partial))
+                drafts.append(self._rejected_draft(template, "en_text", summary, qlog, draft_partial, source))
                 continue
             qlog.append({"step": "英文の点検", "ok": True,
-                         "summary": f"根拠の文が本文にある・選択肢 4 つが重複しない・英文に日本語がない（本文 {check.word_count(passage)} 語）"})
+                         "summary": f"根拠の文が本文にある・選択肢 4 つが重複しない・英文に日本語がない（本文 {check.word_count(body)} 語）"})
             choices = [{"text": t, "correct": j == q["answer"], "mistake": None if j == q["answer"]
                         else q["wrong"].get(LETTERS[j])} for j, t in enumerate(q["options"])]
             if not ctx.is_test:
@@ -261,20 +268,109 @@ class EnglishSubject(Subject):
                 qlog.append(blind[1])
                 if not blind[0]:
                     drafts.append(self._rejected_draft(template, "en_no_passage", blind[1]["summary"], qlog,
-                                                       {**draft_partial, "choices": choices}))
+                                                       {**draft_partial, "choices": choices}, source))
                     continue
             ctx.rng.shuffle(choices)
             if ctx.is_test:
                 _tamper(choices, ctx.rng)
             correct = next(c for c in choices if c["correct"])
-            explanation = q["explanation"].strip() + f"\n\n本文の根拠: “{q['evidence']}”"
+            explanation = q["explanation"].strip() + f"\n\n本文の根拠: \u201c{q['evidence']}\u201d"
             drafts.append(Draft(
                 unit="en-reading", template=template, format="choice", question=q["question"],
                 answer={"kind": "choice"}, answer_display=correct["text"], explanation=explanation, hint=q["hint"],
-                choices=choices, source=f"{ctx.gen_model} が書いた英文（題材「{topic}」）。正解の根拠の文は本文と照合済み",
-                params={**params, "q": i}, params_key=keys(topic)[i - 1], log=qlog, passage=source,
+                choices=choices,
+                source=f"本文 {passage_model or '—'}・設問 {ctx.gen_model}（題材「{topic}」）。正解の根拠の文は本文と照合済み",
+                params={**params, "q": i}, params_key=key(topic, i), log=qlog, passage=source,
             ))
         return drafts
+
+    def _write_passage(self, ctx: GenContext, spec: Any, template: str, topic: str) -> tuple[str, str, list[dict[str, Any]]]:
+        """本文作成役が題名と本文を書く → 機械的な点検（落ちたら 1 回だけ直させる）→ 本文の見直し（見直し役）。"""
+        model = ctx.model("passage")
+        user = prompts.passage_user(spec.genre, topic, spec.words)
+        log: list[dict[str, Any]] = [{
+            "step": "題材", "ok": True, "model": model,
+            "summary": f"題材「{topic}」（{spec.words[0]}〜{spec.words[1]} 語・設問 {spec.questions} 問）。本文作成役 {model}"
+                       + ("。検証のテストのため、正解の印を誤答に移します" if ctx.is_test else ""),
+            "detail": "本文作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.PASSAGE_SYSTEM,
+        }]
+        partial: dict[str, Any] = {"unit": "en-reading", "template": template, "format": "choice",
+                                   "params": {"topic": topic, "passage_model": model}}
+        _set_label(ctx.llm, "本文作成")
+        out = _chat(ctx, prompts.PASSAGE_SYSTEM, user, prompts.PASSAGE_SCHEMA, model)
+        for round_no in range(FIX_ROUNDS + 1):
+            title = check.normalize(str(out.get("title") or ""))
+            passage = check.normalize(str(out.get("passage") or ""))
+            partial.update(question=title, explanation=passage)
+            issues = self._passage_issues(spec, title, passage)
+            if not issues:
+                break
+            summary = "／".join(dict.fromkeys(issues))
+            last = round_no == FIX_ROUNDS
+            log.append({"step": "本文の点検", "ok": False, "summary": summary + ("" if last else "（直しを依頼します）")})
+            if last:
+                raise Rejected("en_text", "本文の点検で落ちた: " + summary, log, partial)
+            _set_label(ctx.llm, "直し")
+            out = _chat(ctx, prompts.PASSAGE_SYSTEM,
+                        prompts.fix_user(user, out, summary, list(prompts.PASSAGE_SCHEMA["properties"])),
+                        prompts.PASSAGE_SCHEMA, model)
+        log.append({"step": "本文の点検", "ok": True,
+                    "summary": f"本文 {check.word_count(passage)} 語・英文に日本語がない"})
+        body = f"{title}\n\n{passage}" if title else passage
+        if ctx.review:
+            log.append(self._review_passage(ctx, body, log, partial))
+        return title, passage, log
+
+    def _review_passage(self, ctx: GenContext, body: str, log: list[dict[str, Any]],
+                        partial: dict[str, Any]) -> dict[str, Any]:
+        """本文の見直し（見直し役）：時系列・因果・矛盾・言葉と内容の食い違い・英文の誤り。問題ありなら本文ごと不合格。"""
+        from ...llm import LLMError
+
+        model = ctx.model("review")
+        _set_label(ctx.llm, "本文の見直し")
+        try:
+            out = ctx.llm.chat_json(model, prompts.PASSAGE_REVIEW_SYSTEM, prompts.passage_review_user(body),
+                                    prompts.REVIEW_SCHEMA, temperature=0.2)
+        except LLMError as exc:  # 読めないときは、それだけで不合格にしない（設問の見直しで拾う）
+            return {"step": "本文の見直し", "ok": True, "model": model, "summary": f"見直しの結果を読めなかった（{exc}）",
+                    "raw": getattr(exc, "raw", "")[:4000]}
+        verdict, issues = _verdict(out)
+        entry = {"step": "本文の見直し", "model": model, "raw": f"[[verdict]]\n{verdict}\n[[issues]]\n{issues}"[:4000]}
+        if verdict.startswith("問題あり"):
+            summary = f"本文の見直しで誤りを指摘された（{issues[:300] or '理由なし'}）"
+            raise Rejected("en_passage_review", summary, log + [{**entry, "ok": False, "summary": summary}], partial)
+        if verdict.startswith("問題なし"):
+            return {**entry, "ok": True, "summary": "本文に誤りは見つからなかった"}
+        return {**entry, "ok": True, "summary": f"見直しの結果を読めなかった（{verdict[:60]}）"}
+
+    def _write_questions(self, ctx: GenContext, spec: Any, body: str, have: list[str], n: int,
+                         log: list[dict[str, Any]], partial: dict[str, Any]) -> tuple[list[dict[str, Any]], list[list[str]]]:
+        """作成役が確定した本文に設問を n 問書く → 点検（落ちたら 1 回だけ直させる）。(設問, 設問ごとの指摘)。"""
+        schema = prompts.question_schema(n)
+        user = prompts.question_user(body, n, spec.question_style, have)
+        log.append({"step": "設問の作成", "ok": True, "model": ctx.gen_model,
+                    "summary": f"作成役 {ctx.gen_model} が設問を {n} 問書く",
+                    "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.QUESTION_SYSTEM})
+        _set_label(ctx.llm, "作成")
+        out = _chat(ctx, prompts.QUESTION_SYSTEM, user, schema)
+        qs: list[dict[str, Any]] = []
+        q_issues: list[list[str]] = []
+        for round_no in range(FIX_ROUNDS + 1):
+            qs = [parse_question(check.normalize(str(out.get(f"q{i}") or ""))) for i in range(1, n + 1)]
+            q_issues = [_question_issues(q, body) for q in qs]
+            partial.update(question=qs[0]["question"] if qs else "", explanation=body)
+            all_issues = [f"設問 {i}: {x}" for i, xs in enumerate(q_issues, 1) for x in xs]
+            if not all_issues:
+                break
+            summary = "／".join(dict.fromkeys(all_issues))
+            last = round_no == FIX_ROUNDS
+            log.append({"step": "設問の点検", "ok": False, "summary": summary + ("" if last else "（直しを依頼します）")})
+            if last:
+                break  # 落ちた設問だけを不合格にし、ほかの設問は先へ進める
+            _set_label(ctx.llm, "直し")
+            out = _chat(ctx, prompts.QUESTION_SYSTEM, prompts.fix_user(user, out, summary, list(schema["properties"])),
+                        schema)
+        return qs, q_issues
 
     @staticmethod
     def _passage_issues(spec: Any, title: str, passage: str) -> list[str]:
@@ -287,12 +383,15 @@ class EnglishSubject(Subject):
 
     @staticmethod
     def _rejected_draft(template: str, code: str, summary: str, log: list[dict[str, Any]],
-                        partial: dict[str, Any]) -> Draft:
-        """同じ本文のほかの設問は検証に進めるので、この設問だけを不合格として返す（worker が残す）。"""
+                        partial: dict[str, Any], passage: dict[str, Any] | None = None) -> Draft:
+        """同じ本文のほかの設問は検証に進めるので、この設問だけを不合格として返す（worker が残す）。
+
+        本文も渡す（設問がすべて不合格でも本文は残り、後の依頼で設問を足せる）。"""
         log = log + [{"step": "設問", "ok": False, "summary": summary}]
         return Draft(unit="en-reading", template=template, format="choice", question=partial.get("question", ""),
                      answer={}, answer_display="", explanation=partial.get("explanation", ""),
-                     hint=partial.get("hint", ""), log=log, rejected=Rejected(code, summary, log, partial))
+                     hint=partial.get("hint", ""), log=log, passage=passage,
+                     rejected=Rejected(code, summary, log, partial))
 
     def _blind_check(self, ctx: GenContext, question: str, options: list[str], answer: int) -> tuple[bool, dict[str, Any]]:
         """作成役に本文を見せずに設問だけを解かせる。正解できたら、本文を読まなくても解ける設問とみなす。"""
@@ -477,8 +576,7 @@ class EnglishSubject(Subject):
                 break
             except LLMError as exc:
                 out = {"_error": str(exc), "_raw": getattr(exc, "raw", "")}
-        verdict = next((ln.strip(" 　。.*「」") for ln in str(out.get("verdict") or "").splitlines() if ln.strip()), "")
-        issues = str(out.get("issues") or "").strip()
+        verdict, issues = _verdict(out)
         raw = out.get("_raw") or f"[[verdict]]\n{verdict}\n[[issues]]\n{issues}"
         if verdict.startswith("問題あり"):
             return VerifyResult(False, f"{model}: 誤りがあると指摘（{issues[:300] or '理由なし'}）", issues,

@@ -31,28 +31,41 @@ SENTENCES = [
 class EnglishOracle:
     """テスト用の LLM。
 
-    作成役（読解）：SENTENCES を本文にし、設問 i の正解は「Right answer i」、根拠の文は本文の i 番目の文
+    本文作成役：SENTENCES を本文にする（題名 A Visit to the Library）
+    本文の見直し：passage_verdict を返す
+    作成役（設問）：設問 i（すでにある設問の続きの番号）の正解は「Right answer i」、根拠の文は本文の i 番目の文
     作成役（語彙）：指定された単語を 1 回だけ使った例文を書く
     本文なしの確認：X（blind_correct に入れた設問番号のときだけ正解の記号を答える）
     検証役：データベースの問題から本当の正解（ずらす前のもの）を選ぶ
     """
 
-    def __init__(self, sessions, *, bad_evidence_once=False, blind_correct=(), review_verdict="問題なし"):
+    def __init__(self, sessions, *, bad_evidence_once=False, bad_passage_once=False, blind_correct=(),
+                 review_verdict="問題なし", passage_verdict="問題なし", bad_questions=()):
         self.sessions = sessions
         self.bad_evidence_once = bad_evidence_once
+        self.bad_passage_once = bad_passage_once
         self.blind_correct = set(blind_correct)
+        self.bad_questions = set(bad_questions)  # この番号の設問は根拠の文をいつも本文にないものにする
         self.review_verdict = review_verdict
+        self.passage_verdict = passage_verdict
         self.calls = []
         self.label = ""
 
     def chat_json(self, model, system, user, schema, *, temperature=0.7):
         props = schema["properties"]
         if "verdict" in props:
+            if "本文を点検" in system:
+                self.calls.append(("passage_review", model))
+                return {"verdict": self.passage_verdict, "issues": "時系列が食い違う" if "あり" in self.passage_verdict
+                        else "なし"}
             self.calls.append(("review", model))
             return {"verdict": self.review_verdict, "issues": "なし"}
         if "passage" in props:
+            self.calls.append(("passage", model))
+            return self._passage(user)
+        if "q1" in props:
             self.calls.append(("gen", model))
-            return self._reading(user, props)
+            return self._questions(user, props)
         if "sentence" in props:
             self.calls.append(("gen", model))
             word = re.search(r"使う単語: (\S+)（", user).group(1)
@@ -74,25 +87,34 @@ class EnglishOracle:
         return [{"name": "gemma4:12b-it-qat", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4"},
                 {"name": "gemma4:e4b", "size_gb": 3.1, "parameter_size": "8B", "quantization": "Q4"}]
 
-    def _reading(self, user, props):
-        n = int(re.search(r"設問の数: (\d+)", user).group(1))
+    def roles(self):
+        return [r for r, _ in self.calls]
+
+    def _passage(self, user):
         lo = int(re.search(r"本文の長さ: (\d+)", user).group(1))
         sentences = list(SENTENCES)
         while check.word_count(" ".join(sentences)) < lo:
             sentences += SENTENCES
         passage = " ".join(sentences[:3]) + "\n\n" + " ".join(sentences[3:])
-        out = {"title": "A Visit to the Library", "passage": passage}
+        if self.bad_passage_once and "直してほしい点" not in user:
+            passage += "\n\n図書館は楽しい。"
+        return {"title": "A Visit to the Library", "passage": passage}
+
+    def _questions(self, user, props):
+        have = len(re.findall(r"^- ", user.split("すでにある設問", 1)[1], re.M)) if "すでにある設問" in user else 0
         fixing = "直してほしい点" in user
-        for i in range(1, n + 1):
-            evidence = SENTENCES[i - 1]
-            if self.bad_evidence_once and not fixing and i == 1:
+        out = {}
+        for i in range(1, len(props) + 1):
+            part = have + i
+            evidence = SENTENCES[part - 1]
+            if (self.bad_evidence_once and not fixing and part == 1) or part in self.bad_questions:
                 evidence = "This sentence is not in the passage at all."
             out[f"q{i}"] = "\n".join([
-                f"Question {i}: What is true according to the passage (part {i})?",
-                f"A: Right answer {i} about the library",
-                f"B: Wrong answer {i} about a museum",
-                f"C: Wrong answer {i} about a park",
-                f"D: Wrong answer {i} about a station",
+                f"Question {i}: What is true according to the passage (part {part})?",
+                f"A: Right answer {part} about the library",
+                f"B: Wrong answer {part} about a museum",
+                f"C: Wrong answer {part} about a park",
+                f"D: Wrong answer {part} about a station",
                 "Answer: A",
                 "Wrong: B=not_stated, C=contradicts, D=detail",
                 f"Evidence: {evidence}",
@@ -100,7 +122,7 @@ class EnglishOracle:
                 "Explanation: 本文に図書館のことが書かれているので、図書館についての選択肢が正しい。"
                 "博物館・公園・駅のことは本文に書かれていない。",
             ])
-        return {k: out[k] for k in props}
+        return out
 
     def _solve(self, user):
         question = user.split("問題:\n", 1)[1].split("\n\n", 1)[0] if "問題:\n" in user else ""
@@ -196,8 +218,8 @@ def test_reading_makes_one_passage_with_shared_questions(settings, sessions, san
     assert job(sessions, jid).status == "done"
     ready = problems(sessions, status="ready")
     assert len(ready) == 3 and len({p.passage_id for p in ready}) == 1 and ready[0].passage_id is not None
-    # 作成 1 回 → 本文なしの確認 3 問分 → 検証 2 回 × 3 問 → 見直し 3 問
-    assert [r for r, _ in llm.calls] == ["gen"] + ["blind"] * 3 + ["solve"] * 6 + ["review"] * 3
+    # 本文作成 → 本文の見直し → 設問の作成 → 本文なしの確認 3 問分 → 検証 2 回 × 3 問 → 見直し 3 問
+    assert llm.roles() == ["passage", "passage_review", "gen"] + ["blind"] * 3 + ["solve"] * 6 + ["review"] * 3
     assert {m for r, m in llm.calls if r == "blind"} == {"gemma4:12b-it-qat"}  # 作成役のモデル（入れ替えなし）
     with sessions() as s:
         p = s.get(Problem, ready[0].id)
@@ -235,12 +257,56 @@ def test_question_answerable_without_passage_is_dropped(settings, sessions, sand
     llm = EnglishOracle(sessions, blind_correct={2})
     run_job(settings, sessions, sandbox, llm, scope="tmpl:en-story", count=3)
     rejected = problems(sessions, status="rejected")
-    # 1 つ目の本文の設問 2 を外すと 3 問に足りないので、2 つ目の本文を作る（その設問 2 も外れる）
-    assert len(rejected) == 2 and all(p.reject_code == "en_no_passage" for p in rejected)
-    assert all("(part 2)" in p.question and len(p.choices) == 4 for p in rejected)
+    assert len(rejected) == 1 and rejected[0].reject_code == "en_no_passage"
+    assert "(part 2)" in rejected[0].question and len(rejected[0].choices) == 4
+    # 設問 2 を外すと 3 問に足りないので、同じ本文に設問を 1 問足す（本文を使い回す）
     ready = problems(sessions, status="ready")
-    assert len(ready) == 4 and all("(part 2)" not in p.question for p in ready)
-    assert len({p.passage_id for p in ready}) == 2
+    assert len(ready) == 3 and all("(part 2)" not in p.question for p in ready)
+    assert len({p.passage_id for p in ready}) == 1 and rejected[0].passage_id == ready[0].passage_id
+    assert llm.roles().count("passage") == 1
+    assert len({p.params_key for p in ready}) == 3  # 足した設問の番号が、すでにある設問と重ならない
+    assert any("に設問を足す" in e["summary"] for e in ready[-1].verification)
+
+
+def test_passage_review_rejects_the_whole_passage(settings, sessions, sandbox):
+    """本文の見直しで「問題あり」なら本文ごと不合格。設問は作らない。"""
+    llm = EnglishOracle(sessions, passage_verdict="問題あり")
+    jid = run_job(settings, sessions, sandbox, llm, scope="tmpl:en-story", count=1)
+    assert job(sessions, jid).status in ("partial", "failed")
+    rejected = problems(sessions, status="rejected")
+    assert rejected and {p.reject_code for p in rejected} == {"en_passage_review"}
+    assert "gen" not in llm.roles() and problems(sessions, status="ready") == []
+    with sessions() as s:
+        from quizapp.db import Passage
+
+        assert s.execute(select(Passage)).first() is None  # 落ちた本文は残さない（題材はまた使える）
+
+
+def test_passage_is_fixed_and_review_can_be_off(settings, sessions, sandbox):
+    llm = EnglishOracle(sessions, bad_passage_once=True)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2, explanation_review=False,
+            gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b", verify_count=2)
+    assert llm.roles()[:2] == ["passage", "passage"]  # 本文の点検で落ちたので本文作成役に直させた
+    assert "passage_review" not in llm.roles() and "review" not in llm.roles()  # 見直しを切った依頼
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 2
+    assert any(e["step"] == "本文の点検" and "日本語" in e["summary"] for e in ready[0].verification)
+
+
+def test_passage_with_rejected_questions_is_kept_and_reused(settings, sessions, sandbox):
+    """設問がすべて不合格でも本文は残し、次から設問を足す。不合格が設問の数の 2 倍になった本文は使わない。"""
+    from quizapp.db import Passage
+
+    llm = EnglishOracle(sessions, bad_questions={1, 2})  # お知らせの設問（2 問）はいつも根拠が本文にない
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
+    rejected = problems(sessions, status="rejected")
+    assert rejected and all(p.reject_code == "en_text" for p in rejected)
+    with sessions() as s:
+        first = s.execute(select(Passage).order_by(Passage.id)).scalars().first()
+        on_first = [p for p in rejected if p.passage_id == first.id]
+    assert first.status == "ok" and first.template == "en-notice" and first.topic
+    assert len(on_first) == 4  # 1 回目 2 問 ＋ 使い回して 2 問。そこで使うのをやめる
+    assert llm.roles().count("passage") >= 2  # 新しい本文に移った
 
 
 def test_review_rejects(settings, sessions, sandbox):

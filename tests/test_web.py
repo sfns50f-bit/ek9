@@ -563,7 +563,7 @@ def test_review_tools_for_existing_problems(client, settings, sessions, sandbox)
 
 def test_explanation_review_setting(client, sessions):
     r = client.post("/status/models", data={"review": "off"}, follow_redirects=True)
-    assert "解説の見直し <strong>しない" in r.text
+    assert "見直し <strong>しない" in r.text
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1"})
     assert all_rows(sessions, Job)[-1].explanation_review is False
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1", "review_shown": "1",

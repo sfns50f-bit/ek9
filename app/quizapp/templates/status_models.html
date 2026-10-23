@@ -5,12 +5,15 @@
 {{ status_nav(page) }}
 {% if msg == "saved" %}<p class="notice">設定を保存しました。次の依頼から使われます（作る画面の初期値になります）。</p>{% endif %}
 {% if msg == "think" %}<p class="notice">思考モードの設定を保存しました。次の依頼から使われます。</p>{% endif %}
+{% if msg == "subject" %}<p class="notice">科目ごとの設定を保存しました。次の依頼から使われます（作る画面の初期値になります）。</p>{% endif %}
 {% if msg == "api" %}<p class="notice">API の利用額の上限を保存しました。</p>{% endif %}
 {% if msg == "test" %}<p class="notice">検証のテストを順番待ちに入れました。下の「検証のテスト」に結果が出ます。</p>{% endif %}
 <section class="card" id="models">
-  <h2>モデルと検証の回数（作る画面の初期値）</h2>
-  <p class="muted small">ここで選んだものが「作る」画面の初期値になります。依頼ごとに作る画面で変えられ、依頼したときのモデルで最後まで処理します。</p>
-  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>／解説の見直し <strong>{{ "する" if plan.review else "しない" }}</strong></p>
+  <h2>モデルと検証の回数（全体の既定値）</h2>
+  <p class="muted small">ここで選んだものが全科目の既定値です。科目ごとに変えたい役割は、下の「科目ごとのモデル」で上書きします。
+    「作る」画面の初期値は、その科目の設定です。依頼ごとに作る画面で変えられ、依頼したときのモデルで最後まで処理します。</p>
+  <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>／見直し <strong>{{ plan.reviewer if plan.review else "しない" }}</strong></p>
+  {% if plan.same_gen_verify %}<p class="notice warn">作成役と検証役が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>{% endif %}
   <form method="post" action="/status/models">
     {% macro model_select(name, current, env_value, allow_none=false) %}
     <select name="{{ name }}">
@@ -28,7 +31,8 @@
         {% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if overrides.verify_count == n|string }}>{{ n }} 回</option>{% endfor %}
       </select></label>
     <label>別系統の検証役（1回だけ追加で解かせる） {{ model_select("verify_model_2", overrides.verify_model_2, settings.verify_model_2, true) }}</label>
-    <label>解説の見直し（検証役が全回一致したあと、検証役のモデルに解説の誤り（辺の対応・途中式・言葉の説明）を探させる）
+    <label>見直し役のモデル（解説・本文の見直しに使う） {{ model_select("review_model", overrides.review_model, "検証役と同じ") }}</label>
+    <label>見直し（検証役が全回一致したあと、見直し役のモデルに解説の誤り（辺の対応・途中式・言葉の説明）を探させる。英語は本文の見直しも）
       <select name="review">
         <option value="on" {{ 'selected' if plan.review }}>する</option>
         <option value="off" {{ 'selected' if not plan.review }}>しない</option>
@@ -37,6 +41,39 @@
     {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルから選べます。</p>{% endif %}
     <button type="submit" class="primary">保存</button>
   </form>
+</section>
+
+<section class="card" id="subject-models">
+  <h2>科目ごとのモデル</h2>
+  <p class="muted small">科目によって向くモデルが違うときに、役割ごとに全体の設定を上書きします。「全体の設定」のままの役割は上の既定値を使います。
+    科目だけの役割（英語の「本文作成」など）は、設定しなければ作成役のモデルを使います。</p>
+  {% for sub in subjects() %}{% set mine = subject_settings.get(sub.id, {}) %}{% set sp = plans[sub.id] %}
+  <form method="post" action="/status/subject-models" class="subject-models" id="subject-{{ sub.id }}">
+    <h3>{{ sub.name }}</h3>
+    <input type="hidden" name="subject" value="{{ sub.id }}">
+    <p class="small">いまの設定: {% for role, label in sub.model_roles.items() %}{{ label }} <strong>{{ sp.model_for(role) }}</strong>／{% endfor %}作成 <strong>{{ sp.gen_model }}</strong>／検証 <strong>{{ sp.verify_model }}</strong>／見直し <strong>{{ sp.reviewer }}</strong></p>
+    {% for role, label in sub.model_roles.items() | list + roles.items() | list %}
+    {% set inherit = sp.gen_model if role in sub.model_roles else (plan.gen_model if role == "gen" else plan.verify_model if role == "verify" else overrides.review_model) %}
+    <label>{{ label }}役
+      <select name="{{ role }}" data-inherit="{{ inherit }}">
+        <option value="">{{ "作成役と同じ" if role in sub.model_roles else "全体の設定" }}（{{ inherit or "検証役と同じ" }}）</option>
+        {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if mine.get(role) == m }}>{{ m }}</option>{% endfor %}
+        {% if mine.get(role) and mine.get(role) not in model_names %}<option value="{{ mine.get(role) }}" selected>{{ mine.get(role) }}（Ollama に見当たらない）</option>{% endif %}
+      </select></label>
+    {% endfor %}
+    <p class="notice warn same-model" {{ 'hidden' if not sp.same_gen_verify }}>作成役と検証役が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+    {% if api.configured %}
+    {% set used = today.get(sub.id, {}) %}
+    <p class="small">今日の API の利用：${{ "%.3f" | format(used.get("usd", 0)) }}・{{ used.get("calls", 0) | int }} 回</p>
+    {% for key, label in daily_keys.items() %}
+    <label>{{ label }}（0 か空なら上限なし。月の上限は下の API の欄）
+      <input type="number" name="{{ key }}" value="{{ mine.get(key, '') }}" min="0" step="{{ '0.1' if 'usd' in key else '1' }}" inputmode="decimal"></label>
+    {% endfor %}
+    {% endif %}
+    <button type="submit" class="primary">{{ sub.name }}の設定を保存</button>
+    <button type="submit" name="action" value="reset" class="secondary">既定値に戻す</button>
+  </form>
+  {% endfor %}
 </section>
 
 <section class="card" id="api">
