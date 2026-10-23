@@ -237,6 +237,15 @@ class MathSubject(Subject):
         return VerifyResult(True, f"{model}: 見直しの結果を読めなかった（{out.get('_error') or verdict[:60]}）",
                             "", raw=raw)
 
+    # --- 問題検証モード -----------------------------------------------------
+
+    def text_issues(self, problem: Any) -> list[str]:
+        return (latexfix.question_problems(problem.question, choice=problem.format == "choice")
+                + latexfix.problems(problem.hint, field="ヒント") + latexfix.problems(problem.explanation, field="解説"))
+
+    def normalize_text(self, text: str) -> str:
+        return latexfix.normalize(text)
+
     # --- 採点 ---------------------------------------------------------------
 
     def grade(self, sandbox: Sandbox | None, problem: Any, response: str) -> Grade:

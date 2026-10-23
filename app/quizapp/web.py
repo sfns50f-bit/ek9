@@ -51,6 +51,12 @@ JOB_STATUS = {
 }
 
 
+def _nomath(subject_id: str) -> str:
+    """$…$ を数式として表示しない科目（英語の「$20」など）の要素に付ける class（app.js の renderMath が飛ばす）。"""
+    sub = get_subject(subject_id)
+    return "nomath" if sub is not None and not sub.math_text else ""
+
+
 def _failure(problem: Problem) -> dict[str, Any]:
     """不合格の問題の、落ちた段階の記録（モデル名と生の出力を含む）。"""
     for entry in reversed(problem.verification):
@@ -112,7 +118,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None), "%m/%d %H:%M:%S") if t else ""
     templates.env.filters["isolocal"] = lambda text: localtime(datetime.fromisoformat(text)) if text else ""
     templates.env.globals.update(FORMATS=FORMATS, DEVICES=DEVICES, LEVELS=LEVELS, subjects=all_subjects,
-                                 get_subject=get_subject, JOB_STATUS=JOB_STATUS, failure=_failure)
+                                 get_subject=get_subject, JOB_STATUS=JOB_STATUS, failure=_failure, nomath=_nomath)
 
     def render(request: Request, name: str, status_code: int = 200, **ctx: Any) -> Response:
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
@@ -314,6 +320,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             if att is None or att.session_id != sid:
                 raise HTTPException(404, "回答が見つかりません")
             problem = att.problem
+            _ = problem.passage
             ids = row.problem_ids
             remaining = len(ids) - len(answered_ids(s, sid))
         return render(request, "result.html", session=row, attempt=att, problem=problem,
@@ -357,6 +364,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                 if review_mode:
                     return redirect("/review/login")
                 raise HTTPException(404, "まだ解いていない問題です（正解つきの一覧は問題検証モードで見られます）")
+            _ = problem.passage
         return render(request, "problem.html", problem=problem, attempts=attempts,
                       subject=get_subject(problem.subject), msg=msg)
 

@@ -10,7 +10,8 @@
   <p class="verdict-text">{% if attempt.is_correct %}○ 正解！{% elif attempt.gave_up %}解説を読もう{% else %}× 不正解{% endif %}</p>
   <p class="muted small">かかった時間 {{ attempt.duration_ms | seconds }}</p>
 </section>
-<section class="card">
+<section class="card {{ nomath(problem.subject) }}">
+  {% if problem.passage %}<details class="passage-review"><summary>本文を見る</summary>{{ math(problem.passage.body, "passage") }}</details>{% endif %}
   {{ math(problem.question, "question") }}
   {% if problem.format == "choice" %}
   <ul class="choice-review">
