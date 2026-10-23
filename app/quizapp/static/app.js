@@ -15,6 +15,23 @@ function renderMath(root) {
   });
 }
 
+// 作成役と検証役が同じモデルなら注意を出す（作る画面のモデルの欄と、状態の科目ごとの設定）
+function setupSameModelWarning() {
+  document.querySelectorAll(".models, .subject-models").forEach((box) => {
+    const warn = box.querySelector(".same-model");
+    const gen = box.querySelector("select[name$=gen_model], select[name=gen]");
+    const verify = box.querySelector("select[name$=verify_model], select[name=verify]");
+    if (!warn || !gen || !verify) return;
+    const check = () => {
+      const g = gen.value || gen.dataset.inherit || "";
+      const v = verify.value || verify.dataset.inherit || "";
+      warn.hidden = !g || g !== v;
+    };
+    gen.addEventListener("change", check);
+    verify.addEventListener("change", check);
+  });
+}
+
 // 本文のある設問：スマホでは「本文」と「設問」をタブで切り替える（広い画面では CSS で左右に並べる）。
 // 同じ本文の最初の設問では本文から、2 問目からは設問から見せる
 function setupReading() {
@@ -69,6 +86,12 @@ function setupScopeForm(form, mode) {
       const on = p.dataset.subject === subjectSel.value;
       p.hidden = !on;
       p.querySelectorAll("input").forEach((i) => { i.disabled = !on; });
+    });
+    // 作る画面のモデルの欄（科目ごと）。選んだ科目のものだけを見せて送る
+    form.querySelectorAll(".models[data-subject]").forEach((box) => {
+      const on = box.dataset.subject === subjectSel.value;
+      box.hidden = !on;
+      box.querySelectorAll("input, select").forEach((i) => { i.disabled = !on; });
     });
     const subject = data[subjectSel.value];
     const p = picker();
@@ -193,6 +216,7 @@ function setupPlay() {
 document.addEventListener("DOMContentLoaded", () => {
   renderMath();
   setupReading();
+  setupSameModelWarning();
   const start = document.getElementById("start-form");
   if (start) setupScopeForm(start, "start");
   const gen = document.getElementById("generate-form");

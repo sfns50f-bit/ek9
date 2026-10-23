@@ -23,15 +23,15 @@
 
 | ファイル | 役割 |
 |---|---|
-| `subjects/base.py` | **科目の窓口**（`Subject`：units / generate / verify / review / grade / text_issues / normalize_text、`math_text`）。中心部分はここだけを使う |
+| `subjects/base.py` | **科目の窓口**（`Subject`：units / generate / verify / review / grade / text_issues / normalize_text、`math_text`、`model_roles`。作成のときに渡す `GenContext`：役割ごとのモデル `models`・見直しをするか `review`・本文の一覧 `passages`）。中心部分はここだけを使う |
 | `subjects/__init__.py` | 科目の登録（`REGISTRY`）。科目を足すときはここに 1 行 |
 | `subjects/math/` | 数学（詳細は [docs/math.md](docs/math.md)）。`catalog.py`（単元・間違いの種類と、`templates.py` の `@template(...)` を **ast で読む** `template_info()`。sympy なし＝web 用）、`templates.py`（20 テンプレート。sympy。単元・小単元名・レベル・関連する単元は `@template` に書く）、`prompts.py`、`__init__.py`（MathSubject） |
 | `subjects/english/` | 英語（詳細は [docs/english.md](docs/english.md)）。`catalog.py`（単元・小単元・誤答の種類・読解の題材）、`words.py`（単語リスト 1232 語）、`check.py`（英文の点検）、`prompts.py`、`__init__.py`（EnglishSubject） |
-| `worker.py` | 依頼の処理。**作成フェーズ（全問の文章）→ 検証フェーズ（まとめて）** の順。Ollama につながらなければ `waiting` にして再試行。**順番待ちは 2 つ**（`lane`：ollama＝どれかが Ollama のモデル、api＝全部 API のモデル）を別スレッドで同時に処理 |
+| `worker.py` | 依頼の処理。**作成フェーズ（全問の文章）→ 検証フェーズ（まとめて）** の順。Ollama につながらなければ `waiting` にして再試行。**順番待ちは 2 つ**（`lane`：ollama＝どれかが Ollama のモデル、api＝全部 API のモデル）を別スレッドで同時に処理。直前と同じ科目の依頼を先にする。本文の保存と使い回し（`passages_for` / `_passage_row`） |
 | `stock.py` | ストック数、解き始めのセットの組み方（間違えた問題を 30% まで混ぜる。小単元を均等に・続けない。同じ本文の設問はまとめて続けて出す）、/status の集計（期間・依頼番号での絞り込み、作成役ごと、依頼ごとの比較） |
 | `textcheck.py` | **数学向け**。問題文にテンプレートの式・値が、解説に正解が「そのまま」入っているかの確認（LaTeX の揺れだけ吸収） |
 | `latexfix.py` | **数学向け**（LaTeX）。LLM が書いた文章の表記をそろえる（`normalize`：度の記号の揺れ・二重のバックスラッシュ `\\sin`・文字どおりの `\n` など）・崩れを見つける（`problems`：KaTeX にない命令・$ の対応・数式の中の日本語・中国語の字など）。sympy なし（web の問題検証モードでも使う） |
-| `runtime.py` | /status から変えるモデル・検証回数（kv 表。空なら .env）＝作る画面の初期値、依頼ごとのモデル（`plan_for_job` / `apply_plan`）、モデル名の「提供元/」の読み方（`provider_of`）、モデルごとの思考モード |
+| `runtime.py` | /status から変えるモデル・検証回数（kv 表。空なら .env）＝全体の既定値、**科目ごとの上書き**（kv の `subject_models`。役割ごとのモデルと API の 1 日の上限）＝作る画面の初期値、依頼ごとのモデル（`ModelPlan`・`plan_for_job` / `apply_plan`）、モデル名の「提供元/」の読み方（`provider_of`）、モデルごとの思考モード、API の利用額（月ごと・科目ごとの日ごと） |
 | `review.py` | 問題検証モード：パスワード（cookie）、絞り込み、品質チェック用の Markdown の書き出し、表記の点検と直し（中身は科目の `text_issues` / `normalize_text`） |
 | `llm.py` | Ollama のクライアント。ストリーミングで受け取り、取り消し（`should_abort`）で接続を切る。**出力は JSON スキーマを使わず `[[項目]]` の見出しの平文**（`tagged_instructions` / `parse_tagged`。JSON で返ってきたときも読む）、呼び出しごとの時間の記録。`LLMRouter`（モデル名の「提供元/」で API に振り分ける。今は Ollama だけ） |
 | `llm_anthropic.py` | Anthropic（Claude）の API のクライアント（`AnthropicClient`。worker だけが読む）。ストリーミング、取り消し、プロンプトキャッシュ、effort、断られたときの fallbacks、呼び出しごとの料金（`cost_usd`）、上限の確認（`budget_check`） |
@@ -42,7 +42,7 @@
 
 1. **子供が操作する画面（web）では LLM を一切呼ばない**。web のプロセスでは Ollama のクライアント（`quizapp.llm`）も sympy も読み込まれない（`tests/test_web.py::test_web_process_does_not_load_the_llm_client`。科目の部品も web から読まれるので、`llm` を import するのは関数の中だけにする）。Ollama の状態は worker が kv に書いたものを表示するだけ
 2. **検証を通った問題だけをストック（status=ready）に入れる**。検証役には正解も選択肢も見せずに問題文だけで解かせ、設定回数すべて一致したものだけ合格。**英語の選択式だけは例外**：読解の答えは文章で、選択肢なしでは機械的に突き合わせられないので、選択肢は見せ（正解は見せない。順番は毎回入れ替える）、記号で答えさせる（開発者と決めた英語の作成ルール。docs/english.md の 4 章）
-3. **科目を足しても中心部分（worker / web / stock / db）を触らない**。`subjects/<科目>/` を作り `Subject` を実装して `REGISTRY` に登録する。本文（英文・資料）は `Draft.passage`（dict）に入れれば worker が `passages` 表に保存して問題と結び付ける。1 つの本文に複数の設問をつけるときは、`generate()` が同じ dict を持つ `Draft` のリストを返す（`tests/test_worker.py::test_passages_from_a_subject_are_saved_and_shared`）。検証役は `problem.passage` を読める。出典は `problems.source` と `passages.source_*`。検証のテスト（正解をずらす）に対応する科目は `test_format` を設定し、`ctx.is_test` のときに正解をずらす。**本文つきの科目のためにフェーズ2で中心部分に足したもの**（開発者と合意。英語に特有の処理は入れていない）：同じ本文の設問をセットでまとめて続けて出す（`stock.build_session`）、同じ本文の設問のうち作成の段階で使えないものを `Draft.rejected` で返すと worker が不合格として残す、`$` を数式に使わない科目の `Subject.math_text = False`（画面に `nomath` の class）、問題検証モードの点検と直しは `Subject.text_issues` / `normalize_text`
+3. **科目を足しても中心部分（worker / web / stock / db）を触らない**。`subjects/<科目>/` を作り `Subject` を実装して `REGISTRY` に登録する。本文（英文・資料）は `Draft.passage`（dict）に入れれば worker が `passages` 表に保存して問題と結び付ける。1 つの本文に複数の設問をつけるときは、`generate()` が同じ dict を持つ `Draft` のリストを返す（`tests/test_worker.py::test_passages_from_a_subject_are_saved_and_shared`）。検証役は `problem.passage` を読める。出典は `problems.source` と `passages.source_*`。検証のテスト（正解をずらす）に対応する科目は `test_format` を設定し、`ctx.is_test` のときに正解をずらす。**本文つきの科目のためにフェーズ2で中心部分に足したもの**（開発者と合意。英語に特有の処理は入れていない）：同じ本文の設問をセットでまとめて続けて出す（`stock.build_session`）、同じ本文の設問のうち作成の段階で使えないものを `Draft.rejected` で返すと worker が不合格として残す、`$` を数式に使わない科目の `Subject.math_text = False`（画面に `nomath` の class）、問題検証モードの点検と直しは `Subject.text_issues` / `normalize_text`。**第 3 回のレビューの対応で足したもの**：科目だけの役割（`Subject.model_roles`。モデルは `ctx.model(役割)`）、本文の使い回し（`GenContext.passages(小単元)` で本文の一覧を受け取り、`Draft.passage = {"id": …}` で既存の本文に設問を足す。本文の表に `template` `topic` `status` `gen_model` `log`）、不合格の設問も本文に結び付けて残す
 4. 検証役や子供に答えが見えないようにする：キーボード入力の答え方の例（`input_hint`）や検証役のプロンプトに具体的な値を書かない。問題文・ヒントに正解が書かれていたら弾く（数学は `answer_leak`、英語はヒントに正解の選択肢・語があれば直させる）。数学の採点・検証では「sin(5π/6)」のように式を書き写しただけの答えを受け付けない（`mathcheck._check_functions`）
 5. 数学：数値・正解・誤答は Python（sympy）で作る。LLM は問題文・解説・ヒントだけ。誤答には `catalog.MISTAKES` の印を付ける。新しいテンプレートを足したら `tests/test_math_templates.py` の `CHECKS` に**別の計算方法での確認**を必ず足す（手順は docs/math.md の 9 章）
 6. 正解の裏付けを機械的に確認する。数学は問題文にテンプレートの式・値がそのまま、解説に正解が入っているか（`textcheck`）、英語の読解は正解の根拠の文が本文にそのまま入っているか（`english/check.contains`）
@@ -84,6 +84,12 @@
 ### モデルと依頼
 
 - 既定のモデル：作成 `gemma4:12b-it-qat`、検証 `gemma4:e4b` × 2 回。手元の候補：gemma4:12b-it-qat、gemma4:e4b、gemma4:26b-a4b-it-qat、qwen2.5:7b、qwen3.5、bonsai-2
+- **科目ごと・役割ごとのモデル**（第 3 回のレビューの 4 章。開発者と決めたこと）：科目によって向くモデルが違う（数学は qwen で十分、英語の本文は Haiku が良い）ので、全体の既定値（前の版の「全体で 1 つ」の設定がそのまま既定値。移す作業は要らない）に、科目ごとに必要な役割だけを上書きする（kv の `subject_models`＝`{"english": {"passage": "anthropic/claude-haiku-5-5", "gen": "…"}}`。`runtime.model_plan(settings, s, 科目)`）
+  - 役割：どの科目にもある「作成（gen）・検証（verify）・見直し（review）」と、科目だけの役割（`Subject.model_roles`。英語の「本文作成（passage）」）。科目だけの役割は、設定がなければ作成役のモデル。見直し役は、設定がなければ検証役のモデル（全体の見直し役は「検証役と同じ」が既定）
+  - 「状態 → モデルと思考モード」の「科目ごとのモデル」で変える・保存する・既定値に戻す。「作る」画面の初期値はその科目の設定（モデルの欄は科目ごとに出し、選んだ科目の欄だけを見せる。欄の名前は `m_<科目>_…`。前の版の欄の名前も受け付ける）
+  - **作成役と検証役が同じモデルなら注意を出す**（見落としが重なりやすい。全体・科目ごとの設定と作る画面）
+  - 依頼には役割ごとのモデルを記録する（`jobs.review_model`、`jobs.extra_models`＝`{"passage": …}`）。問題には作成役・検証役、本文には本文作成役（`passages.gen_model`）。問題検証モードと Markdown の書き出しにも本文作成役を出す
+  - **順番待ちは科目ごとにまとめる**：直前に処理した依頼と同じ科目の依頼があれば先にする（`Worker.next_job_id`。科目を交互に作ると、科目ごとにモデルが違うときにローカルのモデルの入れ替えが増える）
 - **依頼ごとのモデル**：「作る」画面で作成役・検証役・回数・別系統の検証役・解説の見直しを選べる（候補は Ollama にあるモデル。名前を打ち込むこともできる）。初期値は「状態 → モデルと思考モード」の設定。選んだものを `jobs.gen_model / verify_model / verify_count / verify_model_2` に保存し、worker はそれで最後まで処理する（`runtime.plan_for_job`）。モデルの記録がない前の版の依頼は、取りかかった時点の設定を書き込んでから処理する
 - 選んだモデルが見つからない（Ollama の 404、API の 400・401・403・404・402）：その依頼は「失敗」（`LLMModelMissing`）。待ち続けない。検証待ちの下書きは捨てて合格数を数え直す
 - Ollama につながらない・5xx・API の混雑（429/5xx/overloaded）・sandbox の停止：`LLMUnavailable` で依頼を `waiting` にして、待ち時間が過ぎてから再開（作り直しの回数を使わない）
@@ -97,6 +103,7 @@
 - モデル名の頭に「提供元/」を付ける（`anthropic/claude-haiku-5-5`）と `llm.LLMRouter` がその提供元のクライアントへ送る。作成役・検証役・見直しのどれにも使える。提供元は今は Anthropic だけ
 - **提供元を変える・足す手順**：(1) `llm_anthropic.py` と同じ形のクライアント（`chat_json(model, system, user, schema, *, temperature)`・`list_models()`・`pop_calls()`・`pending_cost()` と属性 `label` / `should_abort` / `think_for` / `budget_check`。出力は見出しの平文、`_record` と同じ形で時間・料金を記録、取り消しは `should_abort` を見て止める）を作る、(2) `worker.make_llm` で `LLMRouter` に登録、(3) API キーは `.env` → `docker-compose.yml` の **worker の `environment` だけ**（`x-app-env` は web と共用なので使わない。worker に `environment:` を書くときは `<<: *app-env` で共通の分も引き継ぐ）→ `config.Settings`（web には渡さない）
 - **API の依頼と Ollama の依頼は別の順番待ち（別スレッド）で同時に進む**（`Worker.lane`。作成役・検証役のどれかが Ollama のモデルなら Ollama 側）。Ollama につながらないときも API だけの依頼は進む（`Worker.next_job_id`）。kv の読み書き（呼び出しの記録・利用額）は `_KV_LOCK` で 1 つずつ。Ollama の状態の確認とバックアップは Ollama 側だけ。API の順番待ちも、待ち時間が過ぎるまで次に手をつけない（`run_once` の最初で `unavailable_until` を見る。料金のかかる呼び出しを繰り返さないため）
+- **科目ごとの 1 日の上限**（第 3 回のレビューの 4 章）：科目ごとの設定に「API の 1 日の上限（ドル）」「（呼び出しの回数）」（0 か空は上限なし）。API を呼ぶ前に、その科目の今日の利用（kv の `api_daily`＝`{"2026-10-24": {"english": {"usd", "calls"}}}`、日本時間の日、31 日分）を確かめ、達していれば `LLMBudgetExceeded` → その依頼は「失敗」。今日の利用は「状態 → モデルと思考モード」の科目ごとの欄に出る
 - **上限**：月 5 ドル（`.env` の `API_MONTHLY_LIMIT_USD`。「状態 → モデルと思考モード」で変えられ、画面の値が優先。0 は API を止める）と 1 回の依頼の上限（`API_JOB_LIMIT_USD`。0 は上限なし）。API を呼ぶ前に今月の合計（kv の `api_spend`、日本時間の月ごと）と依頼の合計（`jobs.api_cost_usd`）、まだ集計していない分（`pending_cost`）を確かめ、上限に達していれば `LLMBudgetExceeded` → その依頼は「失敗」。1 回の呼び出しの分だけ少し超えることはある。inf・nan は受け付けない。Anthropic のコンソールでも上限を設定してもらう
 - **料金**：応答の usage（入力・キャッシュの書き込み 1.25 倍・読み込み 0.1 倍・出力）に料金表（`ANTHROPIC_PRICES`、ドル／100 万トークン）を掛けて呼び出しごとに `cost_usd` を記録。料金表にないモデルは表の一番高い料金で見積もる。取り消した呼び出しは途中までの usage、fallback のときは usage.iterations（モデルごと）で数える
 - **安くする工夫**：システムの指示（毎回同じ）にプロンプトキャッシュの印（512 トークン以上の前置きでしか効かないので、作成役で効き、指示の短い検証役・見直しではほとんど効かない）、考える量は `ANTHROPIC_EFFORT=low`、出力は見出しの平文。temperature は今のモデルでは送れないので送らない。`ANTHROPIC_MAX_TOKENS` も docker-compose.yml で渡す
@@ -142,7 +149,7 @@
 ## 進み具合
 
 - [x] フェーズ1「新しい土台＋数学」（PR #2〜#9。実機で運用中。API での作成も動作確認済み：Haiku で 20 問 0.03 ドル。開発者の判断で「使用上の問題なし」としてフェーズ2へ）
-- [ ] フェーズ2 英語（共通テストレベルの読解・語彙）：実装済み（読解 3・語彙 2・スペル 1 の小単元、本文なしの確認、検証に選択肢を見せる英語のルール、本文のタブ表示、同じ本文の設問をまとめて出す）。開発者が実機で試してから詳細を詰める
+- [ ] フェーズ2 英語（共通テストレベルの読解・語彙）：実装済み（PR #12：読解 3・語彙 2・スペル 1 の小単元、本文なしの確認、検証に選択肢を見せる英語のルール、本文のタブ表示、同じ本文の設問をまとめて出す）。実機で試した結果の第 3 回のレビュー（[docs/reviews/03_english.md](docs/reviews/03_english.md)）に対応中：4 章（科目 × 役割のモデル設定）と 3 章 G・E（読解を本文 → 設問の 2 段階に、本文の見直し、本文の使い回し）は済み
 - [ ] フェーズ3 公共（資料を取得して作る。worker からインターネットへ出る。sandbox は出さない）
 - [ ] フェーズ4 作り方を増やす（キーワード指定、子供からのリクエスト、類題、時事問題。同じ jobs の順番待ちで処理）
 - [ ] フェーズ5 学習機能（集計、間隔をあけた再出題、テストモードなど）
@@ -150,10 +157,11 @@
 
 ## 次にやること
 
-1. フェーズ2（英語）の実機での確認：開発者が数問ずつ作り（読解・語彙・スペル。ローカル・API とも）、「検証の成績」の不合格の内訳（英文の点検・本文なしで解けた・見直し）と、問題検証モードの書き出しで英文と設問の質を見る。そのうえで詳細を詰める（docs/english.md の 6 章の「気をつけること」が候補：本文なしの確認の弾きすぎ、誤答の種類、題材の数）
-2. 仕様書（docs/spec.md）はフェーズ1で決めたことを反映済み（2026-10-23）。原本は開発者が手で合わせる。次のフェーズで更新版が来たら差し替える
-3. 数学で残っていること（急がない）は [docs/math.md](docs/math.md) の 12 章と、[docs/handover.md](docs/handover.md) の残課題
-4. 開発者が実機でローカル・API とも作り、問題検証モードで「作った日」「管理番号」で絞って書き出して点検してもらう。「検証の成績」の不合格の内訳で弾きすぎを見る（見直しで弾きすぎなら切る、検証役 e4b で弾きすぎなら 12b にする）
+1. 第 3 回のレビュー（[docs/reviews/03_english.md](docs/reviews/03_english.md)）の残り：3 章 A（機械的な点検の追加）・B の 5・6・C（根拠の文を複数に）・D（見直しの観点）・F（語彙の難易度と誤答）、5 章（「本文 Haiku・設問 qwen」と「どちらも qwen」を同じ小単元・同じ数で作って比べる書き出し。不合格の件数と理由も）。1 章（既存の問題の破棄・修正）は開発者が問題検証モードで行う。残りは docs/english.md の 6 章にも書いた
+2. フェーズ2の最後（プルリクエストを作る前）に、ルール 10 の別のサブエージェントのレビューを 1 回受ける（まだ受けていない）
+3. 仕様書（docs/spec.md）はフェーズ1で決めたことを反映済み（2026-10-23）。原本は開発者が手で合わせる。次のフェーズで更新版が来たら差し替える
+4. 数学で残っていること（急がない）は [docs/math.md](docs/math.md) の 12 章と、[docs/handover.md](docs/handover.md) の残課題、第 3 回のレビューの付録（数学の未対応分）
+5. 開発者が実機でローカル・API とも作り、問題検証モードで「作った日」「管理番号」で絞って書き出して点検してもらう。「検証の成績」の不合格の内訳で弾きすぎを見る（見直しで弾きすぎなら切る、検証役 e4b で弾きすぎなら 12b にする）
 
 ## テスト
 
@@ -168,4 +176,5 @@ python -m pytest
 - `tests/test_llm.py`：Ollama のクライアント（偽の HTTP サーバー）。ストリーミング、取り消しで数秒以内に接続を切る、出力の上限、JSON スキーマを送らず見出しの平文で受け取る、JSON の修復。Anthropic のクライアント（偽の API サーバー。本物と同じストリーミングの形）：キャッシュの印・effort・fallbacks・料金・上限・取り消し
 - `tests/test_latexfix.py`：数学の表記の直しと点検（docs/math.md の 5 章）
 - `tests/test_english.py`：英語の作成・検証・採点・出題・画面（docs/english.md の 7 章）。テスト用の LLM は `EnglishOracle`
+- `tests/test_models.py`：科目ごと・役割ごとのモデルの設定（全体の既定値への上書き・前の版の設定・状態の画面での保存と既定値に戻す・作成役と検証役が同じときの注意・作る画面の欄・依頼への記録・役割ごとのモデルで処理・同じ科目の依頼を続ける・科目ごとの API の 1 日の上限）
 - テストの LLM（`tests/conftest.py::OracleLLM`）は、作成役は式をそのまま書き写し、検証役は seed からテンプレートを作り直して本当の正解を答える

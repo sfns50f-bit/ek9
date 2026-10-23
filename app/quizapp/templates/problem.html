@@ -44,7 +44,7 @@
 
 <details class="card dev">
   <summary>作り方と検証の記録（開発者向け）</summary>
-  <p class="small">出典: {{ problem.source or "—" }}／作成: {{ problem.gen_model or "—" }}／検証: {{ problem.verify_models or "—" }}</p>
+  <p class="small">出典: {{ problem.source or "—" }}／{% if problem.passage %}本文作成: {{ problem.passage.gen_model or "—" }}／{% endif %}作成: {{ problem.gen_model or "—" }}／検証: {{ problem.verify_models or "—" }}</p>
   {% if problem.reject_reason %}<p class="notice warn">不合格の理由: <span class="mathtext">{{ problem.reject_reason }}</span></p>{% endif %}
   {% if problem.report_note %}<p class="notice">報告のメモ: {{ problem.report_note }}</p>{% endif %}
   <ol class="steps">

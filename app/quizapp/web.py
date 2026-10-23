@@ -430,45 +430,55 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             jobs = list(s.execute(select(Job).order_by(Job.id.desc()).limit(30)).scalars())
             data = picker_data(s, user_id(request))
-            plan = runtime.model_plan(settings, s)
+            plans = {sub.id: runtime.model_plan(settings, s, sub) for sub in all_subjects()}
             ollama = kv_json(s, "ollama", {}) or {}
             api = api_info(s)
         # 候補：Ollama にあるモデルと、API のモデル（「anthropic/…」）
         model_names = [m["name"] for m in ollama.get("models", [])] + api["models"]
-        return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plan=plan, model_names=model_names,
+        return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plans=plans, model_names=model_names,
                       max_verify=runtime.MAX_VERIFY_COUNT, api=api)
 
     @app.post("/generate")
-    def generate(subject: str = Form(...), scope: Annotated[list[str], Form()] = [],  # noqa: B006
-                 levels: Annotated[list[str], Form()] = [], format: str = Form("choice"),  # noqa: A002, B006
-                 count: str = Form("10"), gen_model: str = Form(""), verify_model: str = Form(""),
-                 verify_count: str = Form(""), verify_model_2: str = Form(""), gen_model_text: str = Form(""),
-                 verify_model_text: str = Form(""), verify_model_2_text: str = Form(""),
-                 review: str = Form(""), review_shown: str = Form("")) -> Response:
+    async def generate(request: Request) -> Response:
+        form = await request.form()
+        subject = str(form.get("subject", ""))
         sub = subject_or_404(subject)
-        scope_s, levels_s = form_scope(sub, scope), form_levels(levels)
-        if format not in sub.formats or not sub.scope_valid(scope_s):
+        scope_s = form_scope(sub, [str(v) for v in form.getlist("scope")])
+        levels_s = form_levels([str(v) for v in form.getlist("levels")])
+        fmt = str(form.get("format", "choice"))
+        if fmt not in sub.formats or not sub.scope_valid(scope_s):
             raise HTTPException(400, "選び方が正しくありません")
-        if not sub.templates_for(scope_s, format, levels_s):
+        if not sub.templates_for(scope_s, fmt, levels_s):
             raise HTTPException(400, "この範囲・形式・レベルに当てはまる小単元がありません")
-        # 打ち込んだ名前は一覧の選択より優先する
-        gen_model = gen_model_text.strip() or gen_model
-        verify_model = verify_model_text.strip() or verify_model
-        verify_model_2 = verify_model_2_text.strip() or verify_model_2
+
+        def field(name: str) -> str:
+            """その科目の欄（m_<科目>_<名前>）。前の版の画面の欄の名前（頭なし）も読む。打ち込んだ名前を優先する"""
+            for key in (f"m_{sub.id}_{name}_text", f"{name}_text", f"m_{sub.id}_{name}", name):
+                value = str(form.get(key, "")).strip()
+                if value:
+                    return value[:128]
+            return ""
+
         with sessions.begin() as s:
-            # 依頼ごとにモデルを記録する（空の欄は /status の設定）。後で設定を変えても、この依頼はこのモデルで最後まで処理する
-            plan = runtime.model_plan(settings, s)
+            # 依頼ごとにモデルを記録する（空の欄は「状態」のその科目の設定）。後で設定を変えても、この依頼はこのモデルで最後まで処理する
+            plan = runtime.model_plan(settings, s, sub)
+            review_shown = field("review_shown")
+            v2 = field("verify_model_2")
+            extra = {role: field(f"role_{role}") or plan.model_for(role) for role in sub.model_roles}
+            verify_model = field("verify_model") or plan.verify_model
+            review_model = field("review_model") or plan.review_model
             chosen = runtime.ModelPlan(
-                gen_model=gen_model.strip()[:128] or plan.gen_model,
-                verify_model=verify_model.strip()[:128] or plan.verify_model,
-                verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(verify_count, plan.verify_count))),
-                verify_model_2="" if verify_model_2.strip() == "-" else (verify_model_2.strip()[:128]
-                                                                          or plan.verify_model_2),
+                gen_model=field("gen_model") or plan.gen_model,
+                verify_model=verify_model,
+                verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(field("verify_count"), plan.verify_count))),
+                verify_model_2="" if v2 == "-" else (v2 or plan.verify_model_2),
                 # チェックを外すと送られないので、欄を出したこと（review_shown）で見分ける
-                review=(review == "on") if review_shown else plan.review,
+                review=(field("review") == "on") if review_shown else plan.review,
+                review_model="" if review_model == verify_model else review_model,
+                extra=tuple(sorted((r, m) for r, m in extra.items() if m)),
             )
-            job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=format,
-                      count=max(1, min(MAX_JOB, _int(count, 10))))
+            job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=fmt,
+                      count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))))
             runtime.apply_plan(job, chosen)
             s.add(job)
         return redirect("/generate?msg=queued")
@@ -540,6 +550,9 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             plan = runtime.model_plan(settings, s)
             overrides = runtime.overrides(s)
+            subject_settings = runtime.subject_settings(s)
+            plans = {sub.id: runtime.model_plan(settings, s, sub) for sub in all_subjects()}
+            today = runtime.api_daily(s).get(runtime.day_key(settings), {})
             think_choices = runtime.think_settings(s)
             ollama = kv_json(s, "ollama", {}) or {}
             tests = list(s.execute(select(Job).where(Job.is_test.is_(True)).order_by(Job.id.desc()).limit(5))
@@ -555,6 +568,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                                "effective": {True: "考えさせる", False: "切る", None: "モデルの既定のまま"}[effective]})
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
+                      subject_settings=subject_settings, plans=plans, today=today, roles=runtime.ROLES,
+                      daily_keys=runtime.DAILY_KEYS,
                       ollama=ollama, tests=tests, settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg,
                       api=api)
 
@@ -596,12 +611,23 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
 
     @app.post("/status/models")
     def save_models(gen_model: str = Form(""), verify_model: str = Form(""), verify_count: str = Form(""),
-                    verify_model_2: str = Form(""), review: str = Form("on")) -> Response:
+                    verify_model_2: str = Form(""), review: str = Form("on"), review_model: str = Form("")) -> Response:
         with sessions.begin() as s:
             runtime.save_overrides(s, {"gen_model": gen_model, "verify_model": verify_model,
                                        "verify_count": verify_count, "verify_model_2": verify_model_2,
-                                       "review": "off" if review == "off" else "on"})
+                                       "review": "off" if review == "off" else "on", "review_model": review_model})
         return redirect("/status/models?msg=saved#models")
+
+    @app.post("/status/subject-models")
+    async def save_subject_models(request: Request) -> Response:
+        """科目ごとの上書き（役割ごとのモデルと API の 1 日の上限）。空の欄は全体の設定。「既定値に戻す」で全部消す。"""
+        form = await request.form()
+        sub = subject_or_404(str(form.get("subject", "")))
+        keys = [*runtime.ROLES, *sub.model_roles, *runtime.DAILY_KEYS]
+        values = {} if form.get("action") == "reset" else {k: str(form.get(k, "")) for k in keys}
+        with sessions.begin() as s:
+            runtime.save_subject_settings(s, sub.id, values)
+        return redirect(f"/status/models?msg=subject#subject-{sub.id}")
 
     @app.post("/status/think")
     def save_think(model: str = Form(...), choice: str = Form("auto")) -> Response:
@@ -624,7 +650,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
             job = Job(subject=sub.id, scope=scope, format=sub.test_format, count=1, is_test=True)
-            runtime.apply_plan(job, runtime.model_plan(settings, s))
+            runtime.apply_plan(job, runtime.model_plan(settings, s, sub))
             s.add(job)
         return redirect("/status/models?msg=test#tests")
 

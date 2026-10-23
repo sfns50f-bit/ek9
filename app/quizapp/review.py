@@ -136,7 +136,8 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
         lines += [f"## 問題 {n}（#{p.id}）{lab['subject']}／{lab['unit']}／{lab['subunit']}",
                   "", f"- 作成日時：{when(p.created_at) if p.created_at else '—'}／管理番号：#{p.id}",
                   f"- レベル：{lab['level']}／形式：{lab['format']}",
-                  f"- 作成役：{p.gen_model or '—'}／検証役：{p.verify_models or '—'}", ""]
+                  f"- {'本文作成役：' + (p.passage.gen_model or '—') + '／' if p.passage is not None else ''}"
+                  f"作成役：{p.gen_model or '—'}／検証役：{p.verify_models or '—'}", ""]
         if p.passage is not None and p.passage.body:
             lines += ["### 本文", "", p.passage.body.strip(), ""]
         lines += ["### 問題文", "", p.question.strip(), ""]

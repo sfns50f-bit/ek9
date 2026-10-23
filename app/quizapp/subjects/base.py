@@ -81,7 +81,9 @@ class Draft:
     params_key: str = ""
     log: list[dict[str, Any]] = field(default_factory=list)
     # 本文（英語の長文・公共の資料）。{"title", "body", "source_title", "source_url"}。
-    # 1 つの本文に複数の問題をつけるときは、generate() が同じ dict を持つ Draft のリストを返す
+    # 1 つの本文に複数の問題をつけるときは、generate() が同じ dict を持つ Draft のリストを返す。
+    # 使い回すための記録 "template" "topic" "status" "gen_model" "log" も入れられる。
+    # すでにある本文に設問を足すときは {"id": 本文の ID} を入れる（worker はその本文に結び付ける）
     passage: dict[str, Any] | None = None
     # 同じ本文の設問のうち、作成の段階で使えないと分かったもの（本文なしで解けるなど）。
     # worker は検証にかけずに不合格として残す（ほかの設問はそのまま検証する）
@@ -138,6 +140,16 @@ class GenContext:
     is_test: bool = False
     # (小単元ID) -> すでにある問題の params_key の集合（同じ数値の問題を作らない）
     existing_keys: Callable[[str], set[str]] = lambda _template: set()
+    # 役割ごとのモデル（gen / verify / review と、科目だけの役割。Subject.model_roles）
+    models: dict[str, str] = field(default_factory=dict)
+    review: bool = True  # 見直しをする依頼か（本文の見直しもこれに従う）
+    # (小単元ID) -> その小単元の本文 [{"id", "title", "body", "topic", "status", "questions": [設問の文]}]
+    # （設問を後から足すため。不合格になった設問は questions に入れない）
+    passages: Callable[[str], list[dict[str, Any]]] = lambda _template: []
+
+    def model(self, role: str) -> str:
+        """役割のモデル。設定がなければ作成役のモデル。"""
+        return self.models.get(role) or self.gen_model
 
 
 class Subject:
@@ -146,6 +158,9 @@ class Subject:
     formats: tuple[str, ...] = ("choice",)
     reject_codes: dict[str, str] = {}
     mistakes: dict[str, str] = {}  # 選択式の誤答につける「間違いの種類」
+    # 科目だけの役割（{役割ID: 画面の名前}。英語の「本文作成」など）。モデルは科目ごとに設定でき、
+    # 設定がなければ作成役のモデルを使う。作成のときは ctx.model(役割ID) で読む
+    model_roles: dict[str, str] = {}
     # 画面で $…$ を数式として表示するか。英語のように「$20」がそのまま出てくる科目は False にする
     math_text: bool = True
 

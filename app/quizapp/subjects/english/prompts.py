@@ -9,20 +9,61 @@ from __future__ import annotations
 
 from typing import Any
 
-# --- 読解の作成 ---------------------------------------------------------------
+# --- 読解の作成（2 段階：本文作成役が本文を書く → 作成役が確定した本文に設問を書く） ---------------
 
-READING_SYSTEM = """あなたは日本の大学入学共通テスト（英語リーディング）の問題を作る編集者です。
-日本の高校生が読む英文と、その内容を問う 4 択の設問を作ります。
+PASSAGE_SYSTEM = """あなたは日本の大学入学共通テスト（英語リーディング）の問題を作る編集者です。
+日本の高校生が読む英文の本文を書きます（設問は別の人が作ります）。
 
-本文（英語）:
 - 指定された種類・題材・語数で、自然で正しい英語を書く。共通テストに近い難しさ（高校で習う語彙と文法）にする
 - 本文は自分で考えた内容にする。実在の人物・会社・商品の名前や、事実かどうか分からない数字・出来事を本当のことのように書かない（登場人物や店の名前は架空のものにする）
+- 時系列・因果関係が筋の通った内容にし、前後で矛盾させない。題名や本文で使う言葉（misunderstanding など）は、内容と合うものにする
+- 架空の URL・メールアドレスは example.org などの例示用のドメインを使う（www.example.org/events、info@example.org など）
 - 段落の間は空行を 1 つ入れる。見出しや箇条書きは、お知らせ・広告のときだけ使ってよい
+- 設問・解説・日本語訳は書かない"""
+
+PASSAGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "本文の題名（英語）"},
+        "passage": {"type": "string", "description": "本文（英語）"},
+    },
+    "required": ["title", "passage"],
+}
+
+
+def passage_user(genre: str, topic: str, words: tuple[int, int]) -> str:
+    return "\n".join([
+        f"本文の種類: {genre}",
+        f"題材: {topic}",
+        f"本文の長さ: {words[0]}〜{words[1]} 語",
+    ])
+
+
+PASSAGE_REVIEW_SYSTEM = """あなたは日本の高校の英語の先生です。生徒に読ませる前に、英語の本文を点検します。
+次の点に誤りがないかを確かめてください。
+1. 時系列が筋が通っているか（出来事の順番、「〜した後で」「毎週」などの時の表し方が食い違っていないか）
+2. 因果関係・人物の行動に無理がないか。前後で矛盾していないか
+3. 題名や本文の言葉が内容と合っているか（misunderstanding と書いてあるのに誤解の話になっていない、など）
+4. 英文が自然で、文法やつづりの誤りがないか
+細かい言い回しの好みや、もっと良い書き方がある、というだけのものは誤りとしない。
+
+verdict の 1 行目には「問題なし」か「問題あり」のどちらかだけを書く。"""
+
+
+def passage_review_user(passage: str) -> str:
+    return "本文:\n" + passage
+
+
+QUESTION_SYSTEM = """あなたは日本の大学入学共通テスト（英語リーディング）の問題を作る編集者です。
+与えられた英語の本文の内容を問う 4 択の設問を作ります。本文は書き換えません。
 
 設問（英語）:
 - 正解は本文の内容だけから 1 つに決まるようにする。ほかの 3 つの選択肢は、本文を読めばはっきり誤りと分かるものにする
-- 本文を読まなくても常識で答えられる設問は作らない
-- 正解の選択肢は、本文の言葉をそのまま写さず、言い換えて書く。正解だけが長くならないよう、4 つの選択肢の長さをそろえる
+- 本文を読まなくても常識で答えられる設問は作らない。すでにある設問と同じことは問わない
+- 正解の選択肢は、本文の言葉をそのまま写さず、言い換えて書く。正解の選択肢のどの部分も本文で裏付けられるようにする（本文にない要素を足さない）
+- 正解だけが長くならないよう、4 つの選択肢の長さをそろえる
+- 本文で性別が分からない人物（特に語り手）は、設問・選択肢で the writer などと呼び、he / she を使わない
+- 設問の中の代名詞（his / her / their）は、指す人物が 1 人に決まるときだけ使う
 - 「NOT」を使う設問や、「All of the above」のような選択肢は作らない
 - 選択肢は A〜D の 4 つ。誤答それぞれに、間違いの種類を次の記号で付ける:
   not_stated（本文に書かれていない）、contradicts（本文と食い違う）、partial（一部だけ合っている）、detail（数・日時・人などの取り違え）
@@ -30,7 +71,8 @@ READING_SYSTEM = """あなたは日本の大学入学共通テスト（英語リ
 
 ヒントと解説（日本語）:
 - ヒントは答えを書かずに、本文のどこを読めばよいか（第◯段落、◯◯の部分など）を 1〜2 文で示す
-- 解説は、根拠になる本文の部分の意味（和訳）と、正解がなぜ正しいか、ほかの選択肢がなぜ誤りかを書く
+- 解説は、根拠になる本文の部分の意味（和訳）と、正解がなぜ正しいか、ほかの選択肢がなぜ誤りかを書く。誰が誰に何をしたかを本文のとおりに書く
+- 人名は英語の表記のまま書く（Mr. Hale など。カタカナにしない）
 - 選択肢は画面で並べ替えるので、解説とヒントでは選択肢を A・B などの記号で呼ばない（「『〜』という選択肢は」のように中身で呼ぶ）
 - 自然な日本語で書く（中国語の字や言い回しを混ぜない）。作成の指示そのものには触れない
 
@@ -47,25 +89,20 @@ Hint: <ヒント（日本語）>
 Explanation: <解説（日本語）>"""
 
 
-def reading_schema(n_questions: int) -> dict[str, Any]:
-    props: dict[str, Any] = {
-        "title": {"type": "string", "description": "本文の題名（英語）"},
-        "passage": {"type": "string", "description": "本文（英語）"},
-    }
-    for i in range(1, n_questions + 1):
-        props[f"q{i}"] = {"type": "string",
-                          "description": f"設問 {i}（Question・A〜D・Answer・Wrong・Evidence・Hint・Explanation の各行）"}
+def question_schema(n_questions: int) -> dict[str, Any]:
+    props = {f"q{i}": {"type": "string",
+                       "description": f"設問 {i}（Question・A〜D・Answer・Wrong・Evidence・Hint・Explanation の各行）"}
+             for i in range(1, n_questions + 1)}
     return {"type": "object", "properties": props, "required": list(props)}
 
 
-def reading_user(genre: str, topic: str, words: tuple[int, int], n_questions: int, style: str) -> str:
-    return "\n".join([
-        f"本文の種類: {genre}",
-        f"題材: {topic}",
-        f"本文の長さ: {words[0]}〜{words[1]} 語",
-        f"設問の数: {n_questions}（[[q1]] から [[q{n_questions}]] まで。それぞれ本文の別の部分を問う）",
-        f"設問の作り方: {style}",
-    ])
+def question_user(passage: str, n_questions: int, style: str, existing: list[str]) -> str:
+    lines = ["本文:", passage, "",
+             f"作る設問の数: {n_questions}（[[q1]] から [[q{n_questions}]] まで。それぞれ本文の別の部分を問う）",
+             f"設問の作り方: {style}"]
+    if existing:
+        lines += ["", "この本文にすでにある設問（同じことを問わない）:", *[f"- {q}" for q in existing]]
+    return "\n".join(lines)
 
 
 # --- 語彙・スペルの作成 -------------------------------------------------------
