@@ -299,7 +299,7 @@ class Worker:
                 level=su.level if su else "", related_units=",".join(su.related) if su else "",
                 status="rejected", job_id=job.id, question=str(p.get("question", "")),
                 explanation=str(p.get("explanation", "")), hint=str(p.get("hint", "")),
-                params_json=dumps(p.get("params", {})), params_key="",
+                choices_json=dumps(p.get("choices", [])), params_json=dumps(p.get("params", {})), params_key="",
                 verification_json=dumps(exc.log), reject_code=exc.code, reject_reason=str(exc),
                 gen_model=plan.gen_model,
             ))
@@ -413,6 +413,11 @@ class Worker:
             finally:
                 self._save_llm_calls(job.id)
             drafts = made if isinstance(made, list) else [made]
+            # 同じ本文の設問のうち、作成の段階で使えないと分かったものは不合格として残す（ほかは検証へ）
+            for d in drafts:
+                if d.rejected is not None:
+                    self.save_rejected(job, subject, d.template, d.rejected, plan)
+            drafts = [d for d in drafts if d.rejected is None]
             self.save_drafts(job, drafts, plan)
             produced += len(drafts)
 

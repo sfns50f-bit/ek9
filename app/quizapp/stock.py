@@ -72,42 +72,79 @@ def wrong_problem_ids(s: Session, user_id: int, subject: str, templates: list[st
     return [(pid, t) for pid, t in rows]
 
 
-def spread_pick(items: list[tuple[int, str]], n: int, rng: random.Random) -> list[tuple[int, str]]:
-    """小単元ごとに順番に 1 問ずつ取り、なるべく均等に n 問選ぶ（同じ小単元の中は items の順）。"""
-    groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
+# 選ぶ単位：1 問（問題の ID）か、同じ本文の設問の塊（ID のタプル。設問の順）
+Pick = tuple[Any, str]
+
+
+def _size(key: Any) -> int:
+    return len(key) if isinstance(key, tuple) else 1
+
+
+def _blocks(rows: list[tuple[int, str, int | None]]) -> list[Pick]:
+    """(ID, 小単元, 本文の ID) を選ぶ単位にまとめる。同じ本文の設問は 1 つの塊（最初に出てきた位置に置く）。
+
+    本文つきの科目（英語の読解・公共）の設問は、同じ本文のものを続けて出す（本文を何度も読み直さないように）。
+    """
+    out: list[Pick] = []
+    where: dict[int, int] = {}
+    for pid, t, passage_id in rows:
+        if passage_id is None:
+            out.append((pid, t))
+            continue
+        if passage_id in where:
+            i = where[passage_id]
+            out[i] = (tuple(sorted(out[i][0] + (pid,))), t)
+        else:
+            where[passage_id] = len(out)
+            out.append(((pid,), t))
+    return out
+
+
+def spread_pick(items: list[Pick], n: int, rng: random.Random) -> list[Pick]:
+    """小単元ごとに順番に 1 つずつ取り、なるべく均等に n 問選ぶ（同じ小単元の中は items の順）。
+
+    本文の塊は設問の数で数える。残りの数より大きい塊は、前の設問から残りの数だけ使う。
+    """
+    groups: dict[str, list[Pick]] = defaultdict(list)
     for item in items:
         groups[item[1]].append(item)
     keys = list(groups)
     rng.shuffle(keys)
-    out: list[tuple[int, str]] = []
-    while len(out) < n and keys:
+    out: list[Pick] = []
+    got = 0
+    while got < n and keys:
         for k in list(keys):
-            if len(out) >= n:
+            if got >= n:
                 break
-            out.append(groups[k].pop(0))
+            key, t = groups[k].pop(0)
+            if isinstance(key, tuple) and len(key) > n - got:
+                key = key[:n - got]
+            out.append((key, t))
+            got += _size(key)
             if not groups[k]:
                 keys.remove(k)
     return out
 
 
-def spread_order(items: list[tuple[int, str]], rng: random.Random) -> list[int]:
-    """同じ小単元の問題が続かないように並べる。
+def spread_order(items: list[Pick], rng: random.Random) -> list[int]:
+    """同じ小単元の問題が続かないように並べる（本文の塊の中の設問は続けて、設問の順に出す）。
 
-    毎回「直前と違う小単元のうち、残りが最も多いもの」から 1 問出す（残りが多いものを先に減らすと、
+    毎回「直前と違う小単元のうち、残りが最も多いもの」から 1 つ出す（残りが多いものを先に減らすと、
     最後に同じ小単元だけが残って続いてしまうことが起きにくい）。1 つの小単元しかなければ続くのは避けられない。
     """
-    groups: dict[str, list[int]] = defaultdict(list)
-    for pid, t in items:
-        groups[t].append(pid)
-    for ids in groups.values():
-        rng.shuffle(ids)
+    groups: dict[str, list[Any]] = defaultdict(list)
+    for key, t in items:
+        groups[t].append(key)
+    for keys in groups.values():
+        rng.shuffle(keys)
     out: list[int] = []
     last = None
     while groups:
         cands = [t for t in groups if t != last] or list(groups)
         most = max(len(groups[t]) for t in cands)
         t = rng.choice([c for c in cands if len(groups[c]) == most])
-        out.append(groups[t].pop())
+        key = groups[t].pop()
+        out.extend(key if isinstance(key, tuple) else (key,))
         if not groups[t]:
             del groups[t]
         last = t
@@ -120,24 +157,29 @@ def build_session(s: Session, user_id: int, subject: Subject, scope: str, device
 
     再出題は count の retry_percent % まで。未出題が足りなければ、残りの間違えた問題で埋め、
     それでも足りなければある分だけで始める。選んだ範囲の小単元からなるべく均等に選び、
-    同じ小単元の問題が続かないように並べる。
+    同じ小単元の問題が続かないように並べる。同じ本文の設問はまとめて続けて出す。
     """
     rng = rng or random.Random()
     formats = DEVICES[device][1]
     templates = subject.templates_for(scope, levels=levels)
     wrong = wrong_problem_ids(s, user_id, subject.id, templates, formats)
-    fresh = [(pid, t) for pid, t in s.execute(
-        select(Problem.id, Problem.template).where(
+    fresh = [(pid, t, passage) for pid, t, passage in s.execute(
+        select(Problem.id, Problem.template, Problem.passage_id).where(
             *_servable(), Problem.subject == subject.id, Problem.template.in_(templates),
             Problem.format.in_(formats), Problem.id.not_in(_seen_ids(user_id)))
     ).all()]
     rng.shuffle(fresh)
+    passage_of = dict(s.execute(select(Problem.id, Problem.passage_id).where(
+        Problem.id.in_([pid for pid, _t in wrong]))).all()) if wrong else {}
+    wrong_blocks = _blocks([(pid, t, passage_of.get(pid)) for pid, t in wrong])
     n_retry = min(len(wrong), count * retry_percent // 100)
-    picked = spread_pick(wrong, n_retry, rng)
-    picked += spread_pick(fresh, count - len(picked), rng)
-    if len(picked) < count:
-        rest = [w for w in wrong if w not in picked]
-        picked += spread_pick(rest, count - len(picked), rng)
+    picked = spread_pick(wrong_blocks, n_retry, rng)
+    picked += spread_pick(_blocks(fresh), count - sum(_size(k) for k, _t in picked), rng)
+    have = sum(_size(k) for k, _t in picked)
+    if have < count:
+        used = {pid for k, _t in picked for pid in (k if isinstance(k, tuple) else (k,))}
+        rest = _blocks([(pid, t, passage_of.get(pid)) for pid, t in wrong if pid not in used])
+        picked += spread_pick(rest, count - have, rng)
     return spread_order(picked, rng)
 
 

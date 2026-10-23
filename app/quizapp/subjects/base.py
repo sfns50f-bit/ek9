@@ -83,6 +83,9 @@ class Draft:
     # 本文（英語の長文・公共の資料）。{"title", "body", "source_title", "source_url"}。
     # 1 つの本文に複数の問題をつけるときは、generate() が同じ dict を持つ Draft のリストを返す
     passage: dict[str, Any] | None = None
+    # 同じ本文の設問のうち、作成の段階で使えないと分かったもの（本文なしで解けるなど）。
+    # worker は検証にかけずに不合格として残す（ほかの設問はそのまま検証する）
+    rejected: Rejected | None = None
 
 
 @dataclass
@@ -143,6 +146,8 @@ class Subject:
     formats: tuple[str, ...] = ("choice",)
     reject_codes: dict[str, str] = {}
     mistakes: dict[str, str] = {}  # 選択式の誤答につける「間違いの種類」
+    # 画面で $…$ を数式として表示するか。英語のように「$20」がそのまま出てくる科目は False にする
+    math_text: bool = True
 
     def units(self) -> list[Unit]:
         raise NotImplementedError
@@ -177,6 +182,16 @@ class Subject:
         if problem.format == "choice":
             return grade_choice(problem, response)
         raise NotImplementedError
+
+    # --- 問題検証モード（web。LLM は使わない） -----------------------------
+
+    def text_issues(self, problem: Any) -> list[str]:
+        """問題文・ヒント・解説の表記の崩れ（作成のときと同じ点検）。「表記の点検で引っかかる問題」に出す。"""
+        return []
+
+    def normalize_text(self, text: str) -> str:
+        """意味を変えずに直せる表記の揺れを直す（問題検証モードの「表記をまとめて直す」）。"""
+        return text
 
     # --- 共通の便利関数 ----------------------------------------------------
 

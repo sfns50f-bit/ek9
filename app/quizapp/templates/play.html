@@ -8,9 +8,21 @@
   <span>{{ pos }} / {{ total }}</span>
   <span class="muted">{{ subject.label_of(problem.template) }}</span>
 </div>
-<section class="card question-card">
+{# 本文のある設問（英語の読解など）：スマホでは「本文」と「設問」をタブで切り替え、広い画面では左右に並べる #}
+{% if problem.passage %}
+<div class="reading {{ nomath(problem.subject) }}" data-passage="{{ problem.passage_id }}">
+  <div class="tabs" role="tablist">
+    <button type="button" class="tab" data-pane="passage" role="tab">本文</button>
+    <button type="button" class="tab" data-pane="question" role="tab">設問</button>
+  </div>
+  <section class="card pane passage-pane" data-pane-name="passage">
+    {{ math(problem.passage.body, "passage") }}
+    <button type="button" class="primary tab-go" data-pane="question">設問へ</button>
+  </section>
+{% endif %}
+<section class="card question-card {{ nomath(problem.subject) }}{{ ' pane' if problem.passage }}" data-pane-name="question">
+  {% if problem.passage %}<button type="button" class="secondary small tab-go" data-pane="passage">本文を見る</button>{% endif %}
   {{ math(problem.question, "question") }}
-  {% if problem.passage %}{{ math(problem.passage.body, "passage") }}{% endif %}
 
   <form method="post" action="/play/{{ session.id }}/answer" id="answer-form" autocomplete="off">
     <input type="hidden" name="problem_id" value="{{ problem.id }}">
@@ -34,7 +46,7 @@
              enterkeyhint="done" required>
     </label>
     {% if problem.input_hint %}<p class="muted small">{{ problem.input_hint }}</p>{% endif %}
-    <p class="preview muted" id="preview" aria-live="polite"></p>
+    {% if subject.math_text %}<p class="preview muted" id="preview" aria-live="polite"></p>{% endif %}
     <button type="submit" class="primary big">答える</button>
     {% endif %}
 
@@ -45,5 +57,6 @@
     <button type="submit" name="action" value="giveup" class="secondary" formnovalidate>わからない（解説を見る）</button>
   </form>
 </section>
+{% if problem.passage %}</div>{% endif %}
 {{ report_form(problem, "/play/" ~ session.id) }}
 {% endblock %}

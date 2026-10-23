@@ -11,7 +11,25 @@ function renderMath(root) {
       { left: "\\[", right: "\\]", display: true },
     ],
     throwOnError: false,
+    ignoredClasses: ["nomath"],  // 英語など、$ を数式に使わない科目（「$20」を数式にしない）
   });
+}
+
+// 本文のある設問：スマホでは「本文」と「設問」をタブで切り替える（広い画面では CSS で左右に並べる）。
+// 同じ本文の最初の設問では本文から、2 問目からは設問から見せる
+function setupReading() {
+  const box = document.querySelector(".reading");
+  if (!box) return;
+  box.classList.add("js");
+  function show(name, scroll) {
+    box.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.dataset.paneName === name));
+    box.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", t.dataset.pane === name ? "true" : "false"));
+    if (scroll) box.scrollIntoView({ block: "start" });
+  }
+  box.querySelectorAll(".tab, .tab-go").forEach((b) => b.addEventListener("click", () => show(b.dataset.pane, true)));
+  const id = box.dataset.passage;
+  show(storageGet("quiz.passage") === id ? "question" : "passage", false);
+  storageSet("quiz.passage", id);
 }
 
 function storageGet(key) {
@@ -174,6 +192,7 @@ function setupPlay() {
 
 document.addEventListener("DOMContentLoaded", () => {
   renderMath();
+  setupReading();
   const start = document.getElementById("start-form");
   if (start) setupScopeForm(start, "start");
   const gen = document.getElementById("generate-form");

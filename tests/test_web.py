@@ -270,7 +270,7 @@ def test_stock_shows_breakdown_by_format(client, settings, sessions, sandbox):
     """キーボードの端末では選択式も出すので、出せる数は合計になる。その内訳を表示する。"""
     stock_up(settings, sessions, sandbox, count=3)
     stock_up(settings, sessions, sandbox, format="input", count=2)
-    rows = {r["device"]: r for r in client.get("/status.json").json()["stock"]}
+    rows = {r["device"]: r for r in client.get("/status.json").json()["stock"] if r["subject"] == "math"}
     assert rows["phone"]["count"] == 3 and rows["keyboard"]["count"] == 5
     assert rows["keyboard"]["detail"] == "キーボード入力 2・選択式 3"
     assert "キーボード入力 2・選択式 3" in client.get("/").text

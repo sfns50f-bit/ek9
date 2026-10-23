@@ -13,7 +13,6 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import latexfix
 from .db import Problem, dumps
 from .subjects import all_subjects, get_subject
 from .subjects.base import FORMATS, LEVELS
@@ -68,9 +67,9 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
 
 
 def text_issues(problem: Problem) -> list[str]:
-    """問題文・ヒント・解説の表記の崩れ（latexfix）。作成のときと同じ点検。"""
-    return (latexfix.question_problems(problem.question, choice=problem.format == "choice")
-            + latexfix.problems(problem.hint, field="ヒント") + latexfix.problems(problem.explanation, field="解説"))
+    """問題文・ヒント・解説の表記の崩れ。作成のときと同じ点検（中身は科目ごと。数学は latexfix）。"""
+    sub = get_subject(problem.subject)
+    return sub.text_issues(problem) if sub else []
 
 
 def normalize_all(s: Session) -> int:
@@ -78,7 +77,10 @@ def normalize_all(s: Session) -> int:
     直した問題の数を返す。数式の意味は変えない（度の記号の揺れ・\\sin・文字どおりの \\n など）。"""
     changed = 0
     for p in s.execute(select(Problem).where(Problem.status.in_(("ready", "deleted")))).scalars():
-        new = {f: latexfix.normalize(getattr(p, f) or "") for f in TEXT_FIELDS}
+        sub = get_subject(p.subject)
+        if sub is None:
+            continue
+        new = {f: sub.normalize_text(getattr(p, f) or "") for f in TEXT_FIELDS}
         before = {f: getattr(p, f) or "" for f in TEXT_FIELDS if new[f] != (getattr(p, f) or "")}
         if before:
             # 直す前の文章は記録に残す（問題の「作り方と検証の記録」で見られる）

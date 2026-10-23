@@ -113,7 +113,7 @@ def _fix_controls(value: Any) -> Any:
 # \\top・\\times・\\rho・ngle・\\u00b0 のように別の文字に押し曲げられて、LaTeX が壊れていた。
 # そこで JSON を使わず、[[question]] のような見出しで区切った平文で書かせる（バックスラッシュはそのまま届く）。
 # 見出しの揺れも読む：**[[question]]**、## [[question]]、[[ Question ]]:
-_TAG_RE = re.compile(r"^[ \t#>*_]*\[\[\s*([A-Za-z_]+)\s*\]\][*_ \t:：]*(.*)$", re.M)
+_TAG_RE = re.compile(r"^[ \t#>*_]*\[\[\s*([A-Za-z][A-Za-z0-9_]*)\s*\]\][*_ \t:：]*(.*)$", re.M)
 _FENCE_RE = re.compile(r"^\s*```[A-Za-z]*\s*$", re.M)
 
 
