@@ -144,7 +144,8 @@ def think_text(problem: Problem) -> str:
     roles: list[tuple[str, str, str]] = []
     passage = problem.passage
     if passage is not None and passage.gen_model:
-        roles.append(("本文作成", passage.gen_model, passage.think or think.get(passage.gen_model, "")))
+        # 本文は、本文を作ったときの記録だけを使う（使い回した本文に、設問を作ったときの設定を出さない。E-2）
+        roles.append(("本文作成", passage.gen_model, passage.think or "none"))
     roles.append(("作成", problem.gen_model or job.gen_model, ""))
     roles.append(("検証", job.verify_model, ""))
     if job.verify_model_2:
@@ -155,12 +156,12 @@ def think_text(problem: Problem) -> str:
     for label, model, state in roles:
         if model:
             state = state or think.get(model, "")
-            parts.append(f"{label} {THINK_RECORD.get(state, '記録なし')}")
+            parts.append(f"{label} {THINK_RECORD.get(state, '記録なし')}")  # "none" も「記録なし」
     return "／".join(parts)
 
 
 # 書き出しに出す記録の段階（作成の途中の細かい記録は出さない）
-_EXPORT_STEPS = ("本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
+_EXPORT_STEPS = ("文章", "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
                  "検証", "解説の見直し", REREVIEW_STEP, "設問")
 
 
@@ -184,6 +185,9 @@ def verification_lines(problem: Problem) -> list[str]:
         out.append(f"- {mark} {e.get('step')}{model}：{str(e.get('summary', '')).strip()[:300]}")
         if e.get("step") in ("解説の見直し", REREVIEW_STEP) and e.get("detail"):
             out += [f"  - {ln.strip()[:300]}" for ln in str(e["detail"]).splitlines() if ln.strip()][:8]
+        if not e.get("ok") and e.get("raw") and (e.get("step") == "文章" or e.get("code") == "llm_output"):
+            # 読めなかった出力そのもの（E-4。思考の部分が混ざっていないかなどを見る）
+            out += ["", "  ```", *[f"  {ln}" for ln in str(e["raw"])[:800].splitlines()], "  ```", ""]
         shown += 1
     if not shown and problem.status != "rejected":
         out.append("- 記録なし")

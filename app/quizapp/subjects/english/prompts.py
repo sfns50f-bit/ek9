@@ -134,46 +134,56 @@ _VOCAB_PARTS = {
     "en-vocab-blank": """
 
 この問題は、例文の中の指定された単語を空所にして、4 つの語から選ばせる問題です。
-- 選択肢には、指定された単語のほかに「選択肢に並ぶ別の語」が並ぶ。その語は例文に使わず、どれを空所に入れても意味が通らない文にする
+- 「誤答の候補」から、例文の空所に入れても文法上は成り立つが、意味が合わない語を 3 つ選び、[[others]] にコンマで区切って書く（候補にない語は書かない）。選んだ語は例文に使わず、どれを空所に入れても意味が通らない文にする
 - 指定された単語の直前に a や an を置かない（空所にしたとき答えの手がかりになるため）
 - ヒントは答えの単語もその意味も書かずに、文のどこに注目すればよいかを 1 文で示す
-- 解説は、文の意味から考えてなぜその単語が入るかを 2〜3 文で書く。ほかの選択肢の語に触れるときは、その語のつづり（英語）をそのまま書く""",
+- 解説は、文の意味から考えてなぜその単語が入るかを 2〜3 文で書く。[[others]] で選んだ語に触れるときは、その語のつづり（英語）をそのまま書く""",
     "en-vocab-meaning": """
 
 この問題は、例文の中の指定された単語を [ ] で示し、その意味を 4 つの日本語から選ばせる問題です。例文に空所はない。
+- 「誤答の候補」から、[ ] の所に入れても文法上は自然だが意味が違う語を 3 つ選び、[[others]] にコンマで区切って書く（候補にない語は書かない。その語の意味が誤答の選択肢になる）
 - ヒントは答えの意味を書かずに、文のどこに注目すればよいかを 1 文で示す
 - 解説は、文の意味から考えてなぜその単語がその意味になるかを 2〜3 文で書く
 - ヒント・解説で「空所」「入る」「入れる」という言葉を使わない（空所はない）""",
     "en-spelling": """
 
 この問題は、日本語の意味と例文（指定された単語の所は最初の文字と文字数だけを見せる）から、単語のつづりを書かせる問題です。
-- ヒントは答えの単語を書かずに、文のどこに注目すればよいかを 1 文で示す
+- ヒントは書かない（つづりのヒントは別に用意する）
 - 解説は、文の意味から考えてなぜその単語が入るかを 2〜3 文で書く（ほかの語には触れない）""",
 }
+
+
+_MULTI_MEANING = """
+
+意味が「／」で区切って複数あるときは、例文で使う意味を 1 つ選び、その意味を [[meaning]] にそのまま書く。例文はその意味で使う。"""
+
+
+def vocab_schema(template: str, *, multi: bool = False) -> dict[str, Any]:
+    """語彙・スペルの出力の項目。スペルはヒントを書かせない（コードで作る。D-4）。選択式は誤答の語を選ばせる（D-5）。
+    意味が複数ある語は、使う意味を選ばせる（D-3）。"""
+    props: dict[str, Any] = {}
+    if multi:
+        props["meaning"] = {"type": "string", "description": "例文で使う意味（並べた意味から 1 つをそのまま）"}
+    props["sentence"] = {"type": "string", "description": "例文（英語の 1 文）"}
+    if template != "en-spelling":
+        props["others"] = {"type": "string", "description": "誤答の候補から選んだ 3 語（コンマ区切り）"}
+    props["translation"] = {"type": "string", "description": "例文の和訳"}
+    if template != "en-spelling":
+        props["hint"] = {"type": "string", "description": "ヒント（日本語）"}
+    props["explanation"] = {"type": "string", "description": "解説（日本語）"}
+    return {"type": "object", "properties": props, "required": list(props)}
 
 
 def vocab_system(template: str) -> str:
     """語彙・スペルの作成役への指示。小単元ごとに、その問題の形に要ることだけを書く
     （スペル・意味の問題に「ほかの語」の話を書くと、作成役が解説に書き写してしまった。第 4 回のレビュー A-2）。"""
-    return _VOCAB_COMMON + _VOCAB_PARTS.get(template, "")
+    return _VOCAB_COMMON + _VOCAB_PARTS.get(template, "") + _MULTI_MEANING
 
 
-VOCAB_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "sentence": {"type": "string", "description": "例文（英語の 1 文）"},
-        "translation": {"type": "string", "description": "例文の和訳"},
-        "hint": {"type": "string", "description": "ヒント（日本語）"},
-        "explanation": {"type": "string", "description": "解説（日本語）"},
-    },
-    "required": ["sentence", "translation", "hint", "explanation"],
-}
-
-
-def vocab_user(word: str, pos: str, meaning: str, others: list[str]) -> str:
-    lines = [f"使う単語: {word}（品詞: {pos}。意味: {meaning}）"]
-    if others:
-        lines.append("選択肢に並ぶ別の語（例文に使わない。空所に入れると意味が通らない文にする）: " + ", ".join(others))
+def vocab_user(word: str, pos: str, meanings: list[str], candidates: list[str]) -> str:
+    lines = [f"使う単語: {word}（品詞: {pos}。意味: {'／'.join(meanings)}）"]
+    if candidates:
+        lines.append("誤答の候補（ここから 3 つ選ぶ）: " + ", ".join(candidates))
     return "\n".join(lines)
 
 

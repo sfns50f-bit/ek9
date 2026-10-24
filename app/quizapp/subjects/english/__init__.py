@@ -25,6 +25,7 @@ from typing import Any
 from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import check, prompts
 from .catalog import MISTAKES, READING_MISTAKES, READINGS, TOPICS, UNITS, VOCABS
+from .jhs_words import JHS_WORDS
 from .words import POS, SPELLING_EXCLUDE, WORDS, Word
 
 FIX_ROUNDS = 1  # 点検で落ちたとき、直しを頼む回数
@@ -148,15 +149,27 @@ def _kanji(meaning: str) -> set[str]:
     return out
 
 
-def pick_distractors(word: Word, rng: random.Random, n: int = 3) -> list[Word]:
-    """同じ品詞・同じレベルで、意味が重ならない語を n 個（意味が近い語は 2 つとも正解になりうるので避ける）。"""
-    pool = [w for w in WORDS if w.pos == word.pos and w.level == word.level and w.word != word.word]
+def _all_kanji(word: Word) -> set[str]:
+    out: set[str] = set()
+    for m in word.meanings:
+        out |= _kanji(m)
+    return out
+
+
+def pick_distractors(word: Word, rng: random.Random, n: int = 3, *, need_label: bool = False) -> list[Word]:
+    """同じ品詞・同じレベルで、意味が重ならない語を n 個（意味が近い語は 2 つとも正解になりうるので避ける）。
+
+    中学の語は使わない（D-1）。need_label：意味を選択肢に出すので、2 文字以上の意味がある語だけ（D-2）。
+    意味の重なりは、並べたすべての意味で見る（D-3）。
+    """
+    pool = [w for w in WORDS if w.pos == word.pos and w.level == word.level and w.word != word.word
+            and w.word not in JHS_WORDS and (w.label or not need_label)]
     rng.shuffle(pool)
     chosen: list[Word] = []
-    seen = _kanji(word.meaning)
+    seen = _all_kanji(word)
     for w in pool:
-        k = _kanji(w.meaning)
-        if k & seen or w.meaning == word.meaning or any(w.word == c.word for c in chosen):
+        k = _all_kanji(w)
+        if k & seen or set(w.meanings) & set(word.meanings) or any(w.word == c.word for c in chosen):
             continue
         chosen.append(w)
         seen |= k
@@ -171,6 +184,45 @@ def _blank(sentence: str, word: str, repl: str) -> str:
 
 def spelling_pattern(word: str) -> str:
     return word[0] + " _" * (len(word) - 1)
+
+
+def spelling_hint(word: str) -> str:
+    """スペルの問題のヒント（コードで作る。LLM のヒントは位置の説明の誤りが多かった。第 4 回のレビュー D-4）。
+
+    問題文に最初の文字と文字数は出ているので、最後の文字（7 文字以上なら 2 文字目も）を見せる。
+    """
+    hint = f"最後の文字は「{word[-1]}」です。"
+    if len(word) >= 7:
+        hint += f"2 文字目は「{word[1]}」です。"
+    return hint
+
+
+CANDIDATES = 12  # 誤答の候補の数（作成役がここから 3 つ選ぶ。D-5）
+
+
+def chosen_meaning(word: Word, text: str) -> str:
+    """作成役が選んだ意味（並べた意味のどれか）。読めなければ中心の意味。"""
+    t = (text or "").strip().strip("「」『』\"' 。")
+    first = t.splitlines()[0].strip() if t else ""
+    return next((m for m in word.meanings if m == first), None) or next(
+        (m for m in word.meanings if m and m in t), word.meaning)
+
+
+def chosen_others(text: str, candidates: list[Word], n: int = 3) -> tuple[list[Word], bool]:
+    """作成役が候補から選んだ誤答の語。足りなければ候補の順に足す。(語, 作成役が 3 つとも正しく選んだか)。"""
+    by_word = {w.word.lower(): w for w in candidates}
+    picked: list[Word] = []
+    for token in re.findall(r"[A-Za-z]+", text or ""):
+        w = by_word.get(token.lower())
+        if w is not None and w not in picked:
+            picked.append(w)
+    ok = len(picked) >= n
+    for w in candidates:
+        if len(picked) >= n:
+            break
+        if w not in picked:
+            picked.append(w)
+    return picked[:n], ok
 
 
 def normalize_word(text: str) -> str:
@@ -234,9 +286,10 @@ class EnglishSubject(Subject):
             return _params_key(template, {"topic": topic, "q": i})
 
         # 見直しを通った本文のうち、設問が足りないもの（設問が不合格になった本文）に設問を足す。
-        # 不合格が重なる本文（設問の数の 2 倍）は使わない
+        # 不合格が重なる本文（設問の数の 2 倍）は使わない。数えるのは今の作成役が作った設問の不合格だけ
+        # （弱い作成役で設問が落ち続けた本文にも、別の作成役なら設問を足せる。第 4 回のレビュー E-5）
         reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic") and len(p["questions"]) < n
-                    and p.get("rejected", 0) < 2 * n]
+                    and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * n]
         if reusable:
             src = reusable[0]
             topic, body, have = src["topic"], src["body"], list(src["questions"])
@@ -432,32 +485,41 @@ class EnglishSubject(Subject):
     def _vocab(self, ctx: GenContext, template: str, fmt: str) -> Draft:
         spec = VOCABS[template]
         existing = ctx.existing_keys(template)
-        pool = [w for w in WORDS if w.level == spec.word_level
+        pool = [w for w in WORDS if w.level == spec.word_level and w.word not in JHS_WORDS
                 and (fmt != "input" or (w.word not in SPELLING_EXCLUDE and len(w.word) >= 4))]
         pool = [w for w in pool if _params_key(template, {"word": w.word, "pos": w.pos}) not in existing]
         if not pool:
             raise Rejected("duplicate", "単語リストの語をすべて使いました（words.py に語を足すと作れます）")
         word = ctx.rng.choice(pool)
-        others = pick_distractors(word, ctx.rng)
-        if len(others) < 3:
+        choice = template != "en-spelling"
+        # 誤答の候補（同じ品詞・レベルで意味が重ならない語）を作成役に渡し、文法上は入るが意味が合わない語を 3 つ選ばせる（D-5）
+        candidates = pick_distractors(word, ctx.rng, CANDIDATES, need_label=template == "en-vocab-meaning") if choice else []
+        if choice and len(candidates) < 3:
             raise Rejected("choices", f"「{word.word}」と意味が重ならない誤答の語を 3 つ選べません")
-        params = {"word": word.word, "pos": word.pos, "others": [w.word for w in others],
-                  "seed": ctx.rng.randrange(1 << 30), "test": ctx.is_test}
+        params: dict[str, Any] = {"word": word.word, "pos": word.pos, "seed": ctx.rng.randrange(1 << 30),
+                                  "test": ctx.is_test}
         key = _params_key(template, {"word": word.word, "pos": word.pos})
-        user = prompts.vocab_user(word.word, POS[word.pos], word.meaning,
-                                  [w.word for w in others] if template == "en-vocab-blank" else [])
+        schema = prompts.vocab_schema(template, multi=len(word.meanings) > 1)
+        system = prompts.vocab_system(template)
+        user = prompts.vocab_user(word.word, POS[word.pos], list(word.meanings), [w.word for w in candidates])
         log: list[dict[str, Any]] = [{
             "step": "単語", "ok": True,
-            "summary": f"単語リストから「{word.word}」（{POS[word.pos]}・{word.meaning}）を選んだ"
-                       + (f"。誤答の語: {', '.join(w.word for w in others)}" if fmt == "choice" else "")
+            "summary": f"単語リストから「{word.word}」（{POS[word.pos]}・{'／'.join(word.meanings)}）を選んだ"
+                       + (f"。誤答の候補 {len(candidates)} 語" if choice else "")
                        + ("。検証のテストのため、正解の印を誤答に移します" if ctx.is_test else ""),
-            "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.vocab_system(template),
+            "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + system,
         }]
         partial: dict[str, Any] = {"unit": "en-vocab", "template": template, "format": fmt, "params": params}
-        schema = prompts.VOCAB_SCHEMA
-        out = _chat(ctx, prompts.vocab_system(template), user, schema)
+        out = _chat(ctx, system, user, schema)
+        others: list[Word] = []
+        picked_ok = True
         for round_no in range(FIX_ROUNDS + 1):
             fields = {k: check.normalize(str(out.get(k) or "")) for k in schema["properties"]}
+            meaning = chosen_meaning(word, fields.get("meaning", ""))
+            if choice:
+                others, picked_ok = chosen_others(fields.get("others", ""), candidates)
+            if not choice:
+                fields["hint"] = spelling_hint(word.word)  # スペルのヒントはコードで作る（D-4）
             partial.update(question=fields["sentence"], explanation=fields["explanation"], hint=fields["hint"])
             issues = self._vocab_issues(word, others if template == "en-vocab-blank" else [], fields, template)
             if not issues:
@@ -468,10 +530,16 @@ class EnglishSubject(Subject):
             if last:
                 raise Rejected("en_text", summary, log, partial)
             _set_label(ctx.llm, "直し")
-            out = _chat(ctx, prompts.vocab_system(template), prompts.fix_user(user, out, summary, list(schema["properties"])),
-                        schema)
+            out = _chat(ctx, system, prompts.fix_user(user, out, summary, list(schema["properties"])), schema)
+        params.update(meaning=meaning, others=[w.word for w in others])
         log.append({"step": "例文の点検", "ok": True,
-                    "summary": f"例文に「{word.word}」がちょうど 1 回、ほかの選択肢の語は入っていない、訳・解説は日本語"})
+                    "summary": f"例文に「{word.word}」がちょうど 1 回、ほかの選択肢の語は入っていない、訳・解説は日本語"
+                               + (f"。意味は「{meaning}」を使う" if len(word.meanings) > 1 else "")})
+        if choice:
+            log.append({"step": "誤答", "ok": True,
+                        "summary": ("作成役が候補から選んだ誤答の語: " if picked_ok else
+                                    "作成役が候補から 3 つ選べなかったので、候補から足した誤答の語: ")
+                                   + ", ".join(w.word for w in others)})
         sentence = fields["sentence"]
         explanation = f"訳: {fields['translation']}\n\n{fields['explanation']}"
         hint = fields["hint"]
@@ -482,17 +550,17 @@ class EnglishSubject(Subject):
             choices = [{"text": word.word, "correct": True, "mistake": None}]
             choices += [{"text": w.word, "correct": False, "mistake": "other_word"} for w in others]
             answer_display = word.word
-            explanation += f"\n\n答え: {word.word}（{word.meaning}）"
+            explanation += f"\n\n答え: {word.word}（{meaning}）"
         elif template == "en-vocab-meaning":
             question = ("次の英文の [ ] で示した語の意味として最も適切なものを選べ。\n\n"
                         + _blank(sentence, word.word, f"[ {word.word} ]"))
-            choices = [{"text": word.meaning, "correct": True, "mistake": None}]
-            choices += [{"text": w.meaning, "correct": False, "mistake": "other_meaning"} for w in others]
-            answer_display = word.meaning
-            explanation += f"\n\n答え: {word.word} ＝「{word.meaning}」"
+            choices = [{"text": meaning, "correct": True, "mistake": None}]
+            choices += [{"text": w.label, "correct": False, "mistake": "other_meaning"} for w in others]
+            answer_display = meaning
+            explanation += f"\n\n答え: {word.word} ＝「{meaning}」"
         else:
             question = (f"日本語の意味に合う英単語を書け（{len(word.word)} 文字。最初の文字は示してある）。\n\n"
-                        f"意味: {word.meaning}（{POS[word.pos]}）\n\n"
+                        f"意味: {meaning}（{POS[word.pos]}）\n\n"
                         + _blank(sentence, word.word, f"( {spelling_pattern(word.word)} )"))
             answer_display = word.word
             input_hint = "英単語を 1 語、半角の英字で入力（大文字・小文字は区別しません）"
@@ -533,9 +601,12 @@ class EnglishSubject(Subject):
         if check.count_word(fields["hint"], word.word):
             out.append("ヒントに答えの単語が書かれている")
         # 意味を答える・空所に入れる問題で、ヒントに正解の語の意味が書かれている（スペルは問題文に意味を出すので見ない。A-4）
-        meaning = word.meaning.replace("〜", "").strip()
-        if template != "en-spelling" and len(meaning) >= 2 and meaning in fields["hint"]:
-            out.append(f"ヒントに正解の語の意味「{word.meaning}」が書かれている")
+        if template != "en-spelling":
+            for m in word.meanings:
+                core = m.replace("〜", "").strip()
+                if len(core) >= 2 and core in fields["hint"]:
+                    out.append(f"ヒントに正解の語の意味「{m}」が書かれている")
+                    break
         if check.similar(fields["hint"], check.first_sentence(fields["explanation"])):
             out.append("ヒントが解説の 1 文目とほぼ同じ")
         # 意味の問題の例文には空所がない（A-7）

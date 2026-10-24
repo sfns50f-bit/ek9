@@ -26,7 +26,7 @@
 | `subjects/base.py` | **科目の窓口**（`Subject`：units / generate / verify / review / grade / text_issues / normalize_text、`math_text`、`model_roles`。作成のときに渡す `GenContext`：役割ごとのモデル `models`・見直しをするか `review`・本文の一覧 `passages`）。中心部分はここだけを使う |
 | `subjects/__init__.py` | 科目の登録（`REGISTRY`）。科目を足すときはここに 1 行 |
 | `subjects/math/` | 数学（詳細は [docs/math.md](docs/math.md)）。`catalog.py`（単元・間違いの種類と、`templates.py` の `@template(...)` を **ast で読む** `template_info()`。sympy なし＝web 用）、`templates.py`（20 テンプレート。sympy。単元・小単元名・レベル・関連する単元は `@template` に書く）、`prompts.py`、`__init__.py`（MathSubject） |
-| `subjects/english/` | 英語（詳細は [docs/english.md](docs/english.md)）。`catalog.py`（単元・小単元・誤答の種類・読解の題材）、`words.py`（単語リスト 1232 語）、`check.py`（英文の点検）、`prompts.py`、`__init__.py`（EnglishSubject） |
+| `subjects/english/` | 英語（詳細は [docs/english.md](docs/english.md)）。`catalog.py`（単元・小単元・誤答の種類・読解の題材）、`words.py`（単語リスト 1543 語。意味は「／」で複数）、`jhs_words.py`（中学の語。問題に使わない）、`check.py`（英文の点検）、`prompts.py`、`__init__.py`（EnglishSubject） |
 | `worker.py` | 依頼の処理。**作成フェーズ（全問の文章）→ 検証フェーズ（まとめて）** の順。Ollama につながらなければ `waiting` にして再試行。**順番待ちは 2 つ**（`lane`：ollama＝どれかが Ollama のモデル、api＝全部 API のモデル）を別スレッドで同時に処理。直前と同じ科目の依頼を先にする。本文の保存と使い回し（`passages_for` / `_passage_row`） |
 | `stock.py` | ストック数、解き始めのセットの組み方（間違えた問題を 30% まで混ぜる。小単元を均等に・続けない。同じ本文の設問はまとめて続けて出す）、/status の集計（期間・依頼番号での絞り込み、作成役ごと、依頼ごとの比較） |
 | `textcheck.py` | **数学向け**。問題文にテンプレートの式・値が、解説に正解が「そのまま」入っているかの確認（LaTeX の揺れだけ吸収） |
@@ -151,7 +151,7 @@
 ## 進み具合
 
 - [x] フェーズ1「新しい土台＋数学」（PR #2〜#9。実機で運用中。API での作成も動作確認済み：Haiku で 20 問 0.03 ドル。開発者の判断で「使用上の問題なし」としてフェーズ2へ）
-- [ ] フェーズ2 英語（共通テストレベルの読解・語彙）：実装済み（PR #12：読解 3・語彙 2・スペル 1 の小単元、本文なしの確認、検証に選択肢を見せる英語のルール、本文のタブ表示、同じ本文の設問をまとめて出す）。実機で試した結果のレビューに対応中：第 3 回（[docs/reviews/03_english.md](docs/reviews/03_english.md)）の 4 章（科目 × 役割のモデル設定）と 3 章 G・E（読解を本文 → 設問の 2 段階に、本文の見直し、本文の使い回し）、第 4 回（[docs/reviews/04_english.md](docs/reviews/04_english.md)）の A・B（点検とプロンプト）・C（問いを絞った見直し）・E-3（検証と見直しの記録の書き出し）、思考モードの「あり／なし」、見直しだけをやり直す依頼は済み
+- [ ] フェーズ2 英語（共通テストレベルの読解・語彙）：実装済み（PR #12：読解 3・語彙 2・スペル 1 の小単元、本文なしの確認、検証に選択肢を見せる英語のルール、本文のタブ表示、同じ本文の設問をまとめて出す）。実機で試した結果のレビューに対応中：第 3 回（[docs/reviews/03_english.md](docs/reviews/03_english.md)）の 4 章（科目 × 役割のモデル設定）と 3 章 G・E（読解を本文 → 設問の 2 段階に、本文の見直し、本文の使い回し）、第 4 回（[docs/reviews/04_english.md](docs/reviews/04_english.md)）の A・B（点検とプロンプト）・C（問いを絞った見直し）・D（語彙・スペル）・E（記録と書き出し）、思考モードの「あり／なし」、見直しだけをやり直す依頼は済み
 - [ ] フェーズ3 公共（資料を取得して作る。worker からインターネットへ出る。sandbox は出さない）
 - [ ] フェーズ4 作り方を増やす（キーワード指定、子供からのリクエスト、類題、時事問題。同じ jobs の順番待ちで処理）
 - [ ] フェーズ5 学習機能（集計、間隔をあけた再出題、テストモードなど）
@@ -159,7 +159,7 @@
 
 ## 次にやること
 
-1. 第 4 回のレビュー（[docs/reviews/04_english.md](docs/reviews/04_english.md)）の残り：D（語彙・スペル）→ E-1・E-2・E-4・E-5（記録）。開発者が「見直しだけをやり直す」で Haiku・e4b・12b を同じ問題で比べ、見直し役を決める。第 3 回の残り（C の根拠の文を複数に、5 章の比べる書き出し）は第 4 回の E-3 などと合わせて行う。既存の問題の削除・設定（見直し役を Haiku に）は開発者が行う。残りは docs/english.md の 6 章にも書いた
+1. 第 4 回のレビュー（[docs/reviews/04_english.md](docs/reviews/04_english.md)）への対応はコードの分は済み。開発者が実機で作り、「見直しだけをやり直す」で Haiku・e4b・12b を同じ問題で比べて見直し役を決める。1 章の推奨設定と 3 章の問題の削除は開発者が画面で行う。第 3 回の残り（C の根拠の文を複数に、5 章の比べる書き出し）は第 4 回の E-3 などと合わせて行う。既存の問題の削除・設定（見直し役を Haiku に）は開発者が行う。残りは docs/english.md の 6 章にも書いた
 2. フェーズ2の最後（プルリクエストを作る前）に、ルール 10 の別のサブエージェントのレビューを 1 回受ける（まだ受けていない）
 3. 仕様書（docs/spec.md）はフェーズ1で決めたことを反映済み（2026-10-23）。原本は開発者が手で合わせる。次のフェーズで更新版が来たら差し替える
 4. 数学で残っていること（急がない）は [docs/math.md](docs/math.md) の 12 章と、[docs/handover.md](docs/handover.md) の残課題、第 3 回のレビューの付録（数学の未対応分）
