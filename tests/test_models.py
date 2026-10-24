@@ -196,13 +196,13 @@ def test_think_mode_is_recorded_and_exported(settings, sessions, sandbox, client
     add_job(sessions, subject="english", scope="tmpl:en-notice", count=2)
     make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
     j = jobs(sessions)[-1]
-    assert j.think == {"anthropic/claude-haiku-5-5": "api", "gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    assert j.think == {"anthropic/claude-haiku-5-5": "api", "gemma4:12b-it-qat": "off", "gemma4:e4b": "off"}
     with sessions() as s:
         p = s.scalars(select(Problem).where(Problem.status == "ready")).first()
         assert p.passage.think == "api"
     md = client.get("/review/export.md?subject=english").text
-    assert "- 思考モード：本文作成 API／作成 思考なし／検証 モデルの既定／見直し モデルの既定" in md
-    assert "思考モード: 本文作成 API／作成 思考なし" in client.get("/review?subject=english").text
+    assert "- 思考モード：本文作成 API／作成 なし／検証 なし／見直し なし" in md
+    assert "思考モード: 本文作成 API／作成 なし" in client.get("/review?subject=english").text
     # 記録のない前の版の問題
     with sessions.begin() as s:
         s.get(Job, j.id).think_json = "{}"
@@ -216,15 +216,32 @@ def test_think_mode_is_fixed_when_the_job_is_requested(settings, sessions, sandb
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1",
                                    "m_math_gen_model": "gemma4:12b-it-qat", "m_math_verify_model": "gemma4:e4b"})
     j = jobs(sessions)[-1]
-    assert j.think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    assert j.think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "off"}
     with sessions.begin() as s:  # 依頼した後で設定を変える
         runtime.save_think_setting(s, "gemma4:12b-it-qat", "on")
     llm = OracleLLM(sessions)
     llm.think_for = None
     make_worker(settings, sessions, sandbox, llm).run_once()
-    assert llm.think_for("gemma4:12b-it-qat") is False and llm.think_for("gemma4:e4b") is None
-    assert jobs(sessions)[-1].think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    assert llm.think_for("gemma4:12b-it-qat") is False and llm.think_for("gemma4:e4b") is False
+    assert jobs(sessions)[-1].think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "off"}
     # 記録のない前の版の依頼は、取りかかった時点の設定を記録して使う
     old = add_job(sessions, count=1)
     make_worker(settings, sessions, sandbox, llm).run_once()
     assert job(sessions, old).think["gemma4:12b-it-qat"] == "on" and llm.think_for("gemma4:12b-it-qat") is True
+
+
+def test_think_mode_is_only_on_or_off(client, sessions):
+    """思考モードは「あり」「なし」の 2 つだけ（「自動」「モデルの既定」は選べない）。前の版の記録は分かるように出す。"""
+    from quizapp.db import dumps, kv_set
+
+    assert runtime.THINK_CHOICES == {"off": "なし", "on": "あり"}
+    with sessions.begin() as s:
+        kv_set(s, "ollama", dumps({"ok": True, "models": [{"name": "gemma4:12b-it-qat"}]}))
+        kv_set(s, "think_settings", dumps({"qwen3.5:9b": "auto"}))  # 前の版の値は読まない
+        assert runtime.think_settings(s) == {}
+    page = client.get("/status/models").text.split('id="think"')[1].split("</section>")[0]
+    assert "（未設定＝なし）" in page and "自動" not in page and "既定" not in page
+    client.post("/status/think", data={"model": "gemma4:12b-it-qat", "choice": "auto"})
+    with sessions() as s:
+        assert runtime.think_settings(s) == {}
+    assert runtime.THINK_RECORD["default"] == "モデルの既定（前の版）"

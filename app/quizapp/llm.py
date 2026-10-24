@@ -193,7 +193,7 @@ class OllamaClient:
                 "num_predict": self.num_predict,
             },
         }
-        # 思考モードはモデルごとに決める（runtime.think_for。qwen3 系は切る、gemma4 はモデルの既定のまま）
+        # 思考モードはモデルごとに決める（runtime.resolve_think。「あり」「なし」を明示して送る）
         think = self.think_for(model) if self.think_for is not None else self.think
         if think is not None:
             body["think"] = think
@@ -202,6 +202,11 @@ class OllamaClient:
         started = time.monotonic()
         state = self._stream("/api/chat", body)
         status = state.get("status")
+        if status == 400 and "think" in body and "thinking" in str(state.get("text", "")).lower():
+            # 思考に対応していないモデル（「… does not support thinking」）。思考の指定を外して送り直す（思考なしで動く）
+            body.pop("think")
+            state = self._stream("/api/chat", body)
+            status = state.get("status")
         if status == 404:
             raise LLMModelMissing(f"モデル {model} が Ollama に見つかりません。`ollama pull {model}` を実行するか、"
                                   "別のモデルを選んでください")

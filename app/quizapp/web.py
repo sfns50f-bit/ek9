@@ -565,8 +565,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         think_rows = []
         for name in ollama_names:
             effective = runtime.resolve_think(name, think_choices, settings.think)
-            think_rows.append({"model": name, "choice": think_choices.get(name, "auto"),
-                               "effective": {True: "考えさせる", False: "切る", None: "モデルの既定のまま"}[effective]})
+            think_rows.append({"model": name, "choice": "on" if effective else "off",
+                               "saved": name in think_choices})
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
                       subject_settings=subject_settings, plans=plans, today=today, roles=runtime.ROLES,
@@ -631,7 +631,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return redirect(f"/status/models?msg=subject#subject-{sub.id}")
 
     @app.post("/status/think")
-    def save_think(model: str = Form(...), choice: str = Form("auto")) -> Response:
+    def save_think(model: str = Form(...), choice: str = Form("off")) -> Response:
         if choice not in runtime.THINK_CHOICES:
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:

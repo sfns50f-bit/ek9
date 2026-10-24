@@ -97,15 +97,15 @@
 
 <section class="card" id="think">
   <h2>思考モード（モデルごと）</h2>
-  <p class="muted small">考えてから答えるモデルは、考えた分も出力の上限に数えられ、JSON が途中で切れたり答えの読み取りを邪魔したりします。
-    選んだ設定はモデルごとに保存され、そのモデルを使うたびに同じ設定になります。「自動」は qwen3 系（qwen3.5 も）を切り、
-    それ以外（gemma4 など）はモデルの既定のままにします（gemma4 は思考を切ると JSON の指定が効かなくなる不具合がありました）。</p>
+  <p class="muted small">思考モードは「あり」か「なし」です。選んだ設定はモデルごとに保存され、そのモデルを使うたびに同じ設定になります。
+    選んでいないモデルは「なし」です。思考ありは考えた分だけ時間がかかります（英語の 12b で 1 問約 19 分。なしは約 1.5 分）。
+    依頼したときの設定で、その依頼は最後まで作ります。思考に対応していないモデルは、いつも「なし」で動きます。</p>
   {% if not ollama.ok %}<p class="notice warn">Ollama につながっていないので、モデルの一覧を出せません（保存した設定は残っています）。</p>{% endif %}
   <p class="muted small">Ollama に今あるモデルだけを出しています。Ollama から消したモデルの設定も保存したまま残るので、入れ直せば同じ設定が効きます。</p>
   <table class="compact small">
-    <tr><th>モデル</th><th>いまの動き</th><th>設定</th></tr>
+    <tr><th>モデル</th><th>思考モード</th></tr>
     {% for r in think_rows %}
-    <tr><td>{{ r.model }}</td><td>{{ r.effective }}</td>
+    <tr><td>{{ r.model }}{% if not r.saved %} <span class="muted">（未設定＝{{ think_labels[r.choice] }}）</span>{% endif %}</td>
       <td><form method="post" action="/status/think" class="inline"><input type="hidden" name="model" value="{{ r.model }}">
         <select name="choice" onchange="this.form.submit()">
           {% for key, label in think_labels.items() %}<option value="{{ key }}" {{ 'selected' if r.choice == key }}>{{ label }}</option>{% endfor %}
