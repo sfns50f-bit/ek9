@@ -480,6 +480,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=fmt,
                       count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))))
             runtime.apply_plan(job, chosen)
+            runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
             s.add(job)
         return redirect("/generate?msg=queued")
 
@@ -650,7 +651,9 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
             job = Job(subject=sub.id, scope=scope, format=sub.test_format, count=1, is_test=True)
-            runtime.apply_plan(job, runtime.model_plan(settings, s, sub))
+            plan = runtime.model_plan(settings, s, sub)
+            runtime.apply_plan(job, plan)
+            runtime.record_think(settings, s, job, plan)
             s.add(job)
         return redirect("/status/models?msg=test#tests")
 

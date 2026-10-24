@@ -207,3 +207,24 @@ def test_think_mode_is_recorded_and_exported(settings, sessions, sandbox, client
     with sessions.begin() as s:
         s.get(Job, j.id).think_json = "{}"
     assert "- 思考モード：記録なし" in client.get("/review/export.md?subject=english").text
+
+
+def test_think_mode_is_fixed_when_the_job_is_requested(settings, sessions, sandbox, client):
+    """思考モードは依頼したときの設定で最後まで生成する（後で設定を変えても、その依頼は変わらない）。"""
+    with sessions.begin() as s:
+        runtime.save_think_setting(s, "gemma4:12b-it-qat", "off")
+    client.post("/generate", data={"subject": "math", "format": "choice", "count": "1",
+                                   "m_math_gen_model": "gemma4:12b-it-qat", "m_math_verify_model": "gemma4:e4b"})
+    j = jobs(sessions)[-1]
+    assert j.think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    with sessions.begin() as s:  # 依頼した後で設定を変える
+        runtime.save_think_setting(s, "gemma4:12b-it-qat", "on")
+    llm = OracleLLM(sessions)
+    llm.think_for = None
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.think_for("gemma4:12b-it-qat") is False and llm.think_for("gemma4:e4b") is None
+    assert jobs(sessions)[-1].think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    # 記録のない前の版の依頼は、取りかかった時点の設定を記録して使う
+    old = add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert job(sessions, old).think["gemma4:12b-it-qat"] == "on" and llm.think_for("gemma4:12b-it-qat") is True

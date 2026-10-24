@@ -194,6 +194,11 @@ def apply_plan(job: object, plan: ModelPlan) -> None:
     job.extra_models_json = dumps(dict(plan.extra))  # type: ignore[attr-defined]
 
 
+def record_think(settings: Settings, session: Session, job: object, plan: ModelPlan) -> None:
+    """依頼したときの思考モードを依頼に記録する（後で設定を変えても、この依頼はこの値で最後まで処理する）。"""
+    job.think_json = dumps(think_map(settings, session, plan))  # type: ignore[attr-defined]
+
+
 # --- API の利用額（ドル） ----------------------------------------------------------
 # 月ごとの合計を kv の api_spend（{"2026-10": 1.23}）に、上限を setting_api_monthly_limit / setting_api_job_limit に持つ。
 # 月の区切りは日本時間（DISPLAY_TZ）。
@@ -298,6 +303,18 @@ def think_record(model: str, choices: dict[str, str], env_think: bool | None) ->
     if provider_of(model)[0] != "ollama":
         return "api"
     return {True: "on", False: "off", None: "default"}[resolve_think(model, choices, env_think)]
+
+
+def think_map(settings: Settings, session: Session, plan: ModelPlan) -> dict[str, str]:
+    """依頼で使うモデルごとの思考モード（依頼したときの設定。依頼に記録し、worker は最後までこの値で呼ぶ）。"""
+    choices = think_settings(session)
+    used = [*plan.models.values(), *plan.verify_runs]
+    return {m: think_record(m, choices, settings.think) for m in dict.fromkeys(used) if m}
+
+
+def think_from_record(state: str) -> bool | None:
+    """記録した思考モードを、Ollama に送る think の値に（"default" と "api" は送らない）。"""
+    return {"on": True, "off": False}.get(state)
 
 
 def auto_think(model: str) -> bool | None:

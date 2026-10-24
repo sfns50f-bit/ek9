@@ -131,8 +131,57 @@ function setupScopeForm(form, mode) {
         ? `選んだ範囲でまだ解いていない問題：${chosenTotal} 問`
         : `選んだ範囲・形式のストック（まだ解いていない問題）：${chosenTotal} 問`;
     }
-    storageSet(key, JSON.stringify({ subject: subjectSel.value, scope, levels: lv }));
+    storageSet(key, JSON.stringify({ subject: subjectSel.value, scope, levels: lv, fields: changedFields() }));
   }
+  // 形式・問題数・モデルの欄（m_<科目>_…）は、画面の初期値から変えたものだけを覚える
+  // （作る画面は処理中の依頼があると自動で読み込み直すので、そのたびに初期値に戻らないように。
+  //  覚えていない欄は「状態」で変えた初期値がそのまま効く）
+  function rememberedFields() {
+    return form.querySelectorAll("input[name=format], input[name=count], select[name^='m_'], input[name^='m_']");
+  }
+  function defaultOf(el) {
+    if (el.tagName === "SELECT") {
+      const opt = [...el.options].find((o) => o.defaultSelected) || el.options[0];
+      return opt ? opt.value : "";
+    }
+    return el.defaultValue;
+  }
+  function changedFields() {
+    const out = {};
+    rememberedFields().forEach((el) => {
+      if (el.type === "hidden") return;
+      if (el.type === "radio") {
+        if (el.checked && !el.defaultChecked) out[el.name] = el.value;
+      } else if (el.type === "checkbox") {
+        if (el.checked !== el.defaultChecked) out[el.name] = el.checked ? "1" : "0";
+      } else if (el.value !== defaultOf(el)) {
+        out[el.name] = el.value;
+      }
+    });
+    return out;
+  }
+  function restoreFields(fields) {
+    Object.entries(fields || {}).forEach(([name, value]) => {
+      form.querySelectorAll(`[name="${name}"]`).forEach((el) => {
+        if (el.type === "radio") el.checked = el.value === value;
+        else if (el.type === "checkbox") el.checked = value === "1";
+        else if (el.tagName === "SELECT") {
+          if ([...el.options].some((o) => o.value === value)) el.value = value;  // 一覧から消えたモデルは戻さない
+        } else el.value = value;
+      });
+    });
+  }
+  // 「初期値に戻す」：その科目のモデルの欄を、画面の初期値（状態の設定）に戻す
+  form.querySelectorAll(".models-reset").forEach((b) => b.addEventListener("click", () => {
+    const box = b.closest(".models");
+    box.querySelectorAll("select, input").forEach((el) => {
+      if (el.type === "checkbox" || el.type === "radio") el.checked = el.defaultChecked;
+      else if (el.tagName === "SELECT") el.value = defaultOf(el);
+      else if (el.type !== "hidden") el.value = el.defaultValue;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }));
+  form.addEventListener("input", (ev) => { if (ev.target.name === "count") update(); });
   // 単元にチェック → その小単元を全部チェック。小単元を外す → 単元のチェックも外す
   form.addEventListener("change", (ev) => {
     const t = ev.target;
@@ -158,6 +207,9 @@ function setupScopeForm(form, mode) {
       const box = form.querySelector(`input[name=levels][value="${v}"]`);
       if (box) box.checked = true;
     });
+    restoreFields(last.fields);
+    // 戻したモデルで「作成役と検証役が同じ」の注意を出し直す
+    form.querySelectorAll("select[name$=gen_model]").forEach((el) => el.dispatchEvent(new Event("change")));
   }
   update();
   form.addEventListener("submit", () => {

@@ -47,8 +47,9 @@ from .runtime import (
     month_key,
     plan_for_job,
     provider_of,
+    record_think,
     resolve_think,
-    think_record,
+    think_from_record,
     think_settings,
 )
 from .sandbox_client import SandboxClient, SandboxUnavailable
@@ -371,13 +372,15 @@ class Worker:
             if not row.gen_model:
                 apply_plan(row, plan)
             choices = think_settings(s)
+            # 思考モードは依頼したときに記録した値を最後まで使う。記録のない前の版の依頼は、取りかかった時点の設定を記録する
+            recorded = row.think
+            if not recorded:
+                record_think(self.settings, s, row, plan)
+                recorded = row.think
         if hasattr(self.llm, "think_for"):
             env_think = self.settings.think
-            self.llm.think_for = lambda m: resolve_think(m, choices, env_think)
-        # 使うモデルごとの思考モードを依頼に残す（問題検証モードと書き出しで、思考あり・なしを比べられるように）
-        used = [*plan.models.values(), *plan.verify_runs]
-        self._update_job(job_id, think_json=dumps({m: think_record(m, choices, self.settings.think)
-                                                   for m in dict.fromkeys(used) if m}))
+            self.llm.think_for = lambda m: (think_from_record(recorded[m]) if m in recorded
+                                            else resolve_think(m, choices, env_think))
         budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
         self._check_cancel(job_id)
