@@ -220,9 +220,21 @@ class OllamaClient:
         final = state.get("final") or {}
         self._record(model, time.monotonic() - started, final)
         raw = "".join(state.get("content", []))
+        thinking = "".join(state.get("thinking", []))
+        # 思考の部分（Ollama の message.thinking）も、出力が読めなかったときの記録に残す（第 4 回のレビュー E-4）
+        shown = raw + (f"\n\n[思考の部分（message.thinking）の最後]\n{thinking[-2000:]}" if thinking.strip() else "")
         if final.get("done_reason") == "length":
-            raise LLMError(f"出力の上限（num_predict={self.num_predict}）で途中で切れました", raw=raw)
-        return parse_tagged(raw, schema)
+            raise LLMError(f"出力の上限（num_predict={self.num_predict}）で途中で切れました", raw=shown)
+        try:
+            return parse_tagged(raw, schema)
+        except LLMError as exc:
+            if thinking.strip() and not raw.strip():
+                # 答えまで思考の部分に書いてしまったとき（本文が空）は、思考の部分から読んでみる
+                try:
+                    return parse_tagged(thinking, schema)
+                except LLMError:
+                    pass
+            raise LLMError(str(exc), raw=shown) from None
 
     def _stream(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         """POST して、改行区切りの JSON の応答を読み切る。取り消し・時間切れのときは接続を切る。"""
@@ -257,7 +269,10 @@ class OllamaClient:
                     if chunk.get("error"):
                         state["error"] = str(chunk["error"])
                         return
-                    state["content"].append((chunk.get("message") or {}).get("content", ""))
+                    message = chunk.get("message") or {}
+                    state["content"].append(message.get("content", ""))
+                    if message.get("thinking"):
+                        state.setdefault("thinking", []).append(message["thinking"])
                     if chunk.get("done"):
                         state["final"] = chunk
                         return

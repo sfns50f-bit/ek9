@@ -295,15 +295,19 @@ class Worker:
             rows = list(s.execute(select(Passage).where(Passage.template == template).order_by(Passage.id)).scalars())
             questions: dict[int, list[str]] = {}
             rejected: dict[int, int] = {}
-            for pid, q, status in s.execute(select(Problem.passage_id, Problem.question, Problem.status).where(
-                    Problem.passage_id.in_([r.id for r in rows]))):
+            rejected_by: dict[int, dict[str, int]] = {}  # 不合格の設問の数（設問を作ったモデルごと。E-5）
+            for pid, q, status, model in s.execute(
+                    select(Problem.passage_id, Problem.question, Problem.status, Problem.gen_model).where(
+                        Problem.passage_id.in_([r.id for r in rows]))):
                 if status in ("ready", "draft"):
                     questions.setdefault(pid, []).append(q)
                 elif status == "rejected":
                     rejected[pid] = rejected.get(pid, 0) + 1
+                    by = rejected_by.setdefault(pid, {})
+                    by[model] = by.get(model, 0) + 1
             return [{"id": r.id, "title": r.title, "body": r.body, "topic": r.topic, "status": r.status,
-                     "gen_model": r.gen_model, "questions": questions.get(r.id, []), "rejected": rejected.get(r.id, 0)}
-                    for r in rows]
+                     "gen_model": r.gen_model, "questions": questions.get(r.id, []), "rejected": rejected.get(r.id, 0),
+                     "rejected_by": rejected_by.get(r.id, {})} for r in rows]
 
     @staticmethod
     def _passage_row(s: Session, job: Job, p: dict[str, Any] | None, cache: dict[int, Passage]) -> Passage | None:

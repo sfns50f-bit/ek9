@@ -41,11 +41,14 @@ class FakeOllama:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
-                pieces = {"ok": ['{"answer": ', '"42"}'], "nothink": ['{"answer": "7"}'], "cut": ['{"answer": "4'],
+                pieces = {"ok": ['{"answer": ', '"42"}'], "nothink": ['{"answer": "7"}'], "thinking": ["no tags here"],
+                          "thinkonly": [""], "cut": ['{"answer": "4'],
                           "tagged": ["[[answer]]\n$120^", "\\circ$ と \\angle A\n"]}.get(outer.mode, [" "] * 300)
                 try:
                     for piece in pieces:
                         chunk = {"message": {"content": piece}, "done": False}
+                        if outer.mode in ("thinking", "thinkonly"):
+                            chunk["message"]["thinking"] = "考え中…\n[[answer]]\n9" if outer.mode == "thinkonly" else "考え中…"
                         self.wfile.write((json.dumps(chunk) + "\n").encode())
                         self.wfile.flush()
                         if outer.mode == "slow":
@@ -329,3 +332,15 @@ def test_think_is_sent_and_dropped_for_models_without_thinking(fake):
     client.think_for = lambda m: False
     assert client.chat_json("gemma3:4b", "sys", "user", SCHEMA) == {"answer": "7"}
     assert "think" in server.bodies[0] and "think" not in server.bodies[1]
+
+
+def test_unreadable_output_keeps_the_thinking_part(fake):
+    """出力が読めないときは、思考の部分（message.thinking）も記録に残す。答えが思考の部分にしかなければそこから読む（E-4）。"""
+    from quizapp.llm import LLMError
+
+    server = fake("thinking")
+    with pytest.raises(LLMError) as exc:
+        OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA)
+    assert "no tags here" in exc.value.raw and "[思考の部分（message.thinking）の最後]" in exc.value.raw
+    server = fake("thinkonly")
+    assert OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA) == {"answer": "9"}

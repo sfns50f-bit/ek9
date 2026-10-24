@@ -286,9 +286,10 @@ class EnglishSubject(Subject):
             return _params_key(template, {"topic": topic, "q": i})
 
         # 見直しを通った本文のうち、設問が足りないもの（設問が不合格になった本文）に設問を足す。
-        # 不合格が重なる本文（設問の数の 2 倍）は使わない
+        # 不合格が重なる本文（設問の数の 2 倍）は使わない。数えるのは今の作成役が作った設問の不合格だけ
+        # （弱い作成役で設問が落ち続けた本文にも、別の作成役なら設問を足せる。第 4 回のレビュー E-5）
         reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic") and len(p["questions"]) < n
-                    and p.get("rejected", 0) < 2 * n]
+                    and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * n]
         if reusable:
             src = reusable[0]
             topic, body, have = src["topic"], src["body"], list(src["questions"])

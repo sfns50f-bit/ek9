@@ -701,3 +701,45 @@ def test_review04_word_helpers():
     from collections import Counter
     usable = Counter((w.level, w.pos) for w in WORDS if w.word not in JHS_WORDS)
     assert all(usable[(lv, pos)] >= 30 for lv in ("basic", "common") for pos in ("n", "v", "adj", "adv"))
+
+
+# --- 第 4 回のレビューの E（記録） ------------------------------------------------------
+
+def test_passage_rejected_by_one_generator_is_reused_by_another(settings, sessions, sandbox):
+    """弱い作成役で設問が落ち続けた本文にも、別の作成役なら設問を足す（E-5）。"""
+    from quizapp.db import Passage
+
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions, bad_questions={1, 2}), scope="tmpl:en-notice",
+            count=1, gen_model="weak-model", verify_model="gemma4:e4b", verify_count=2)
+    with sessions() as s:
+        first = s.execute(select(Passage).order_by(Passage.id)).scalars().first()
+    assert len([p for p in problems(sessions, status="rejected") if p.passage_id == first.id]) == 4
+    llm = EnglishOracle(sessions)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2,
+            gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b", verify_count=2)
+    ready = problems(sessions, status="ready")
+    assert ready and all(p.passage_id == first.id for p in ready) and "passage" not in llm.roles()
+
+
+def test_export_shows_unreadable_output_and_passage_think(settings, sessions, sandbox):
+    """読めなかった出力を書き出しに出す（E-4）。本文の思考モードは、本文を作ったときの記録だけ（E-2）。"""
+    from quizapp import review
+    from quizapp.db import Passage, Problem
+
+    with sessions.begin() as s:
+        s.add(Problem(subject="english", unit="en-vocab", template="en-vocab-blank", format="choice",
+                      status="rejected", question="Q", reject_code="llm_output", reject_reason="読めない",
+                      verification_json='[{"step": "文章", "ok": false, "summary": "作成役の出力を読めません", '
+                                        '"raw": "ゴミの出力\\n[思考の部分（message.thinking）の最後]\\n考え中"}]'))
+    with sessions() as s:
+        p = s.scalars(select(Problem)).first()
+        lines = "\n".join(review.verification_lines(p))
+    assert "× 文章：作成役の出力を読めません" in lines and "ゴミの出力" in lines and "```" in lines
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-notice", count=2)
+    with sessions.begin() as s:
+        for row in s.scalars(select(Passage)):
+            row.think = ""  # 思考モードを記録する前に作った本文
+    with sessions() as s:
+        p = s.scalars(select(Problem).where(Problem.status == "ready")).first()
+        _ = p.passage, p.job
+        assert review.think_text(p).startswith("本文作成 記録なし／作成 なし")
