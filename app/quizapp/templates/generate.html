@@ -78,6 +78,10 @@
     {% for j in jobs %}
     {% set sub = get_subject(j.subject) %}
     <li class="job {{ j.status }}">
+      {% if j.kind == "review" %}
+      <div><strong>#{{ j.id }}</strong> 見直しのやり直し・{{ j.count }}問・{{ j.review_model or j.verify_model }}</div>
+      <div class="small">{{ JOB_STATUS.get(j.status, j.status) }}・見直し {{ j.made }} / {{ j.count }}・{{ j.created_at | localtime }}</div>
+      {% else %}
       <div><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}・{{ j.count }}問
         {% if j.levels %}・{% for l in j.levels.split(",") %}{{ LEVELS.get(l, l) }}{% if not loop.last %}／{% endif %}{% endfor %}{% endif %}
         {% if j.is_test %}<span class="tag">検証のテスト</span>{% endif %}</div>
@@ -86,6 +90,7 @@
         ・合格 {{ j.made }} / {{ j.count }}・作成 {{ j.gen_attempts }} 回・{{ j.created_at | localtime }}
       </div>
       {% if j.gen_model %}<div class="small muted">{% for role, m in j.extra_models.items() %}{{ sub.model_roles.get(role, role) if sub else role }} {{ m }}／{% endfor %}作成 {{ j.gen_model }}／検証 {{ j.verify_model }} ×{{ j.verify_count }}{% if j.verify_model_2 %} ＋ {{ j.verify_model_2 }}{% endif %}{% if j.explanation_review %}＋見直し{% if j.review_model %} {{ j.review_model }}{% endif %}{% endif %}</div>{% endif %}
+      {% endif %}
       {% if j.progress %}<div class="small muted">{{ j.progress }}</div>{% endif %}
       {% if j.error %}<div class="small">{{ j.error }}</div>{% endif %}
       {% if j.status in ["pending", "running", "waiting"] %}

@@ -120,6 +120,10 @@ class Job(Base):
     verify_model_2: Mapped[str] = mapped_column(String(128), default="")
     explanation_review: Mapped[bool] = mapped_column(Boolean, default=True)  # 解説の見直しをするか
     review_model: Mapped[str] = mapped_column(String(128), default="")  # 見直し役（空なら検証役のモデル）
+    # 依頼の種類："generate"（作成）か "review"（見直しのやり直し：target_ids の問題を review_model で見直し、
+    # 結果を記録に足すだけ。合否は変えない。見直し役のモデルを比べる・前に作った問題を点検し直すため）
+    kind: Mapped[str] = mapped_column(String(16), default="generate")
+    target_ids_json: Mapped[str] = mapped_column("target_ids", Text, default="[]")
     # 科目だけの役割のモデル（英語の本文作成 {"passage": "anthropic/…"} など）
     extra_models_json: Mapped[str] = mapped_column("extra_models", Text, default="{}")
     # 処理したときの思考モード {モデル: "on" / "off" / "default" / "api"}（runtime.THINK_RECORD。前の版の依頼は空）
@@ -135,6 +139,10 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    @property
+    def target_ids(self) -> list[int]:
+        return [int(i) for i in (_loads(self.target_ids_json, []) or [])]
 
     @property
     def think(self) -> dict[str, str]:

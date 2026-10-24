@@ -65,6 +65,7 @@ HEARTBEAT_SECONDS = 60
 LLM_CALLS_KEEP = 40
 VERIFY_STEP = "検証"
 REVIEW_STEP = "解説の見直し"
+REREVIEW_STEP = "見直しのやり直し"  # 見直しだけをやり直す依頼（kind = "review"）の記録。合否は変えない
 # Ollama の依頼と API の依頼は別のスレッドで同時に処理する。kv の読み書き（呼び出しの記録・利用額）は 1 つずつ
 _KV_LOCK = threading.Lock()
 # 順番待ちの分け方：ollama＝作成役・検証役のどれかが Ollama のモデル、api＝全部 API のモデル、None＝両方（テスト用）
@@ -359,13 +360,14 @@ class Worker:
     def process(self, job_id: int) -> None:
         job = self._job(job_id)
         subject = get_subject(job.subject)
-        if subject is None:
-            self._finish(job_id, "failed", f"未知の科目です: {job.subject}")
-            return
-        templates = subject.templates_for(job.scope, job.format, job.levels)
-        if not templates:
-            self._finish(job_id, "failed", "この範囲・形式・レベルに対応する小単元がありません")
-            return
+        if job.kind != "review":
+            if subject is None:
+                self._finish(job_id, "failed", f"未知の科目です: {job.subject}")
+                return
+            templates = subject.templates_for(job.scope, job.format, job.levels)
+            if not templates:
+                self._finish(job_id, "failed", "この範囲・形式・レベルに対応する小単元がありません")
+                return
         with self.sessions.begin() as s:
             row = s.get(Job, job_id)
             plan = plan_for_job(self.settings, s, row)
@@ -381,6 +383,9 @@ class Worker:
             env_think = self.settings.think
             self.llm.think_for = lambda m: (think_from_record(recorded[m]) if m in recorded
                                             else resolve_think(m, choices, env_think))
+        if job.kind == "review":
+            self._rereview(job_id, plan.reviewer)
+            return
         budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
         self._check_cancel(job_id)
@@ -429,6 +434,52 @@ class Worker:
             return s.execute(select(func.count()).select_from(Problem).where(
                 Problem.job_id == job_id, Problem.status == "rejected",
                 Problem.reject_code.in_(("solver_mismatch", "solver_unreadable")))).scalar_one() > 0
+
+    def _rereview(self, job_id: int, model: str) -> None:
+        """見直しだけをやり直す依頼：選んだ問題を指定のモデルで見直し、結果を各問題の記録に足す。
+
+        合否・選択肢は変えない（見直し役のモデルを比べる・前に作った問題を点検し直すため。「問題あり」と出た問題は
+        問題検証モードで開発者が見て決める）。待機・再起動のあとは、この依頼でまだ見直していない問題から続ける。
+        """
+        ids = self._job(job_id).target_ids
+        self._update_job(job_id, status="running", error="")
+        for k, pid in enumerate(ids, 1):
+            self._check_cancel(job_id)
+            with self.sessions() as s:
+                problem = s.execute(select(Problem).options(selectinload(Problem.passage))
+                                    .where(Problem.id == pid)).scalars().first()
+            if problem is None or any(e.get("step") == REREVIEW_STEP and e.get("job") == job_id
+                                      for e in problem.verification):
+                continue  # 消えた問題・この依頼で見直し済み
+            subject = get_subject(problem.subject)
+            if subject is None:
+                continue
+            text = f"見直しのやり直し {k}/{len(ids)}（{model}）"
+            self._update_job(job_id, progress=text)
+            self.set_status(f"依頼 #{job_id} — {text}", job_id)
+            self._label("見直し")
+            try:
+                res = subject.review(self.llm, model, problem) or VerifyResult(True, "この科目は見直しに対応していません")
+            except LLMError as exc:
+                res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
+                                   raw=getattr(exc, "raw", ""))
+            finally:
+                self._save_llm_calls(job_id)
+            entry: dict[str, Any] = {"step": REREVIEW_STEP, "ok": res.ok, "summary": res.summary, "detail": res.detail,
+                                     "model": model, "code": "" if res.ok else res.code, "raw": res.raw[:4000],
+                                     "job": job_id, "at": utcnow().isoformat()}
+            if res.updates:
+                entry["updates"] = res.updates  # 付け直しの案（このやり直しでは書き込まない）
+            with self.sessions.begin() as s:
+                row = s.get(Problem, pid)
+                row.verification_json = dumps(row.verification + [entry])
+        with self.sessions() as s:
+            rows = list(s.execute(select(Problem).where(Problem.id.in_(ids))).scalars())
+        mine = [e for p in rows for e in p.verification if e.get("step") == REREVIEW_STEP and e.get("job") == job_id]
+        flagged = sum(1 for e in mine if not e.get("ok"))
+        self._update_job(job_id, made=len(mine))
+        self._finish(job_id, "done", f"{len(mine)} 問を {model} で見直しました（誤りの指摘 {flagged} 問）。"
+                                     "結果は問題検証モードの「見直しのやり直しで指摘された問題」と書き出しで見られます")
 
     def _finish(self, job_id: int, status: str, message: str) -> None:
         self._update_job(job_id, status=status, error=message, progress="", finished_at=utcnow())
@@ -487,6 +538,7 @@ class Worker:
         logs = {d.id: [e for e in d.verification if e.get("step") not in (VERIFY_STEP, REVIEW_STEP)] for d in drafts}
         alive = {d.id: d for d in drafts}
         failed: dict[int, tuple[str, str]] = {}
+        updates: dict[int, dict[str, Any]] = {}  # 見直しで直す項目（誤答の種類の付け直しなど）
         # 検証役に解かせる回数分 → 全回一致したものだけ、検証役のモデルで解説の見直しを 1 回（検証のテストではしない）
         steps = [(model, VERIFY_STEP) for model in plan.verify_runs]
         if plan.review and not job.is_test:
@@ -507,6 +559,8 @@ class Worker:
                         else:
                             res = subject.verify(self.llm, self.sandbox, model, problem)
                         ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
+                        if res.updates:
+                            updates[pid] = res.updates
                     except LLMError as exc:
                         ok, summary, detail, code = False, f"{model}: 出力を読めません（{exc}）", "", "llm_output"
                         raw = getattr(exc, "raw", "")
@@ -519,11 +573,11 @@ class Worker:
                         failed[pid] = (code, summary)
                         del alive[pid]
         finally:
-            self._finalize_verified(job, drafts, logs, failed, done, len(steps), plan)
+            self._finalize_verified(job, drafts, logs, failed, done, len(steps), plan, updates)
 
     def _finalize_verified(self, job: Job, drafts: list[Problem], logs: dict[int, list[dict[str, Any]]],
                            failed: dict[int, tuple[str, str]], done: dict[int, int], n_runs: int,
-                           plan: ModelPlan) -> None:
+                           plan: ModelPlan, updates: dict[int, dict[str, Any]] | None = None) -> None:
         final = "test" if job.is_test else "ready"
         with self.sessions.begin() as s:
             for d in drafts:
@@ -533,6 +587,8 @@ class Worker:
                 row = s.get(Problem, d.id)
                 row.verification_json = dumps(logs[d.id])
                 row.verify_models = plan.verify_label
+                if passed and "choices" in (updates or {}).get(d.id, {}):
+                    row.choices_json = dumps(updates[d.id]["choices"])  # 見直しで誤答の種類を付け直した
                 row.verified_at = utcnow()
                 if d.id in failed:
                     row.status = "rejected"

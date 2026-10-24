@@ -712,10 +712,45 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             for p in rows:
                 _ = p.passage, p.job
             options = review.filter_options(s)
+            ollama = kv_json(s, "ollama", {}) or {}
+            model_names = [m["name"] for m in ollama.get("models", [])] + api_info(s)["models"]
+            reviewer = runtime.model_plan(settings, s, get_subject(subject)).reviewer
         return render(request, "review.html", page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
                       issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
-                      msg=msg, n=n)
+                      msg=msg, n=n, model_names=model_names, reviewer=reviewer, rereviews=review.rereviews,
+                      max_rereview=review.MAX_REREVIEW)
+
+    @app.post("/review/rereview")
+    def review_rereview(request: Request, subject: str = Form(""), unit: str = Form(""), level: str = Form(""),
+                        gen_model: str = Form(""), status: str = Form("ready"), date_from: str = Form(""),
+                        date_to: str = Form(""), id_from: str = Form(""), id_to: str = Form(""),
+                        model: str = Form(""), model_text: str = Form(""), limit: str = Form("20")) -> Response:
+        """見直しだけをやり直す依頼：絞り込んだ問題（新しい順に limit 問まで）を、選んだモデルで見直す。
+
+        結果は各問題の記録に足すだけで、合否は変えない（見直し役のモデルを比べる・前に作った問題を点検し直すため）。
+        """
+        if not review_ok(request):
+            return redirect("/review/login")
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
+        count = max(1, min(review.MAX_REREVIEW, _int(limit, 20)))
+        chosen = (model_text.strip() or model.strip())[:128]
+        if not chosen:
+            raise HTTPException(400, "見直しに使うモデルを選んでください")
+        with sessions.begin() as s:
+            rows = review.query(s, **review_query_args(f), limit=count)
+            if not rows:
+                return redirect("/review?msg=rereview_empty")
+            subjects_ = [p.subject for p in rows]
+            main = max(set(subjects_), key=subjects_.count)  # 依頼の一覧に出す科目（いちばん多いもの）
+            plan = runtime.ModelPlan(gen_model=chosen, verify_model=chosen, verify_count=1, verify_model_2="",
+                                     review=True, review_model="")
+            job = Job(subject=main, scope="", format="", count=len(rows), kind="review",
+                      target_ids_json=json.dumps([p.id for p in rows]))
+            runtime.apply_plan(job, plan)
+            runtime.record_think(settings, s, job, plan)
+            s.add(job)
+        return redirect(f"/review?msg=rereview&n={len(rows)}")
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",

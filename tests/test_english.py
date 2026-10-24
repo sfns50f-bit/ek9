@@ -40,7 +40,7 @@ class EnglishOracle:
     """
 
     def __init__(self, sessions, *, bad_evidence_once=False, bad_passage_once=False, blind_correct=(),
-                 review_verdict="問題なし", passage_verdict="問題なし", bad_questions=()):
+                 review_verdict="問題なし", passage_verdict="問題なし", bad_questions=(), judge="right"):
         self.sessions = sessions
         self.bad_evidence_once = bad_evidence_once
         self.bad_passage_once = bad_passage_once
@@ -48,11 +48,18 @@ class EnglishOracle:
         self.bad_questions = set(bad_questions)  # この番号の設問は根拠の文をいつも本文にないものにする
         self.review_verdict = review_verdict
         self.passage_verdict = passage_verdict
+        # 見直しの判定："right"（正しく判定）、"multiple"（誤答も裏付けあり・意味が通る）、"relabel"（誤答の種類を変える）、
+        # "garbled"（読めない判定）
+        self.judge = judge
+        self.n_sentences = 0
         self.calls = []
         self.label = ""
 
     def chat_json(self, model, system, user, schema, *, temperature=0.7):
         props = schema["properties"]
+        if "judgments" in props:
+            self.calls.append(("judge", model))
+            return {"judgments": self._judgments(system, user)}
         if "verdict" in props:
             if "本文を点検" in system:
                 self.calls.append(("passage_review", model))
@@ -69,7 +76,8 @@ class EnglishOracle:
         if "sentence" in props:
             self.calls.append(("gen", model))
             word = re.search(r"使う単語: (\S+)（", user).group(1)
-            return {"sentence": f"Every student at our school wants to {word} with friends during the long summer.",
+            self.n_sentences += 1  # 文ごとに番号を変える（見直しで、正解を入れた文を見分けるため）
+            return {"sentence": f"Student number {self.n_sentences} wants to {word} with friends during the long summer.",
                     "translation": "学校の生徒はみな、長い夏の間に友だちと〜したいと思っている。",
                     "hint": "文の後半の with friends に注目しよう。",
                     "explanation": "夏の間に友だちと一緒にすることなので、この語の意味が文に合う。"}
@@ -82,6 +90,38 @@ class EnglishOracle:
             return {"answer": "X"}
         self.calls.append(("solve", model))
         return self._solve(user)
+
+    def _judgments(self, system, user):
+        if self.judge == "garbled":
+            return "よく分かりません"
+        items = re.findall(r"^(\d+): (.*)$", user, re.M)
+        lines = []
+        if "本文と照らして" in system:  # 読解の選択肢
+            for n, text in items:
+                label = ("裏付けあり" if text.startswith("Right") else
+                         "本文に書かれていない" if "museum" in text else
+                         "本文と食い違う" if "park" in text else "細部の取り違え")
+                if self.judge == "multiple" and "museum" in text:
+                    label = "裏付けあり"
+                if self.judge == "relabel" and "park" in text:
+                    label = "本文に書かれていない"
+                lines.append(f"{n}: {label} — 本文の第1段落")
+            return "\n".join(lines)
+        with self.sessions() as s:  # 語彙：データベースの下書きから正解を探す
+            drafts = list(s.execute(select(Problem).where(Problem.status == "draft")).scalars())
+        if "[ ] で示した語の意味" in system:
+            word = re.search(r"\[ (\w+) \]", user).group(1)
+            right = {w.meaning for w in WORDS if w.word == word}
+            for n, text in items:
+                fit = text in right or (self.judge == "multiple" and n == "1")
+                lines.append(f"{n}: {'通る' if fit else '通らない'}")
+            return "\n".join(lines)
+        for n, text in items:
+            ok = any(p.template == "en-vocab-blank" and text == p.question.split("\n\n")[-1].replace(
+                "(　　　　)", p.params["word"]) for p in drafts)
+            fit = ok or (self.judge == "multiple" and not ok and n == "1")
+            lines.append(f"{n}: {'通る' if fit else '通らない'} — 理由")
+        return "\n".join(lines)
 
     def list_models(self):
         return [{"name": "gemma4:12b-it-qat", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4"},
@@ -219,7 +259,9 @@ def test_reading_makes_one_passage_with_shared_questions(settings, sessions, san
     ready = problems(sessions, status="ready")
     assert len(ready) == 3 and len({p.passage_id for p in ready}) == 1 and ready[0].passage_id is not None
     # 本文作成 → 本文の見直し → 設問の作成 → 本文なしの確認 3 問分 → 検証 2 回 × 3 問 → 見直し 3 問
-    assert llm.roles() == ["passage", "passage_review", "gen"] + ["blind"] * 3 + ["solve"] * 6 + ["review"] * 3
+    # （見直しは 1 問につき、選択肢の判定と解説の点検の 2 回）
+    assert llm.roles() == (["passage", "passage_review", "gen"] + ["blind"] * 3 + ["solve"] * 6
+                           + ["judge", "review"] * 3)
     assert {m for r, m in llm.calls if r == "blind"} == {"gemma4:12b-it-qat"}  # 作成役のモデル（入れ替えなし）
     with sessions() as s:
         p = s.get(Problem, ready[0].id)
@@ -556,3 +598,44 @@ def test_blind_check_can_use_another_model(settings, sessions, sandbox):
     run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2)
     assert {m for r, m in llm.calls if r == "blind"} == {"gemma4:e4b"}
     assert {m for r, m in llm.calls if r == "gen"} == {"gemma4:12b-it-qat"}
+
+
+# --- 第 4 回のレビューの C（問いを絞った見直し） ----------------------------------------
+
+@pytest.mark.parametrize("template", ["en-expository", "en-vocab-blank", "en-vocab-meaning"])
+def test_review_rejects_a_second_correct_answer(settings, sessions, sandbox, template):
+    """見直しで、誤答も本文で裏付けられる・空所に入る・意味が合う（正解が複数）と判定されたら不合格（C-1・C-2）。"""
+    llm = EnglishOracle(sessions, judge="multiple")
+    run_job(settings, sessions, sandbox, llm, scope=f"tmpl:{template}", count=1)
+    rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "en_review"]
+    assert rejected and all("正解が複数" in p.reject_reason for p in rejected)
+    entry = next(e for e in rejected[0].verification if e["step"] == "解説の見直し")
+    assert "× 正解が 1 つか" in entry["detail"] and "【" in entry["raw"]
+
+
+def test_review_passes_and_records_each_check(settings, sessions, sandbox):
+    llm = EnglishOracle(sessions)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
+    p = problems(sessions, status="ready")[0]
+    entry = next(e for e in p.verification if e["step"] == "解説の見直し")
+    assert entry["ok"] and "○ 正解が合うか" in entry["detail"] and "○ 解説・例文" in entry["detail"]
+
+
+def test_review_relabels_wrong_mistake_types(settings, sessions, sandbox):
+    """誤答の種類が見直しの判定と違えば、不合格にせずに付け直す（C-3）。"""
+    llm = EnglishOracle(sessions, judge="relabel")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2)
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 2
+    for p in ready:
+        park = next(c for c in p.choices if "park" in c["text"])
+        assert park["mistake"] == "not_stated"  # 作成役の申告は contradicts
+        assert any("誤答の種類を付け直した" in e["summary"] for e in p.verification)
+
+
+def test_unreadable_judgments_do_not_reject(settings, sessions, sandbox):
+    llm = EnglishOracle(sessions, judge="garbled")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2)
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 2
+    assert any("読めなかった確認" in e["summary"] for e in ready[0].verification if e["step"] == "解説の見直し")
