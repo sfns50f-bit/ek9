@@ -77,6 +77,7 @@ class Passage(Base):
     topic: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(16), default="")  # "ok"＝見直しを通った本文
     gen_model: Mapped[str] = mapped_column(String(128), default="")  # 本文作成役のモデル
+    think: Mapped[str] = mapped_column(String(16), default="")  # 本文作成役の思考モード（runtime.THINK_RECORD のキー）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     @property
@@ -121,6 +122,8 @@ class Job(Base):
     review_model: Mapped[str] = mapped_column(String(128), default="")  # 見直し役（空なら検証役のモデル）
     # 科目だけの役割のモデル（英語の本文作成 {"passage": "anthropic/…"} など）
     extra_models_json: Mapped[str] = mapped_column("extra_models", Text, default="{}")
+    # 処理したときの思考モード {モデル: "on" / "off" / "default" / "api"}（runtime.THINK_RECORD。前の版の依頼は空）
+    think_json: Mapped[str] = mapped_column("think", Text, default="{}")
     gen_calls: Mapped[int] = mapped_column(Integer, default=0)
     gen_eval_s: Mapped[float] = mapped_column(Float, default=0.0)
     gen_load_s: Mapped[float] = mapped_column(Float, default=0.0)
@@ -132,6 +135,10 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    @property
+    def think(self) -> dict[str, str]:
+        return {str(k): str(v) for k, v in (_loads(self.think_json, {}) or {}).items()}
 
     @property
     def extra_models(self) -> dict[str, str]:
@@ -189,6 +196,7 @@ class Problem(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     passage: Mapped[Passage | None] = relationship()
+    job: Mapped[Job | None] = relationship()
 
     @property
     def choices(self) -> list[dict[str, Any]]:

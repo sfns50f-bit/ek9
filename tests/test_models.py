@@ -184,3 +184,47 @@ def test_review_model_defaults_to_verifier_and_plan_needs_ollama():
     assert local_review.needs_ollama
     assert not runtime.ModelPlan("anthropic/x", "anthropic/x", 1, "", review=False,
                                  review_model="gemma4:e4b").needs_ollama
+
+
+def test_think_mode_is_recorded_and_exported(settings, sessions, sandbox, client):
+    """処理したときのモデルごとの思考モードを依頼に残し、問題検証モードと書き出しに出す（前の版の問題は「記録なし」）。"""
+    from quizapp.db import Problem
+
+    with sessions.begin() as s:
+        runtime.save_think_setting(s, "gemma4:12b-it-qat", "off")
+        runtime.save_subject_settings(s, "english", {"passage": "anthropic/claude-haiku-5-5"})
+    add_job(sessions, subject="english", scope="tmpl:en-notice", count=2)
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    j = jobs(sessions)[-1]
+    assert j.think == {"anthropic/claude-haiku-5-5": "api", "gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    with sessions() as s:
+        p = s.scalars(select(Problem).where(Problem.status == "ready")).first()
+        assert p.passage.think == "api"
+    md = client.get("/review/export.md?subject=english").text
+    assert "- 思考モード：本文作成 API／作成 思考なし／検証 モデルの既定／見直し モデルの既定" in md
+    assert "思考モード: 本文作成 API／作成 思考なし" in client.get("/review?subject=english").text
+    # 記録のない前の版の問題
+    with sessions.begin() as s:
+        s.get(Job, j.id).think_json = "{}"
+    assert "- 思考モード：記録なし" in client.get("/review/export.md?subject=english").text
+
+
+def test_think_mode_is_fixed_when_the_job_is_requested(settings, sessions, sandbox, client):
+    """思考モードは依頼したときの設定で最後まで生成する（後で設定を変えても、その依頼は変わらない）。"""
+    with sessions.begin() as s:
+        runtime.save_think_setting(s, "gemma4:12b-it-qat", "off")
+    client.post("/generate", data={"subject": "math", "format": "choice", "count": "1",
+                                   "m_math_gen_model": "gemma4:12b-it-qat", "m_math_verify_model": "gemma4:e4b"})
+    j = jobs(sessions)[-1]
+    assert j.think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    with sessions.begin() as s:  # 依頼した後で設定を変える
+        runtime.save_think_setting(s, "gemma4:12b-it-qat", "on")
+    llm = OracleLLM(sessions)
+    llm.think_for = None
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.think_for("gemma4:12b-it-qat") is False and llm.think_for("gemma4:e4b") is None
+    assert jobs(sessions)[-1].think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    # 記録のない前の版の依頼は、取りかかった時点の設定を記録して使う
+    old = add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert job(sessions, old).think["gemma4:12b-it-qat"] == "on" and llm.think_for("gemma4:12b-it-qat") is True

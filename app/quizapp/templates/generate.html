@@ -58,6 +58,8 @@
       {% endfor %}
     </details>
     {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルが候補に出ます。</p>{% endif %}
+    <p class="muted small">ここで変えたモデルはこのブラウザに覚えておき、画面を読み込み直しても残ります。</p>
+    <button type="button" class="secondary small models-reset">{{ sub.name }}のモデルを初期値（状態の設定）に戻す</button>
   </details>
   {% endfor %}
   <button type="submit" class="primary big">作成を依頼する</button>

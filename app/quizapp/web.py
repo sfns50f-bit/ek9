@@ -480,6 +480,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=fmt,
                       count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))))
             runtime.apply_plan(job, chosen)
+            runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
             s.add(job)
         return redirect("/generate?msg=queued")
 
@@ -650,7 +651,9 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
             job = Job(subject=sub.id, scope=scope, format=sub.test_format, count=1, is_test=True)
-            runtime.apply_plan(job, runtime.model_plan(settings, s, sub))
+            plan = runtime.model_plan(settings, s, sub)
+            runtime.apply_plan(job, plan)
+            runtime.record_think(settings, s, job, plan)
             s.add(job)
         return redirect("/status/models?msg=test#tests")
 
@@ -687,11 +690,12 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             rows = review.query(s, **review_query_args(f), limit=per + 1, offset=(page - 1) * per)
             for p in rows:
-                _ = p.passage
+                _ = p.passage, p.job
             options = review.filter_options(s)
         return render(request, "review.html", page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
-                      issues=review.text_issues, locked=bool(settings.review_password), msg=msg, n=n)
+                      issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
+                      msg=msg, n=n)
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
@@ -703,7 +707,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             rows = review.query(s, **review_query_args(f), limit=500)
             for p in rows:
-                _ = p.passage
+                _ = p.passage, p.job
             shown = {"科目": get_subject(subject).name if get_subject(subject) else "",
                      "単元": next((u.label for sub in all_subjects() for u in sub.units() if u.id == unit), unit),
                      "レベル": LEVELS.get(level, ""), "作成役": gen_model,

@@ -71,7 +71,7 @@
     {% if p.input_hint and p.format == "input" %}<span class="muted small">（入力の例: {{ p.input_hint }}）</span>{% endif %}</p>
   <details><summary>ヒント</summary>{{ math(p.hint) }}</details>
   <details><summary>解説</summary>{{ math(p.explanation, "explanation") }}</details>
-  <p class="small muted">{% if p.passage %}本文作成役: {{ p.passage.gen_model or "—" }}／{% endif %}作成役: {{ p.gen_model or "—" }}／検証役: {{ p.verify_models or "—" }}
+  <p class="small muted">{% if p.passage %}本文作成役: {{ p.passage.gen_model or "—" }}／{% endif %}作成役: {{ p.gen_model or "—" }}／検証役: {{ p.verify_models or "—" }}<br>思考モード: {{ think(p) }}
     {% if p.reject_reason %}<br>不合格の理由: <span class="mathtext">{{ p.reject_reason }}</span>{% endif %}</p>
   <div class="actions">
     <a class="button secondary small" href="/problems/{{ p.id }}?review=1">検証の記録</a>
