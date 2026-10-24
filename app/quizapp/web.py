@@ -438,6 +438,24 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plans=plans, model_names=model_names,
                       max_verify=runtime.MAX_VERIFY_COUNT, api=api)
 
+    def no_subunit_message(sub: Subject, scope: str, fmt: str, levels: str) -> str:
+        """作れる小単元がないときの説明。選んだ範囲の小単元ごとに、使える形式とレベルを並べる。
+
+        例：「スペル：キーボード入力・高校基礎の小単元です（選んだのは 選択式）」"""
+        smap = sub.subunit_map()
+        wanted = [lv for lv in levels.split(",") if lv]
+        lines = []
+        for tid in sub.templates_for(scope):
+            unit, su = smap[tid]
+            reasons = []
+            if fmt not in su.formats:
+                reasons.append(f"形式は{'・'.join(FORMATS[f] for f in su.formats)}だけ（選んだのは{FORMATS.get(fmt, fmt)}）")
+            if wanted and su.level not in wanted:
+                reasons.append(f"レベルは{LEVELS.get(su.level, su.level)}（選んだのは{'・'.join(LEVELS.get(w, w) for w in wanted)}）")
+            if reasons:
+                lines.append(f"{unit.label}／{su.label}：" + "、".join(reasons))
+        return ("この範囲・形式・レベルに当てはまる小単元がありません。" + ("\n" + "\n".join(lines[:12]) if lines else ""))
+
     @app.post("/generate")
     async def generate(request: Request) -> Response:
         form = await request.form()
@@ -449,7 +467,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         if fmt not in sub.formats or not sub.scope_valid(scope_s):
             raise HTTPException(400, "選び方が正しくありません")
         if not sub.templates_for(scope_s, fmt, levels_s):
-            raise HTTPException(400, "この範囲・形式・レベルに当てはまる小単元がありません")
+            raise HTTPException(400, no_subunit_message(sub, scope_s, fmt, levels_s))
 
         def field(name: str) -> str:
             """その科目の欄（m_<科目>_<名前>）。前の版の画面の欄の名前（頭なし）も読む。打ち込んだ名前を優先する"""
@@ -464,11 +482,13 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             plan = runtime.model_plan(settings, s, sub)
             review_shown = field("review_shown")
             v2 = field("verify_model_2")
-            extra = {role: field(f"role_{role}") or plan.model_for(role) for role in sub.model_roles}
+            gen_model = field("gen_model") or plan.gen_model
+            # 科目だけの役割：欄で選んだモデル → 科目の設定 → この依頼の作成役（「作成役と同じ」）
+            extra = {role: field(f"role_{role}") or dict(plan.extra).get(role) or gen_model for role in sub.model_roles}
             verify_model = field("verify_model") or plan.verify_model
             review_model = field("review_model") or plan.review_model
             chosen = runtime.ModelPlan(
-                gen_model=field("gen_model") or plan.gen_model,
+                gen_model=gen_model,
                 verify_model=verify_model,
                 verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(field("verify_count"), plan.verify_count))),
                 verify_model_2="" if v2 == "-" else (v2 or plan.verify_model_2),

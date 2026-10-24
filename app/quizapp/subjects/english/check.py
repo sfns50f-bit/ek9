@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 
@@ -13,8 +14,24 @@ from ... import latexfix
 _CJK_RE = re.compile(r"[぀-ヿ㐀-鿿！-～]")
 _JA_RE = re.compile(r"[぀-ヿ㐀-鿿]")
 _WORD_RE = re.compile(r"[A-Za-z]+(?:['’-][A-Za-z]+)*")
-# 解説が選択肢を記号で呼んでいる（選択肢は画面で並べ替えるので、記号が合わなくなる）
-_LETTER_REF_RE = re.compile(r"選択肢\s*[A-DＡ-Ｄ]|[（(]\s*[A-DＡ-Ｄ]\s*[)）]|(?<![A-Za-z])[A-DＡ-Ｄ]\s*(?:は|が|を|の選択肢|も|と|、)")
+# 解説が選択肢を記号で呼んでいる（選択肢は画面で並べ替えるので、記号が合わなくなる）。
+# 「選択肢A」「(C)」「A は」「C の」「A 選択肢」「「B」」など（第 4 回のレビュー A-1：「A 選択肢」「C の」を拾えていなかった）
+_LETTER_REF_RE = re.compile(
+    r"選択肢\s*[A-DＡ-Ｄ](?![A-Za-z])|[（(「『]\s*[A-DＡ-Ｄ]\s*[)）」』]"
+    r"|(?<![A-Za-z.'’])[A-DＡ-Ｄ](?![A-Za-z.'’])\s*(?:の|は|が|を|も|と|、|選択肢|：|:(?!\S*//))")
+# アプリの内部の言葉・作成の指示への言及（第 4 回のレビュー A-2）。生徒が読む文章には出さない
+# （「与えられた」は「生徒に与えられた課題」のような本文の内容の説明もあるので、作成の材料を指すものだけ）
+_INTERNAL_RE = re.compile(r"入らない語|入らない単語|与えられた(?:語|単語|意味|指示|条件|情報|例文|選択肢|品詞|正解)|"
+                          r"指示(?:に従|どおり|通り|された)|要点に(?:従|沿)|使う単語|誤答の語|"
+                          r"指定された(?:語|単語|意味|形|品詞)|作成の(?:指示|材料)")
+# 語彙の意味の問題（例文に空所がない）で空所補充の言い回し（A-7）
+_BLANK_WORDS_RE = re.compile(r"空所|空欄|(?<!気に)(?<!手に)(?<!頭に)入る|入れる|当てはまる語")
+# URL・メールアドレス（A-3）。ドメインは example.com / example.org / example.net とそのサブドメインだけ許す
+_URL_HOST_RE = re.compile(r"(?:https?://|www\.)([A-Za-z0-9.-]+)|[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+)"
+                          r"|(?<![@\w.-])((?:[A-Za-z0-9-]+\.)+(?:com|org|net|jp|info|io|edu|gov|biz|co|us|uk))(?![\w-])",
+                          re.I)
+_ALLOWED_HOST_RE = re.compile(r"^(?:[a-z0-9-]+\.)*example\.(?:com|org|net)$", re.I)
+_QUOTE_CHARS = "\"'“”‘’「」"
 _QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "—": "-", "–": "-"})
 
 
@@ -58,6 +75,9 @@ def english_issues(text: str, field: str) -> list[str]:
         out.append(f"{field}に日本語・全角の文字が入っている")
     if "[[" in text or "]]" in text:
         out.append(f"{field}に見出し [[…]] が残っている")
+    hosts = bad_hosts(text)
+    if hosts:
+        out.append(f"{field}の URL・メールのドメイン（{'、'.join(hosts[:3])}）が例示用のもの（example.org など）でない")
     return out
 
 
@@ -76,13 +96,108 @@ def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
         out.append(f"{field}に中国語の字（{''.join(zh[:5])}）")
     if latexfix._META_RE.search(body):
         out.append(f"{field}が作成の指示に触れている")
+    inside = internal_words(body)
+    if inside:
+        out.append(f"{field}にアプリの内部の言葉（{'・'.join(inside[:3])}）がある（生徒が読む文章に書かない）")
     if "[[" in body or "]]" in body:
         out.append(f"{field}に見出し [[…]] が残っている")
+    hosts = bad_hosts(body)
+    if hosts:
+        out.append(f"{field}の URL・メールのドメイン（{'、'.join(hosts[:3])}）が例示用のもの（example.org など）でない")
     return out
 
 
 def letter_reference(text: str) -> bool:
     return bool(_LETTER_REF_RE.search(text or ""))
+
+
+def internal_words(text: str) -> list[str]:
+    """アプリの内部の言葉・指示への言及（「入らない語」「与えられた」など）。"""
+    return list(dict.fromkeys(m.group(0) for m in _INTERNAL_RE.finditer(text or "")))
+
+
+def blank_words(text: str) -> bool:
+    return bool(_BLANK_WORDS_RE.search(text or ""))
+
+
+def bad_hosts(text: str) -> list[str]:
+    """例示用のドメイン（example.com・example.org・example.net とそのサブドメイン）以外の URL・メールのドメイン。
+
+    「greenleafcafe-example.org」のようにハイフンでつないだ形は example.org のサブドメインではないので弾く。
+    """
+    out = []
+    for m in _URL_HOST_RE.finditer(text or ""):
+        host = (m.group(1) or m.group(2) or m.group(3) or "").strip(".-").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host and "." in host and not _ALLOWED_HOST_RE.match(host):
+            out.append(host)
+    return list(dict.fromkeys(out))
+
+
+def first_sentence(text: str) -> str:
+    body = (text or "").strip()
+    return re.split(r"(?<=[。．！？!?])", body, maxsplit=1)[0].strip()
+
+
+def similar(a: str, b: str) -> bool:
+    """2 つの文がほぼ同じか（ヒントが解説の 1 文目と同じ、など）。空白・句読点の違いは無視する。"""
+    def key(t: str) -> str:
+        return re.sub(r"[\s、。，．,.!！?？「」『』()（）]", "", unicodedata.normalize("NFKC", t or ""))
+
+    ka, kb = key(a), key(b)
+    if len(ka) < 8 or len(kb) < 8:
+        return False
+    return ka == kb or difflib.SequenceMatcher(None, ka, kb).ratio() >= 0.85
+
+
+def strip_quotes(text: str) -> str:
+    """根拠の文の外側の引用符だけを外す（A-6：文が内側の引用符で終わるとき、その閉じの引用符を消さない）。
+
+    例：「"She said, "Have a cup of tea.""」→「She said, "Have a cup of tea."」
+    """
+    t = (text or "").strip()
+    if len(t) >= 2 and t[0] in _QUOTE_CHARS and t[-1] in _QUOTE_CHARS:
+        inner = t[1:-1].strip()
+        opens = inner.count("“") + inner.count("「") + inner.count("‘")
+        closes = inner.count("”") + inner.count("」") + inner.count("’")
+        plain_odd = inner.count('"') % 2 == 1
+        # 内側の引用符が閉じていなければ、最後の文字は内側の閉じの引用符（外側には閉じがなかった）
+        if opens > closes or plain_odd:
+            return (inner + t[-1]).strip()
+        return inner
+    if t and t[0] in _QUOTE_CHARS and t[-1] not in _QUOTE_CHARS:
+        return t[1:].strip()  # 開きだけの引用符
+    return t
+
+
+def paragraphs(body: str) -> list[str]:
+    """本文の段落（空行で区切る）。最初のかたまりが 1 行で文の終わりの記号がなければ題名とみなして除く。"""
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", body or "") if b.strip()]
+    if len(blocks) > 1 and "\n" not in blocks[0] and not re.search(r"[.!?。]\s*$", blocks[0]):
+        blocks = blocks[1:]
+    return blocks
+
+
+def paragraph_of(body: str, quote: str) -> int | None:
+    """根拠の文がある段落の番号（1 から）。見つからなければ None。"""
+    for i, para in enumerate(paragraphs(body), 1):
+        if contains(para, quote):
+            return i
+    return None
+
+
+_PARA_RE = re.compile(r"第\s*([0-9０-９一二三四五六七八九]+)\s*段落|([0-9０-９一二三四五六七八九]+)\s*段落目")
+_KANJI_NUM = {c: i for i, c in enumerate("一二三四五六七八九", 1)}
+
+
+def paragraph_numbers(text: str) -> list[int]:
+    """ヒントに書かれた「第N段落」「N段落目」の番号。"""
+    out = []
+    for m in _PARA_RE.finditer(text or ""):
+        raw = unicodedata.normalize("NFKC", m.group(1) or m.group(2))
+        out.append(int(raw) if raw.isdigit() else _KANJI_NUM.get(raw, 0))
+    return [n for n in out if n]
 
 
 def choice_issues(texts: list[str], correct: int, *, english: bool = True) -> list[str]:

@@ -92,12 +92,13 @@ def test_generate_records_role_models_per_subject(client, sessions):
                                    "m_math_gen_model": "ignored"})
     j = jobs(sessions)[-1]
     assert j.subject == "english" and j.gen_model == "qwen3.5:9b" and j.review_model == "gemma4:12b"
-    assert j.extra_models == {"passage": "anthropic/claude-haiku-5-5"}
+    # 設定のない役割（本文なしの確認）は、この依頼で選んだ作成役と同じ
+    assert j.extra_models == {"passage": "anthropic/claude-haiku-5-5", "blind": "qwen3.5:9b"}
     # 打ち込んだ名前が優先
     client.post("/generate", data={"subject": "english", "format": "choice", "count": "2",
                                    "m_english_role_passage": "gemma4:12b-it-qat",
                                    "m_english_role_passage_text": "anthropic/claude-sonnet-5-5"})
-    assert jobs(sessions)[-1].extra_models == {"passage": "anthropic/claude-sonnet-5-5"}
+    assert jobs(sessions)[-1].extra_models["passage"] == "anthropic/claude-sonnet-5-5"
     # 数学には科目だけの役割がない
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1"})
     assert jobs(sessions)[-1].extra_models == {} and jobs(sessions)[-1].review_model == ""
@@ -116,7 +117,7 @@ def test_role_models_are_used_for_each_step(settings, sessions, sandbox):
     assert used == {"passage": {"passage-model"}, "passage_review": {"review-model"}, "gen": {"gemma4:12b-it-qat"},
                     "blind": {"gemma4:12b-it-qat"}, "solve": {"gemma4:e4b"}, "review": {"review-model"}}
     j = jobs(sessions)[-1]
-    assert j.extra_models == {"passage": "passage-model"} and j.review_model == "review-model"
+    assert j.extra_models["passage"] == "passage-model" and j.review_model == "review-model"
     ready = problems(sessions, status="ready")
     with sessions() as s:
         from quizapp.db import Problem
