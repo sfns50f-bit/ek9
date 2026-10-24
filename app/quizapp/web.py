@@ -438,6 +438,24 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plans=plans, model_names=model_names,
                       max_verify=runtime.MAX_VERIFY_COUNT, api=api)
 
+    def no_subunit_message(sub: Subject, scope: str, fmt: str, levels: str) -> str:
+        """作れる小単元がないときの説明。選んだ範囲の小単元ごとに、使える形式とレベルを並べる。
+
+        例：「スペル：キーボード入力・高校基礎の小単元です（選んだのは 選択式）」"""
+        smap = sub.subunit_map()
+        wanted = [lv for lv in levels.split(",") if lv]
+        lines = []
+        for tid in sub.templates_for(scope):
+            unit, su = smap[tid]
+            reasons = []
+            if fmt not in su.formats:
+                reasons.append(f"形式は{'・'.join(FORMATS[f] for f in su.formats)}だけ（選んだのは{FORMATS.get(fmt, fmt)}）")
+            if wanted and su.level not in wanted:
+                reasons.append(f"レベルは{LEVELS.get(su.level, su.level)}（選んだのは{'・'.join(LEVELS.get(w, w) for w in wanted)}）")
+            if reasons:
+                lines.append(f"{unit.label}／{su.label}：" + "、".join(reasons))
+        return ("この範囲・形式・レベルに当てはまる小単元がありません。" + ("\n" + "\n".join(lines[:12]) if lines else ""))
+
     @app.post("/generate")
     async def generate(request: Request) -> Response:
         form = await request.form()
@@ -449,7 +467,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         if fmt not in sub.formats or not sub.scope_valid(scope_s):
             raise HTTPException(400, "選び方が正しくありません")
         if not sub.templates_for(scope_s, fmt, levels_s):
-            raise HTTPException(400, "この範囲・形式・レベルに当てはまる小単元がありません")
+            raise HTTPException(400, no_subunit_message(sub, scope_s, fmt, levels_s))
 
         def field(name: str) -> str:
             """その科目の欄（m_<科目>_<名前>）。前の版の画面の欄の名前（頭なし）も読む。打ち込んだ名前を優先する"""
@@ -464,11 +482,13 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             plan = runtime.model_plan(settings, s, sub)
             review_shown = field("review_shown")
             v2 = field("verify_model_2")
-            extra = {role: field(f"role_{role}") or plan.model_for(role) for role in sub.model_roles}
+            gen_model = field("gen_model") or plan.gen_model
+            # 科目だけの役割：欄で選んだモデル → 科目の設定 → この依頼の作成役（「作成役と同じ」）
+            extra = {role: field(f"role_{role}") or dict(plan.extra).get(role) or gen_model for role in sub.model_roles}
             verify_model = field("verify_model") or plan.verify_model
             review_model = field("review_model") or plan.review_model
             chosen = runtime.ModelPlan(
-                gen_model=field("gen_model") or plan.gen_model,
+                gen_model=gen_model,
                 verify_model=verify_model,
                 verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(field("verify_count"), plan.verify_count))),
                 verify_model_2="" if v2 == "-" else (v2 or plan.verify_model_2),
@@ -565,8 +585,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         think_rows = []
         for name in ollama_names:
             effective = runtime.resolve_think(name, think_choices, settings.think)
-            think_rows.append({"model": name, "choice": think_choices.get(name, "auto"),
-                               "effective": {True: "考えさせる", False: "切る", None: "モデルの既定のまま"}[effective]})
+            think_rows.append({"model": name, "choice": "on" if effective else "off",
+                               "saved": name in think_choices})
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
                       subject_settings=subject_settings, plans=plans, today=today, roles=runtime.ROLES,
@@ -631,7 +651,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return redirect(f"/status/models?msg=subject#subject-{sub.id}")
 
     @app.post("/status/think")
-    def save_think(model: str = Form(...), choice: str = Form("auto")) -> Response:
+    def save_think(model: str = Form(...), choice: str = Form("off")) -> Response:
         if choice not in runtime.THINK_CHOICES:
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
@@ -692,10 +712,45 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             for p in rows:
                 _ = p.passage, p.job
             options = review.filter_options(s)
+            ollama = kv_json(s, "ollama", {}) or {}
+            model_names = [m["name"] for m in ollama.get("models", [])] + api_info(s)["models"]
+            reviewer = runtime.model_plan(settings, s, get_subject(subject)).reviewer
         return render(request, "review.html", page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
                       issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
-                      msg=msg, n=n)
+                      msg=msg, n=n, model_names=model_names, reviewer=reviewer, rereviews=review.rereviews,
+                      max_rereview=review.MAX_REREVIEW)
+
+    @app.post("/review/rereview")
+    def review_rereview(request: Request, subject: str = Form(""), unit: str = Form(""), level: str = Form(""),
+                        gen_model: str = Form(""), status: str = Form("ready"), date_from: str = Form(""),
+                        date_to: str = Form(""), id_from: str = Form(""), id_to: str = Form(""),
+                        model: str = Form(""), model_text: str = Form(""), limit: str = Form("20")) -> Response:
+        """見直しだけをやり直す依頼：絞り込んだ問題（新しい順に limit 問まで）を、選んだモデルで見直す。
+
+        結果は各問題の記録に足すだけで、合否は変えない（見直し役のモデルを比べる・前に作った問題を点検し直すため）。
+        """
+        if not review_ok(request):
+            return redirect("/review/login")
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
+        count = max(1, min(review.MAX_REREVIEW, _int(limit, 20)))
+        chosen = (model_text.strip() or model.strip())[:128]
+        if not chosen:
+            raise HTTPException(400, "見直しに使うモデルを選んでください")
+        with sessions.begin() as s:
+            rows = review.query(s, **review_query_args(f), limit=count)
+            if not rows:
+                return redirect("/review?msg=rereview_empty")
+            subjects_ = [p.subject for p in rows]
+            main = max(set(subjects_), key=subjects_.count)  # 依頼の一覧に出す科目（いちばん多いもの）
+            plan = runtime.ModelPlan(gen_model=chosen, verify_model=chosen, verify_count=1, verify_model_2="",
+                                     review=True, review_model="")
+            job = Job(subject=main, scope="", format="", count=len(rows), kind="review",
+                      target_ids_json=json.dumps([p.id for p in rows]))
+            runtime.apply_plan(job, plan)
+            runtime.record_think(settings, s, job, plan)
+            s.add(job)
+        return redirect(f"/review?msg=rereview&n={len(rows)}")
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",

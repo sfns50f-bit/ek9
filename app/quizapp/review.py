@@ -21,7 +21,10 @@ COOKIE = "review"
 # 書き出しの冒頭に付ける依頼文（Claude などのチャットにそのまま貼って評価してもらう）
 EXPORT_REQUEST = "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。"
 STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストックのうち表記の点検で引っかかる問題",
+            "reflagged": "ストックのうち見直しのやり直しで誤りを指摘された問題",
             "deleted": "削除した問題", "rejected": "検証で不合格"}
+REREVIEW_STEP = "見直しのやり直し"  # worker.REREVIEW_STEP と同じ（web は worker を読み込まない）
+MAX_REREVIEW = 200  # 1 回の見直しのやり直しで見る問題の数の上限
 TEXT_FIELDS = ("question", "hint", "explanation")
 
 
@@ -40,7 +43,7 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
           id_from: int = 0, id_to: int = 0, limit: int = 200, offset: int = 0) -> list[Problem]:
     """絞り込み。since / until は作った日時（UTC。until は含まない）、id_from / id_to は管理番号（両端を含む）。"""
     status = status if status in STATUSES else "ready"
-    q = select(Problem).where(Problem.status == ("ready" if status == "issues" else status))
+    q = select(Problem).where(Problem.status == ("ready" if status in ("issues", "reflagged") else status))
     if since is not None:
         q = q.where(Problem.created_at >= since)
     if until is not None:
@@ -60,10 +63,21 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
     if gen_model:
         q = q.where(Problem.gen_model == gen_model)
     q = q.order_by(Problem.id.desc())
-    if status == "issues":  # 表記の点検は Python で行うので、全部読んでから絞る
-        hits = [p for p in s.execute(q).scalars() if text_issues(p)]
+    if status in ("issues", "reflagged"):  # 表記の点検・記録の中身は Python で見るので、全部読んでから絞る
+        check = text_issues if status == "issues" else reflagged
+        hits = [p for p in s.execute(q).scalars() if check(p)]
         return hits[offset:offset + limit]
     return list(s.execute(q.offset(offset).limit(limit)).scalars())
+
+
+def rereviews(problem: Problem) -> list[dict[str, Any]]:
+    """見直しのやり直しの記録（古い順）。"""
+    return [e for e in problem.verification if e.get("step") == REREVIEW_STEP]
+
+
+def reflagged(problem: Problem) -> bool:
+    """見直しのやり直しのどれかで誤りを指摘された（出力が読めなかっただけのものは除く）。"""
+    return any(not e.get("ok") and e.get("code") != "llm_output" for e in rereviews(problem))
 
 
 def text_issues(problem: Problem) -> list[str]:
@@ -145,6 +159,37 @@ def think_text(problem: Problem) -> str:
     return "／".join(parts)
 
 
+# 書き出しに出す記録の段階（作成の途中の細かい記録は出さない）
+_EXPORT_STEPS = ("本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
+                 "検証", "解説の見直し", REREVIEW_STEP, "設問")
+
+
+def verification_lines(problem: Problem) -> list[str]:
+    """書き出し用の「検証と見直しの記録」（第 4 回のレビュー E-3：検証役・見直し役の良し悪しを比べるため）。
+
+    不合格の理由、検証役の答え（回ごと）、見直しの判定と確認ごとの結果、見直しのやり直しの結果。
+    """
+    sub = get_subject(problem.subject)
+    codes = sub.all_reject_codes() if sub else {}
+    out = ["### 検証と見直しの記録", ""]
+    if problem.status == "rejected":
+        label = codes.get(problem.reject_code or "", problem.reject_code or "—")
+        out.append(f"- **不合格**：{label}（{(problem.reject_reason or '').strip()[:300]}）")
+    shown = 0
+    for e in problem.verification:
+        if e.get("step") not in _EXPORT_STEPS:
+            continue
+        mark = "○" if e.get("ok") else "×"
+        model = f"（{e['model']}）" if e.get("model") else ""
+        out.append(f"- {mark} {e.get('step')}{model}：{str(e.get('summary', '')).strip()[:300]}")
+        if e.get("step") in ("解説の見直し", REREVIEW_STEP) and e.get("detail"):
+            out += [f"  - {ln.strip()[:300]}" for ln in str(e["detail"]).splitlines() if ln.strip()][:8]
+        shown += 1
+    if not shown and problem.status != "rejected":
+        out.append("- 記録なし")
+    return out + [""]
+
+
 def mistake_label(problem: Problem, key: str | None) -> str:
     sub = get_subject(problem.subject)
     return (sub.mistakes.get(key or "", key or "") if sub else key or "") or "—"
@@ -176,7 +221,8 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
             lines.append("")
         lines += ["### 正解", "", p.answer_display or "—", ""]
         lines += ["### ヒント", "", (p.hint or "—").strip(), ""]
-        lines += ["### 解説", "", (p.explanation or "—").strip(), "", "---", ""]
+        lines += ["### 解説", "", (p.explanation or "—").strip(), ""]
+        lines += verification_lines(p) + ["---", ""]
     return "\n".join(lines)
 
 

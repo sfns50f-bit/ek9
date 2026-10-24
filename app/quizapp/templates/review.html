@@ -6,6 +6,8 @@
 {% if msg == "deleted" %}<p class="notice">削除しました。この問題は今後出題しません（回答の記録は残ります）。</p>{% endif %}
 {% if msg == "restored" %}<p class="notice">ストックに戻しました。</p>{% endif %}
 {% if msg == "normalized" %}<p class="notice">{{ n }} 問の表記を直しました。下は、直したあとも表記の点検で引っかかる問題です（直せないもの：KaTeX にない命令、数式の中の日本語、中国語の字など）。</p>{% endif %}
+{% if msg == "rereview" %}<p class="notice">{{ n }} 問の見直しのやり直しを順番待ちに入れました。進み具合は「作る」の依頼の一覧に出ます。終わったら「状態」で「{{ options.statuses.reflagged }}」を選ぶか、Markdown で書き出して見てください。</p>{% endif %}
+{% if msg == "rereview_empty" %}<p class="notice warn">絞り込みに当てはまる問題がないので、見直しのやり直しは頼みませんでした。</p>{% endif %}
 {% if msg == "deleted_ids" %}<p class="notice">{{ n }} 問を削除しました（今後出題しません。回答の記録は残ります）。足りない分は「作る」から作成を依頼してください。</p>{% endif %}
 {% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) ~ "&date_from=" ~ f.date_from ~ "&date_to=" ~ f.date_to ~ "&id_from=" ~ f.id_from ~ "&id_to=" ~ f.id_to %}
 <form method="get" action="/review" class="card filters">
@@ -33,6 +35,26 @@
   </div>
   <p class="muted small">Markdown は、冒頭に「{{ "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。" }}」を付けて書き出します（絞り込んだ問題、新しい順に最大 500 問）。Claude などのチャットにそのまま貼れます。</p>
 </form>
+<details class="card">
+  <summary>見直しだけをやり直す（見直し役のモデルを比べる・前に作った問題を点検し直す）</summary>
+  <p class="small">上の絞り込みに当てはまる問題を、新しい順に選んだ数だけ、選んだモデルで見直させます（いまの見直しの観点で）。
+    結果は各問題の記録に足すだけで、合否や選択肢は変えません。同じ問題を別のモデルで見直させれば、書き出した Markdown で結果を並べて比べられます。
+    「誤りあり」と出た問題は、「状態」で「{{ options.statuses.reflagged }}」を選ぶと一覧になります。削除するかはここで見て決めてください。</p>
+  <form method="post" action="/review/rereview">
+    {% for key in ["subject", "unit", "level", "gen_model", "status", "date_from", "date_to", "id_from", "id_to"] %}
+    <input type="hidden" name="{{ key }}" value="{{ f[key] }}">{% endfor %}
+    <label>見直しに使うモデル
+      <select name="model">
+        {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if m == reviewer }}>{{ m }}</option>{% endfor %}
+        {% if reviewer not in model_names %}<option value="{{ reviewer }}" selected>{{ reviewer }}（Ollama に見当たらない）</option>{% endif %}
+      </select></label>
+    <label>一覧にないモデル（書けばこちらを使う。API は「anthropic/モデル名」）
+      <input type="text" name="model_text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label>見直す問題の数（新しい順に。最大 {{ max_rereview }} 問）
+      <input type="number" name="limit" value="20" min="1" max="{{ max_rereview }}" inputmode="numeric"></label>
+    <button type="submit" class="secondary">見直しのやり直しを頼む</button>
+  </form>
+</details>
 <details class="card">
     <summary>前に作った問題の手入れ</summary>
     <p class="small">表記の直し：度の記号の揺れ（^\top・^° など）、\\sin のような二重のバックスラッシュ、文字どおりの「\n」などを、作成のときと同じ方法でまとめて直します（数式の意味は変えません。LLM は使いません）。直す前の文章は各問題の「検証の記録」に残ります。念のため、先にバックアップを取ってください（README の「バックアップ」の「いますぐ取るとき」）。</p>
@@ -72,6 +94,7 @@
   <details><summary>ヒント</summary>{{ math(p.hint) }}</details>
   <details><summary>解説</summary>{{ math(p.explanation, "explanation") }}</details>
   <p class="small muted">{% if p.passage %}本文作成役: {{ p.passage.gen_model or "—" }}／{% endif %}作成役: {{ p.gen_model or "—" }}／検証役: {{ p.verify_models or "—" }}<br>思考モード: {{ think(p) }}
+    {% for e in rereviews(p) %}<br>見直しのやり直し（{{ e.model }}）: {{ "誤りなし" if e.ok else "誤りあり" }} — <span class="mathtext">{{ e.summary }}</span>{% endfor %}
     {% if p.reject_reason %}<br>不合格の理由: <span class="mathtext">{{ p.reject_reason }}</span>{% endif %}</p>
   <div class="actions">
     <a class="button secondary small" href="/problems/{{ p.id }}?review=1">検証の記録</a>

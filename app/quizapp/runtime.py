@@ -271,38 +271,42 @@ def save_api_limits(session: Session, monthly: str, per_job: str) -> None:
 
 
 # --- 思考モード（モデルごと） ----------------------------------------------------
-# 画面で一度選ぶとモデルごとに保存され、そのモデルを使うたびに同じ設定になる。
-# 選んでいないモデルは「自動」：qwen3 系（qwen3.5 も含む）は切る。gemma4 などはモデルの既定のまま
-# （JSON スキーマで出力させていたころ、gemma4 は think=false で JSON の指定が効かなくなる不具合があった）。
-THINK_CHOICES = {"auto": "自動", "off": "切る", "on": "切らない（考えさせる）"}
-THINK_OFF_PREFIXES = ("qwen3",)
+# 「あり」「なし」の 2 つだけ（第 4 回のレビュー：「モデルの既定」だと実際にどちらで動いたかが分からない）。
+# 画面で一度選ぶとモデルごとに保存され、そのモデルを使うたびに同じ設定になる。選んでいないモデルは「なし」
+# （.env の OLLAMA_THINK を書けば、選んでいないモデルはその値）。Ollama にはいつも think を明示して送る。
+THINK_CHOICES = {"off": "なし", "on": "あり"}
 
 
 def think_settings(session: Session) -> dict[str, str]:
-
     data = kv_json(session, "think_settings", {}) or {}
     return {str(k): str(v) for k, v in data.items() if v in THINK_CHOICES}
 
 
 def save_think_setting(session: Session, model: str, choice: str) -> None:
-
     data = think_settings(session)
-    if choice == "auto":
-        data.pop(model, None)
-    elif choice in THINK_CHOICES:
+    if choice in THINK_CHOICES:
         data[model] = choice
     kv_set(session, "think_settings", dumps(data))
 
 
-# 問題に残す思考モードの記録（依頼を処理したときの実際の設定）。API のモデルには思考モードの設定がない
-THINK_RECORD = {"on": "思考あり", "off": "思考なし", "default": "モデルの既定", "api": "API"}
+def resolve_think(model: str, choices: dict[str, str], env_think: bool | None) -> bool:
+    """そのモデルに送る think の値（いつも True か False）。"""
+    choice = choices.get(model)
+    if choice in THINK_CHOICES:
+        return choice == "on"
+    return bool(env_think)
+
+
+# 問題に残す思考モードの記録（依頼したときの設定）。API のモデルには思考モードの設定がない。
+# "default" はこの形にする前の版の記録（モデルの既定のまま送らなかった）
+THINK_RECORD = {"on": "あり", "off": "なし", "api": "API", "default": "モデルの既定（前の版）"}
 
 
 def think_record(model: str, choices: dict[str, str], env_think: bool | None) -> str:
     """そのモデルを呼ぶときの思考モード（THINK_RECORD のキー）。"""
     if provider_of(model)[0] != "ollama":
         return "api"
-    return {True: "on", False: "off", None: "default"}[resolve_think(model, choices, env_think)]
+    return "on" if resolve_think(model, choices, env_think) else "off"
 
 
 def think_map(settings: Settings, session: Session, plan: ModelPlan) -> dict[str, str]:
@@ -315,17 +319,3 @@ def think_map(settings: Settings, session: Session, plan: ModelPlan) -> dict[str
 def think_from_record(state: str) -> bool | None:
     """記録した思考モードを、Ollama に送る think の値に（"default" と "api" は送らない）。"""
     return {"on": True, "off": False}.get(state)
-
-
-def auto_think(model: str) -> bool | None:
-    return False if model.lower().startswith(THINK_OFF_PREFIXES) else None
-
-
-def resolve_think(model: str, choices: dict[str, str], env_think: bool | None) -> bool | None:
-    """True / False は think をその値で送る。None は送らない（モデルの既定）。"""
-    choice = choices.get(model, "auto")
-    if choice == "off":
-        return False
-    if choice == "on":
-        return True
-    return env_think if env_think is not None else auto_think(model)

@@ -26,6 +26,11 @@ class FakeOllama:
 
             def do_POST(self):  # noqa: N802
                 outer.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                if outer.mode == "nothink" and "think" in outer.bodies[-1]:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"\\"gemma3:4b\\" does not support thinking"}')
+                    return
                 if outer.mode == "missing":
                     self.send_response(404)
                     self.end_headers()
@@ -36,7 +41,7 @@ class FakeOllama:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
-                pieces = {"ok": ['{"answer": ', '"42"}'], "cut": ['{"answer": "4'],
+                pieces = {"ok": ['{"answer": ', '"42"}'], "nothink": ['{"answer": "7"}'], "cut": ['{"answer": "4'],
                           "tagged": ["[[answer]]\n$120^", "\\circ$ と \\angle A\n"]}.get(outer.mode, [" "] * 300)
                 try:
                     for piece in pieces:
@@ -310,3 +315,17 @@ def test_anthropic_bad_request_and_billing_fail_fast():
     for status in (400, 402):
         with pytest.raises(LLMModelMissing):
             _anthropic_client(FakeAnthropic("", status=status)).chat_json("claude-haiku-5-5", "s", "u", SCHEMA)
+
+
+def test_think_is_sent_and_dropped_for_models_without_thinking(fake):
+    """思考モードはいつも明示して送る。思考に対応していないモデルが断ったら、指定を外して送り直す（思考なしで動く）。"""
+    server = fake("ok")
+    client = OllamaClient(server.url)
+    client.think_for = lambda m: False
+    client.chat_json("m", "sys", "user", SCHEMA)
+    assert server.bodies[-1]["think"] is False
+    server = fake("nothink")
+    client = OllamaClient(server.url)
+    client.think_for = lambda m: False
+    assert client.chat_json("gemma3:4b", "sys", "user", SCHEMA) == {"answer": "7"}
+    assert "think" in server.bodies[0] and "think" not in server.bodies[1]

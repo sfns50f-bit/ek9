@@ -34,8 +34,13 @@
   <details class="models" data-subject="{{ sub.id }}">
     <summary>モデル：{% for role, label in sub.model_roles.items() %}{{ label }} <strong>{{ plan.model_for(role) }}</strong>／{% endfor %}作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>{% if plan.review %}＋見直し {{ plan.reviewer }}{% endif %}（変える）</summary>
     <p class="muted small">初期値は「状態 → モデルと思考モード」の{{ sub.name }}の設定です。この依頼は、ここで選んだモデルで最後まで処理します（後で設定を変えても変わりません）。</p>
-    {% for role, label in sub.model_roles.items() %}
-    <label>{{ label }}役 {{ model_choice(p ~ "role_" ~ role, plan.model_for(role)) }}</label>
+    {% for role, label in sub.model_roles.items() %}{% set current = dict(plan.extra).get(role, "") %}
+    <label>{{ label }}役
+      <select name="{{ p }}role_{{ role }}">
+        <option value="" {{ 'selected' if not current }}>作成役と同じ</option>
+        {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if current == m }}>{{ m }}</option>{% endfor %}
+        {% if current and current not in model_names %}<option value="{{ current }}" selected>{{ current }}（Ollama に見当たらない）</option>{% endif %}
+      </select></label>
     {% endfor %}
     <label>作成役 {{ model_choice(p ~ "gen_model", plan.gen_model) }}</label>
     <label>検証役 {{ model_choice(p ~ "verify_model", plan.verify_model) }}</label>
@@ -73,6 +78,10 @@
     {% for j in jobs %}
     {% set sub = get_subject(j.subject) %}
     <li class="job {{ j.status }}">
+      {% if j.kind == "review" %}
+      <div><strong>#{{ j.id }}</strong> 見直しのやり直し・{{ j.count }}問・{{ j.review_model or j.verify_model }}</div>
+      <div class="small">{{ JOB_STATUS.get(j.status, j.status) }}・見直し {{ j.made }} / {{ j.count }}・{{ j.created_at | localtime }}</div>
+      {% else %}
       <div><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}・{{ j.count }}問
         {% if j.levels %}・{% for l in j.levels.split(",") %}{{ LEVELS.get(l, l) }}{% if not loop.last %}／{% endif %}{% endfor %}{% endif %}
         {% if j.is_test %}<span class="tag">検証のテスト</span>{% endif %}</div>
@@ -81,6 +90,7 @@
         ・合格 {{ j.made }} / {{ j.count }}・作成 {{ j.gen_attempts }} 回・{{ j.created_at | localtime }}
       </div>
       {% if j.gen_model %}<div class="small muted">{% for role, m in j.extra_models.items() %}{{ sub.model_roles.get(role, role) if sub else role }} {{ m }}／{% endfor %}作成 {{ j.gen_model }}／検証 {{ j.verify_model }} ×{{ j.verify_count }}{% if j.verify_model_2 %} ＋ {{ j.verify_model_2 }}{% endif %}{% if j.explanation_review %}＋見直し{% if j.review_model %} {{ j.review_model }}{% endif %}{% endif %}</div>{% endif %}
+      {% endif %}
       {% if j.progress %}<div class="small muted">{{ j.progress }}</div>{% endif %}
       {% if j.error %}<div class="small">{{ j.error }}</div>{% endif %}
       {% if j.status in ["pending", "running", "waiting"] %}

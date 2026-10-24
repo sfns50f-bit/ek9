@@ -106,6 +106,8 @@ class VerifyResult:
     detail: str = ""
     code: str = "solver_mismatch"  # 不合格の理由の種類（/status で集計する）
     raw: str = ""  # 検証役の生の出力（原因を調べるために、そのまま残す）
+    # 見直しで直す項目（合格したときだけ worker が問題に書き込む）。今は {"choices": [...]}（誤答の種類の付け直し）だけ
+    updates: dict[str, Any] = field(default_factory=dict)
 
 
 class Rejected(Exception):

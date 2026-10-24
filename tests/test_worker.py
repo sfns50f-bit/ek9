@@ -510,9 +510,11 @@ def test_think_setting_is_applied_per_model(settings, sessions, sandbox):
         save_think_setting(s, "gemma4:e4b", "off")
     with sessions() as s:
         choices = think_settings(s)
-    assert resolve_think("qwen3.5:9b-q4_K_M", choices, None) is False   # 自動：qwen3 系は切る
-    assert resolve_think("gemma4:12b-it-qat", choices, None) is None    # 自動：gemma4 は既定のまま
-    assert resolve_think("gemma4:e4b", choices, None) is False          # 画面で選んだ設定
+    # 思考モードは「あり」「なし」だけ。選んでいないモデルは「なし」（モデルの既定のまま送らない）
+    assert resolve_think("qwen3.5:9b-q4_K_M", choices, None) is False
+    assert resolve_think("gemma4:12b-it-qat", choices, None) is False
+    assert resolve_think("gemma4:12b-it-qat", choices, True) is True    # .env の OLLAMA_THINK=true
+    assert resolve_think("gemma4:e4b", choices, True) is False          # 画面で選んだ設定が優先
     with sessions.begin() as s:
         save_think_setting(s, "qwen3.5:9b-q4_K_M", "on")
     with sessions() as s:
@@ -528,7 +530,7 @@ def test_think_setting_is_applied_per_model(settings, sessions, sandbox):
     llm = ThinkLLM(sessions)
     add_job(sessions, count=1)
     make_worker(settings, sessions, sandbox, llm).run_once()
-    assert ("gemma4:e4b", False) in llm.seen and ("gemma4:12b-it-qat", None) in llm.seen
+    assert ("gemma4:e4b", False) in llm.seen and ("gemma4:12b-it-qat", False) in llm.seen
 
 
 def test_missing_model_fails_the_job_instead_of_waiting(settings, sessions, sandbox):

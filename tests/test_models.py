@@ -92,12 +92,13 @@ def test_generate_records_role_models_per_subject(client, sessions):
                                    "m_math_gen_model": "ignored"})
     j = jobs(sessions)[-1]
     assert j.subject == "english" and j.gen_model == "qwen3.5:9b" and j.review_model == "gemma4:12b"
-    assert j.extra_models == {"passage": "anthropic/claude-haiku-5-5"}
+    # 設定のない役割（本文なしの確認）は、この依頼で選んだ作成役と同じ
+    assert j.extra_models == {"passage": "anthropic/claude-haiku-5-5", "blind": "qwen3.5:9b"}
     # 打ち込んだ名前が優先
     client.post("/generate", data={"subject": "english", "format": "choice", "count": "2",
                                    "m_english_role_passage": "gemma4:12b-it-qat",
                                    "m_english_role_passage_text": "anthropic/claude-sonnet-5-5"})
-    assert jobs(sessions)[-1].extra_models == {"passage": "anthropic/claude-sonnet-5-5"}
+    assert jobs(sessions)[-1].extra_models["passage"] == "anthropic/claude-sonnet-5-5"
     # 数学には科目だけの役割がない
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1"})
     assert jobs(sessions)[-1].extra_models == {} and jobs(sessions)[-1].review_model == ""
@@ -114,9 +115,10 @@ def test_role_models_are_used_for_each_step(settings, sessions, sandbox):
     for role, model in llm.calls:
         used.setdefault(role, set()).add(model)
     assert used == {"passage": {"passage-model"}, "passage_review": {"review-model"}, "gen": {"gemma4:12b-it-qat"},
-                    "blind": {"gemma4:12b-it-qat"}, "solve": {"gemma4:e4b"}, "review": {"review-model"}}
+                    "blind": {"gemma4:12b-it-qat"}, "solve": {"gemma4:e4b"}, "review": {"review-model"},
+                    "judge": {"review-model"}}
     j = jobs(sessions)[-1]
-    assert j.extra_models == {"passage": "passage-model"} and j.review_model == "review-model"
+    assert j.extra_models["passage"] == "passage-model" and j.review_model == "review-model"
     ready = problems(sessions, status="ready")
     with sessions() as s:
         from quizapp.db import Problem
@@ -196,13 +198,13 @@ def test_think_mode_is_recorded_and_exported(settings, sessions, sandbox, client
     add_job(sessions, subject="english", scope="tmpl:en-notice", count=2)
     make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
     j = jobs(sessions)[-1]
-    assert j.think == {"anthropic/claude-haiku-5-5": "api", "gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    assert j.think == {"anthropic/claude-haiku-5-5": "api", "gemma4:12b-it-qat": "off", "gemma4:e4b": "off"}
     with sessions() as s:
         p = s.scalars(select(Problem).where(Problem.status == "ready")).first()
         assert p.passage.think == "api"
     md = client.get("/review/export.md?subject=english").text
-    assert "- 思考モード：本文作成 API／作成 思考なし／検証 モデルの既定／見直し モデルの既定" in md
-    assert "思考モード: 本文作成 API／作成 思考なし" in client.get("/review?subject=english").text
+    assert "- 思考モード：本文作成 API／作成 なし／検証 なし／見直し なし" in md
+    assert "思考モード: 本文作成 API／作成 なし" in client.get("/review?subject=english").text
     # 記録のない前の版の問題
     with sessions.begin() as s:
         s.get(Job, j.id).think_json = "{}"
@@ -216,15 +218,95 @@ def test_think_mode_is_fixed_when_the_job_is_requested(settings, sessions, sandb
     client.post("/generate", data={"subject": "math", "format": "choice", "count": "1",
                                    "m_math_gen_model": "gemma4:12b-it-qat", "m_math_verify_model": "gemma4:e4b"})
     j = jobs(sessions)[-1]
-    assert j.think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    assert j.think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "off"}
     with sessions.begin() as s:  # 依頼した後で設定を変える
         runtime.save_think_setting(s, "gemma4:12b-it-qat", "on")
     llm = OracleLLM(sessions)
     llm.think_for = None
     make_worker(settings, sessions, sandbox, llm).run_once()
-    assert llm.think_for("gemma4:12b-it-qat") is False and llm.think_for("gemma4:e4b") is None
-    assert jobs(sessions)[-1].think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    assert llm.think_for("gemma4:12b-it-qat") is False and llm.think_for("gemma4:e4b") is False
+    assert jobs(sessions)[-1].think == {"gemma4:12b-it-qat": "off", "gemma4:e4b": "off"}
     # 記録のない前の版の依頼は、取りかかった時点の設定を記録して使う
     old = add_job(sessions, count=1)
     make_worker(settings, sessions, sandbox, llm).run_once()
     assert job(sessions, old).think["gemma4:12b-it-qat"] == "on" and llm.think_for("gemma4:12b-it-qat") is True
+
+
+def test_think_mode_is_only_on_or_off(client, sessions):
+    """思考モードは「あり」「なし」の 2 つだけ（「自動」「モデルの既定」は選べない）。前の版の記録は分かるように出す。"""
+    from quizapp.db import dumps, kv_set
+
+    assert runtime.THINK_CHOICES == {"off": "なし", "on": "あり"}
+    with sessions.begin() as s:
+        kv_set(s, "ollama", dumps({"ok": True, "models": [{"name": "gemma4:12b-it-qat"}]}))
+        kv_set(s, "think_settings", dumps({"qwen3.5:9b": "auto"}))  # 前の版の値は読まない
+        assert runtime.think_settings(s) == {}
+    page = client.get("/status/models").text.split('id="think"')[1].split("</section>")[0]
+    assert "（未設定＝なし）" in page and "自動" not in page and "既定" not in page
+    client.post("/status/think", data={"model": "gemma4:12b-it-qat", "choice": "auto"})
+    with sessions() as s:
+        assert runtime.think_settings(s) == {}
+    assert runtime.THINK_RECORD["default"] == "モデルの既定（前の版）"
+
+
+def test_rereview_job_records_results_without_changing_status(settings, sessions, sandbox, client):
+    """見直しだけをやり直す依頼：選んだモデルで見直し、結果を記録に足すだけ（合否は変えない）。書き出しで比べられる。"""
+    from quizapp.db import Problem
+
+    add_job(sessions, subject="english", scope="tmpl:en-expository", count=3)
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 3
+    r = client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "",
+                                              "model_text": "anthropic/claude-haiku-5-5", "limit": "2"},
+                    follow_redirects=True)
+    assert "2 問の見直しのやり直しを順番待ちに入れました" in r.text
+    j = jobs(sessions)[-1]
+    assert j.kind == "review" and j.count == 2 and j.review_model in ("", "anthropic/claude-haiku-5-5")
+    assert j.target_ids == [p.id for p in ready][::-1][:2]  # 新しい順
+    assert "見直しのやり直し・2問" in client.get("/generate").text
+    # 「正解が複数」と判定する見直し役で見直す
+    llm = EnglishOracle(sessions, judge="multiple")
+    w = make_worker(settings, sessions, sandbox, llm)
+    w.run_once()
+    j = job(sessions, j.id)
+    assert j.status == "done" and j.made == 2 and "誤りの指摘 2 問" in j.error
+    assert {m for r, m in llm.calls} == {"anthropic/claude-haiku-5-5"}
+    with sessions() as s:
+        rows = [s.get(Problem, pid) for pid in j.target_ids]
+        assert all(p.status == "ready" for p in rows)  # 合否は変えない
+        entries = [e for p in rows for e in p.verification if e["step"] == "見直しのやり直し"]
+    assert len(entries) == 2 and all(not e["ok"] and e["job"] == j.id for e in entries)
+    # 続きから処理しても、同じ依頼で 2 回見直さない
+    w._rereview(j.id, "anthropic/claude-haiku-5-5")
+    with sessions() as s:
+        assert sum(1 for pid in j.target_ids for e in s.get(Problem, pid).verification
+                   if e["step"] == "見直しのやり直し") == 2
+    # 「見直しのやり直しで誤りを指摘された問題」で絞れる・一覧と書き出しに出る
+    page = client.get("/review?subject=english&status=reflagged").text
+    assert page.count("見直しのやり直し（anthropic/claude-haiku-5-5）: 誤りあり") == 2
+    md = client.get("/review/export.md?subject=english&status=reflagged").text
+    assert "### 検証と見直しの記録" in md and "× 見直しのやり直し（anthropic/claude-haiku-5-5）" in md
+    assert "× 正解が 1 つか" in md and "○ 検証（gemma4:e4b）" in md
+
+
+def test_rereview_works_for_math_and_export_shows_rejections(settings, sessions, sandbox, client):
+    """見直しのやり直しは数学でも使える（科目の review をそのまま使う）。不合格の問題は理由も書き出す。"""
+    add_job(sessions, count=2)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions)).run_once()
+    client.post("/review/rereview", data={"subject": "math", "status": "ready", "model": "gemma4:12b-it-qat"})
+    llm = OracleLLM(sessions)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    j = jobs(sessions)[-1]
+    assert j.kind == "review" and j.status == "done" and j.made == 2 and llm.reviews == ["gemma4:12b-it-qat"] * 2
+    md = client.get("/review/export.md?subject=math").text
+    assert "○ 見直しのやり直し（gemma4:12b-it-qat）" in md
+    # 不合格の問題
+    add_job(sessions, count=1)
+    make_worker(settings, sessions, sandbox, OracleLLM(sessions, solve_answer="0")).run_once()
+    md = client.get("/review/export.md?subject=math&status=rejected").text
+    assert "- **不合格**：検証役の答えは読めたが、数値が正解と違う" in md and "× 検証（gemma4:e4b）" in md
+    # 絞り込みに当てはまる問題がないとき
+    r = client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "x"},
+                    follow_redirects=True)
+    assert "見直しのやり直しは頼みませんでした" in r.text
