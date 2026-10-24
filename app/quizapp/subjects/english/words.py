@@ -1,7 +1,10 @@
 """語彙・スペルの問題に使う単語リスト（正解の語はここから選ぶ。LLM には例文と解説だけを書かせる）。
 
 1 行に「単語|品詞|日本語の意味」。品詞は n（名詞）・v（動詞）・adj（形容詞）・adv（副詞）。
-レベルは BASIC（高校基礎）と COMMON（共通テスト）。意味は、例文で使わせる中心の意味を 1 つだけ書く。
+レベルは BASIC（高校基礎）と COMMON（共通テスト）。意味は中心の意味を書く。よく使う意味が複数あるときは
+「客／招待客」のように「／」で区切って並べ、作成役に例文の文脈に合うものを選ばせる（第 4 回のレビュー D-3）。
+1 文字だけの意味（「長」など）は、誤答の選択肢に出すと意味が分かりにくいので、2 文字以上の意味も並べる（D-2）。
+中学で習う語（jhs_words.py）は問題に使わない（D-1。リストには残してある）。
 つづりが英米で違う語（center / centre など）は SPELLING_EXCLUDE に入れ、スペルの問題には使わない
 （答えが 1 つに決まらないため。語彙の選択式には使う）。
 """
@@ -15,8 +18,18 @@ from dataclasses import dataclass
 class Word:
     word: str
     pos: str
-    meaning: str
+    meanings: tuple[str, ...]
     level: str
+
+    @property
+    def meaning(self) -> str:
+        """中心の意味（最初のもの）。"""
+        return self.meanings[0]
+
+    @property
+    def label(self) -> str:
+        """誤答の選択肢に出す意味：2 文字以上の最初の意味。なければ空（誤答に使わない。D-2）。"""
+        return next((m for m in self.meanings if len(m.replace("〜", "")) >= 2), "")
 
 
 SPELLING_EXCLUDE = frozenset({
@@ -37,7 +50,7 @@ advice|n|助言
 age|n|年齢
 air|n|空気
 airport|n|空港
-amount|n|量
+amount|n|量／総額
 animal|n|動物
 answer|n|答え
 area|n|地域
@@ -50,12 +63,12 @@ beach|n|浜辺
 bill|n|請求書
 birth|n|誕生
 blood|n|血液
-board|n|板
+board|n|板／委員会
 bottle|n|びん
 bottom|n|底
-brain|n|脳
-branch|n|枝
-breath|n|息
+brain|n|脳／頭脳
+branch|n|枝／支店
+breath|n|息／呼吸
 bridge|n|橋
 building|n|建物
 business|n|商売
@@ -68,7 +81,7 @@ center|n|中心
 century|n|世紀
 chance|n|機会
 character|n|性格
-chief|n|長
+chief|n|組織の長／責任者
 child|n|子ども
 choice|n|選択
 church|n|教会
@@ -85,16 +98,16 @@ college|n|大学
 contest|n|競技会
 corner|n|角
 cost|n|費用
-cotton|n|綿
+cotton|n|綿／木綿
 country|n|国
 courage|n|勇気
 course|n|講座
 cousin|n|いとこ
 culture|n|文化
-customer|n|客
+customer|n|顧客／客
 danger|n|危険
 daughter|n|娘
-death|n|死
+death|n|死／死亡
 desert|n|砂漠
 design|n|設計
 dictionary|n|辞書
@@ -136,7 +149,7 @@ garden|n|庭
 gift|n|贈り物
 goal|n|目標
 government|n|政府
-guest|n|招待客
+guest|n|客／招待客
 guide|n|案内人
 health|n|健康
 heart|n|心臓
@@ -149,7 +162,7 @@ hour|n|時間
 husband|n|夫
 idea|n|考え
 island|n|島
-journey|n|旅
+journey|n|旅／旅行
 kitchen|n|台所
 knowledge|n|知識
 language|n|言語
@@ -202,9 +215,9 @@ police|n|警察
 pollution|n|汚染
 population|n|人口
 power|n|力
-present|n|贈り物
+present|n|贈り物／現在
 price|n|値段
-prize|n|賞
+prize|n|賞／賞品
 problem|n|問題
 project|n|計画
 purpose|n|目的
@@ -216,13 +229,13 @@ river|n|川
 road|n|道路
 rule|n|規則
 safety|n|安全
-salt|n|塩
+salt|n|塩／食塩
 school|n|学校
 science|n|科学
 scientist|n|科学者
 season|n|季節
 secret|n|秘密
-shape|n|形
+shape|n|形／体調
 ship|n|船
 shoulder|n|肩
 sightseeing|n|観光
@@ -249,7 +262,7 @@ system|n|仕組み
 teacher|n|先生
 team|n|チーム
 temperature|n|温度
-term|n|学期
+term|n|学期／用語
 test|n|試験
 thought|n|考え
 ticket|n|切符
@@ -604,6 +617,318 @@ soon|adv|まもなく
 suddenly|adv|突然
 together|adv|一緒に
 usually|adv|ふつうは
+# 第 4 回のレビュー D-1 で足した高校 1 年程度の語（中学の語を外すと高校基礎の語が足りなくなるため）
+admission|n|入場
+agency|n|代理店
+aisle|n|通路
+anniversary|n|記念日
+apartment|n|アパート
+appliance|n|電化製品
+aquarium|n|水族館
+architect|n|建築家
+attic|n|屋根裏部屋
+backpack|n|リュックサック
+bakery|n|パン屋
+balcony|n|バルコニー
+bargain|n|お買い得品
+basement|n|地下室
+battery|n|電池
+blanket|n|毛布
+booklet|n|小冊子
+boundary|n|境界
+brochure|n|パンフレット
+cafeteria|n|食堂
+calendar|n|カレンダー
+candidate|n|候補者
+carpenter|n|大工
+celebrity|n|有名人
+chemistry|n|化学
+cottage|n|小さな家
+counter|n|売り場の台
+coupon|n|割引券
+crew|n|乗組員
+crowd|n|群衆
+cushion|n|クッション
+deadline|n|締め切り
+dentist|n|歯医者
+diary|n|日記
+diploma|n|卒業証書
+discipline|n|規律
+dormitory|n|寮／寄宿舎
+download|n|ダウンロード
+drought|n|干ばつ
+election|n|選挙
+elevator|n|エレベーター
+emperor|n|皇帝
+entry|n|参加申し込み
+errand|n|使い
+exhibit|n|展示品
+faculty|n|学部
+fare|n|運賃
+feedback|n|意見
+fever|n|熱／発熱
+flood|n|洪水
+fountain|n|噴水
+fragment|n|かけら
+furniture|n|家具
+gallery|n|美術館
+garage|n|車庫
+glove|n|手袋
+grocery|n|食料品店
+guidebook|n|案内書
+headache|n|頭痛
+hospitality|n|もてなし
+host|n|主催者／もてなす側の人
+household|n|家庭
+hurricane|n|ハリケーン
+inhabitant|n|住人
+instructor|n|指導員
+intersection|n|交差点
+inventor|n|発明家
+invitation|n|招待状
+journalist|n|記者
+landmark|n|目印となる建物
+laundry|n|洗濯物
+lecture|n|講義
+librarian|n|司書
+lighthouse|n|灯台
+lobby|n|ロビー
+locker|n|ロッカー
+mayor|n|市長
+mechanic|n|整備士
+merchant|n|商人
+microscope|n|顕微鏡
+monument|n|記念碑
+narrator|n|語り手
+navy|n|海軍
+nephew|n|おい
+niece|n|めい
+novel|n|小説
+novelist|n|小説家
+orchestra|n|管弦楽団
+outlet|n|コンセント
+oxygen|n|酸素
+pamphlet|n|パンフレット
+parade|n|行進
+passport|n|旅券
+pedestrian|n|歩行者
+pharmacy|n|薬局
+pilot|n|操縦士
+platform|n|駅のホーム
+plumber|n|配管工
+poem|n|詩／韻文
+poet|n|詩人
+portrait|n|肖像画
+postcard|n|はがき
+pottery|n|陶器
+principal|n|校長
+puzzle|n|パズル
+pyramid|n|ピラミッド
+recess|n|休み時間
+refrigerator|n|冷蔵庫
+rehearsal|n|下稽古
+reunion|n|再会の集まり
+ribbon|n|リボン
+satellite|n|人工衛星
+scenery|n|景色
+sculpture|n|彫刻
+semester|n|学期
+shelter|n|避難所
+shortcut|n|近道
+sibling|n|きょうだい
+souvenir|n|みやげ
+spectator|n|観客
+staff|n|職員
+statue|n|像／彫像
+suburb|n|郊外
+surgeon|n|外科医
+tablet|n|錠剤
+tenant|n|借家人
+textbook|n|教科書
+thermometer|n|温度計
+thunder|n|雷／雷鳴
+tournament|n|勝ち抜き戦
+tribe|n|部族
+trophy|n|優勝杯
+tutor|n|家庭教師
+vacuum|n|掃除機
+vendor|n|売り手
+veterinarian|n|獣医
+voyage|n|航海
+wallet|n|財布
+warehouse|n|倉庫
+wheel|n|車輪
+wildlife|n|野生生物
+workshop|n|研修会
+adjust|v|調整する
+applaud|v|拍手する
+assemble|v|組み立てる
+bake|v|焼く
+bend|v|曲げる
+boil|v|沸かす
+bounce|v|はねる
+broadcast|v|放送する
+browse|v|見て回る
+chase|v|追いかける
+cheat|v|不正をする
+chew|v|かむ
+crawl|v|はう
+dig|v|掘る
+dive|v|飛び込む
+download|v|ダウンロードする
+drown|v|おぼれる
+dust|v|ほこりを払う
+float|v|浮かぶ
+fold|v|折りたたむ
+freeze|v|凍る
+hang|v|掛ける
+heal|v|治す
+hire|v|雇う
+hug|v|抱きしめる
+hunt|v|狩る
+inherit|v|受け継ぐ
+iron|v|アイロンをかける
+kneel|v|ひざまずく
+knit|v|編む
+leak|v|漏れる
+melt|v|溶ける
+mend|v|修繕する
+nod|v|うなずく
+pack|v|荷造りする
+peel|v|皮をむく
+polish|v|磨く
+pour|v|注ぐ
+pray|v|祈る
+pronounce|v|発音する
+punish|v|罰する
+quit|v|やめる
+rent|v|賃借りする
+rinse|v|すすぐ
+rob|v|奪う
+rub|v|こする
+scratch|v|ひっかく
+scream|v|悲鳴をあげる
+sew|v|縫う
+shake|v|振る
+shave|v|そる
+shiver|v|震える
+sigh|v|ため息をつく
+sink|v|沈む
+slide|v|すべる
+slip|v|すべって転ぶ
+sneeze|v|くしゃみをする
+spill|v|こぼす
+squeeze|v|しぼる
+stir|v|かき混ぜる
+stretch|v|伸ばす
+sweep|v|掃く
+swing|v|揺らす
+tease|v|からかう
+tie|v|結ぶ
+trap|v|閉じ込める
+unlock|v|鍵を開ける
+upload|v|アップロードする
+vote|v|投票する
+wander|v|さまよう
+weigh|v|重さを量る
+whisper|v|ささやく
+wipe|v|ふく
+wrap|v|包む
+yawn|v|あくびをする
+ashamed|adj|恥じて
+awake|adj|目が覚めて
+awful|adj|ひどい
+bold|adj|大胆な
+cozy|adj|居心地のよい
+crazy|adj|ばかげた
+cruel|adj|残酷な
+curly|adj|巻き毛の
+dizzy|adj|めまいがする
+dull|adj|退屈な
+elegant|adj|上品な
+exhausted|adj|へとへとの
+fancy|adj|高級な
+fierce|adj|どう猛な
+fluent|adj|流ちょうな
+frozen|adj|凍った
+fuzzy|adj|ぼやけた
+gloomy|adj|陰気な
+handsome|adj|顔立ちの整った
+harmless|adj|無害な
+hollow|adj|空洞の
+humid|adj|蒸し暑い
+indoor|adj|屋内の
+jealous|adj|嫉妬深い
+juicy|adj|汁の多い
+loose|adj|ゆるい
+mature|adj|成熟した
+messy|adj|散らかった
+moist|adj|湿った
+muddy|adj|泥だらけの
+neat|adj|きちんとした
+noble|adj|気高い
+nutritious|adj|栄養のある
+outdoor|adj|屋外の
+pale|adj|青白い
+portable|adj|持ち運びできる
+precise|adj|精密な
+punctual|adj|時間を守る
+raw|adj|生の
+risky|adj|危険を伴う
+rough|adj|ざらざらした
+rude|adj|失礼な
+rusty|adj|さびた
+scary|adj|怖い
+selfish|adj|わがままな
+shallow|adj|浅い
+sleepy|adj|眠い
+slim|adj|ほっそりした
+smooth|adj|なめらかな
+sour|adj|すっぱい
+spicy|adj|辛い
+steep|adj|険しい
+sticky|adj|べたべたする
+stormy|adj|嵐の
+stubborn|adj|頑固な
+tidy|adj|整頓された
+tight|adj|きつい
+tiny|adj|ごく小さい
+tough|adj|頑丈な
+ugly|adj|醜い
+upset|adj|動揺した
+vacant|adj|空いている
+weird|adj|変な
+wealthy|adj|裕福な
+afterward|adv|その後で
+aloud|adv|声に出して
+anyway|adv|とにかく
+apart|adv|離れて
+backward|adv|後ろ向きに
+barely|adv|かろうじて
+beforehand|adv|前もって
+briefly|adv|手短に
+deliberately|adv|わざと
+downstairs|adv|階下へ
+elsewhere|adv|ほかの場所で
+entirely|adv|すっかり
+forever|adv|永遠に
+fortunately|adv|幸いにも
+honestly|adv|正直に
+indoors|adv|屋内で
+instead|adv|その代わりに
+lately|adv|最近
+nearby|adv|近くに
+nowadays|adv|このごろ
+outdoors|adv|屋外で
+overseas|adv|海外へ
+partly|adv|部分的に
+politely|adv|丁寧に
+quite|adv|かなり
+seriously|adv|真剣に
+somewhere|adv|どこかに
+straight|adv|まっすぐに
+upstairs|adv|階上へ
+widely|adv|広く
 """
 
 COMMON = """
@@ -668,7 +993,7 @@ consequence|n|結果として起こること
 construction|n|建設
 consumer|n|消費者
 contact|n|連絡
-content|n|内容
+content|n|内容／中身
 context|n|文脈
 contract|n|契約
 contribution|n|貢献
@@ -690,7 +1015,7 @@ degree|n|程度
 delay|n|遅れ
 demand|n|需要
 department|n|部門
-deposit|n|手付金
+deposit|n|手付金／預金
 destination|n|目的地
 detail|n|細部
 development|n|発達
@@ -710,7 +1035,7 @@ emergency|n|緊急事態
 emotion|n|感情
 employee|n|従業員
 encouragement|n|励まし
-enemy|n|敵
+enemy|n|敵／敵対する人
 equipment|n|装備
 era|n|時代
 evidence|n|証拠
@@ -726,7 +1051,7 @@ failure|n|失敗
 feature|n|特徴
 fee|n|料金
 fiction|n|作り話
-figure|n|数字
+figure|n|数字／人物
 finance|n|財政
 fortune|n|財産
 foundation|n|基礎
@@ -758,7 +1083,7 @@ intention|n|意図
 interview|n|面接
 invention|n|発明品
 investigation|n|調査
-issue|n|問題点
+issue|n|問題点／（雑誌の）号
 item|n|品目
 laboratory|n|実験室
 landscape|n|風景
@@ -769,7 +1094,7 @@ luggage|n|旅行かばん
 majority|n|大多数
 manager|n|経営者
 material|n|材料
-measure|n|対策
+measure|n|対策／尺度
 membership|n|会員資格
 minority|n|少数派
 mission|n|使命
@@ -812,8 +1137,8 @@ profit|n|利益
 progress|n|進歩
 proposal|n|提案
 prospect|n|見通し
-quality|n|質
-quantity|n|量
+quality|n|質／品質
+quantity|n|量／数量
 range|n|範囲
 reaction|n|反応
 receipt|n|領収書
@@ -845,7 +1170,7 @@ security|n|安心
 shortage|n|不足
 signal|n|合図
 situation|n|状況
-species|n|種
+species|n|（生物の）種／種類
 statement|n|声明
 statistics|n|統計
 status|n|地位
@@ -873,12 +1198,12 @@ value|n|価値
 variety|n|多様さ
 vehicle|n|乗り物
 victim|n|被害者
-view|n|眺め
+view|n|眺め／意見
 violence|n|暴力
 vision|n|視力
 volume|n|音量
 waste|n|廃棄物
-wealth|n|富
+wealth|n|富／財産
 welfare|n|福祉
 workplace|n|職場
 achieve|v|成し遂げる
@@ -1268,8 +1593,10 @@ unfortunately|adv|不運にも
 def _parse(text: str, level: str) -> list[Word]:
     out = []
     for line in text.strip().splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
         word, pos, meaning = (part.strip() for part in line.split("|"))
-        out.append(Word(word, pos, meaning, level))
+        out.append(Word(word, pos, tuple(m.strip() for m in meaning.split("／") if m.strip()), level))
     return out
 
 

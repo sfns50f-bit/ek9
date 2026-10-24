@@ -77,7 +77,10 @@ class EnglishOracle:
             self.calls.append(("gen", model))
             word = re.search(r"使う単語: (\S+)（", user).group(1)
             self.n_sentences += 1  # 文ごとに番号を変える（見直しで、正解を入れた文を見分けるため）
-            return {"sentence": f"Student number {self.n_sentences} wants to {word} with friends during the long summer.",
+            cands = re.search(r"誤答の候補（ここから 3 つ選ぶ）: (.*)$", user, re.M)
+            meanings = re.search(r"意味: (.*)）$", user, re.M).group(1).split("／")
+            return {"meaning": meanings[-1], "others": ", ".join(cands.group(1).split(", ")[:3]) if cands else "",
+                    "sentence": f"Student number {self.n_sentences} wants to {word} with friends during the long summer.",
                     "translation": "学校の生徒はみな、長い夏の間に友だちと〜したいと思っている。",
                     "hint": "文の後半の with friends に注目しよう。",
                     "explanation": "夏の間に友だちと一緒にすることなので、この語の意味が文に合う。"}
@@ -111,15 +114,18 @@ class EnglishOracle:
             drafts = list(s.execute(select(Problem).where(Problem.status == "draft")).scalars())
         if "[ ] で示した語の意味" in system:
             word = re.search(r"\[ (\w+) \]", user).group(1)
-            right = {w.meaning for w in WORDS if w.word == word}
+            right = {m for w in WORDS if w.word == word for m in w.meanings}
+            wrong_one = next((n for n, text in items if text not in right), None)
             for n, text in items:
-                fit = text in right or (self.judge == "multiple" and n == "1")
+                fit = text in right or (self.judge == "multiple" and n == wrong_one)
                 lines.append(f"{n}: {'通る' if fit else '通らない'}")
             return "\n".join(lines)
+        right = {n for n, text in items if any(p.template == "en-vocab-blank" and text == p.question.split(
+            "\n\n")[-1].replace("(　　　　)", p.params["word"]) for p in drafts)}
+        wrong_one = next((n for n, _t in items if n not in right), None)
         for n, text in items:
-            ok = any(p.template == "en-vocab-blank" and text == p.question.split("\n\n")[-1].replace(
-                "(　　　　)", p.params["word"]) for p in drafts)
-            fit = ok or (self.judge == "multiple" and not ok and n == "1")
+            ok = n in right
+            fit = ok or (self.judge == "multiple" and n == wrong_one)
             lines.append(f"{n}: {'通る' if fit else '通らない'} — 理由")
         return "\n".join(lines)
 
@@ -574,11 +580,11 @@ def test_review04_prompts():
     from quizapp.subjects.english import prompts
 
     every = [prompts.vocab_system(t) for t in ("en-vocab-blank", "en-vocab-meaning", "en-spelling")]
-    every += [prompts.QUESTION_SYSTEM, prompts.PASSAGE_SYSTEM, prompts.vocab_user("a", "動詞", "x", ["b"])]
+    every += [prompts.QUESTION_SYSTEM, prompts.PASSAGE_SYSTEM, prompts.vocab_user("a", "動詞", ["x"], ["b"])]
     assert not any("入らない語" in p for p in every)  # 作成役が書き写していた言葉をプロンプトから無くした
     # スペル・意味の問題には、ほかの語の話を書かない（A-2）
-    assert "選択肢に並ぶ別の語" in prompts.vocab_system("en-vocab-blank")
-    assert "選択肢に並ぶ別の語" not in prompts.vocab_system("en-spelling")
+    assert "誤答の候補" in prompts.vocab_system("en-vocab-blank")
+    assert "誤答の候補" not in prompts.vocab_system("en-spelling")
     assert "空所」「入る」「入れる」という言葉を使わない" in prompts.vocab_system("en-vocab-meaning")
     # B-1〜B-5
     q = prompts.QUESTION_SYSTEM
@@ -639,3 +645,59 @@ def test_unreadable_judgments_do_not_reject(settings, sessions, sandbox):
     ready = problems(sessions, status="ready")
     assert len(ready) == 2
     assert any("読めなかった確認" in e["summary"] for e in ready[0].verification if e["step"] == "解説の見直し")
+
+
+# --- 第 4 回のレビューの D（語彙・スペル） ----------------------------------------------
+
+@pytest.mark.parametrize("template,fmt", [("en-vocab-blank", "choice"), ("en-vocab-meaning", "choice"),
+                                          ("en-spelling", "input")])
+def test_review04_vocab_generation(settings, sessions, sandbox, template, fmt):
+    from quizapp.subjects.english import spelling_hint
+    from quizapp.subjects.english.jhs_words import JHS_WORDS
+
+    llm = EnglishOracle(sessions)
+    run_job(settings, sessions, sandbox, llm, scope=f"tmpl:{template}", format=fmt, count=4)
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 4
+    for p in ready:
+        assert p.params["word"] not in JHS_WORDS  # D-1：中学の語は使わない
+        assert not set(p.params["others"]) & JHS_WORDS
+        if template == "en-spelling":
+            assert p.hint == spelling_hint(p.params["word"]) and p.params["others"] == []  # D-4
+        else:
+            # D-5：作成役が候補から選んだ誤答の語（テスト用の LLM は候補の最初の 3 つを選ぶ）
+            step = next(e for e in p.verification if e["step"] == "誤答")
+            assert step["summary"].startswith("作成役が候補から選んだ誤答の語")
+            cands = re.search(r"誤答の候補（ここから 3 つ選ぶ）: (.*)$", p.verification[0]["detail"], re.M).group(1)
+            assert p.params["others"] == cands.split(", ")[:3]
+        if template == "en-vocab-meaning":
+            assert all(len(c["text"].replace("〜", "")) >= 2 for c in p.choices if not c["correct"])  # D-2
+        word = next(w for w in WORDS if w.word == p.params["word"] and w.pos == p.params["pos"])
+        assert p.params["meaning"] in word.meanings  # D-3：選んだ意味
+
+
+def test_review04_word_helpers():
+    from quizapp.subjects.english import CANDIDATES, chosen_meaning, chosen_others, spelling_hint
+    from quizapp.subjects.english.jhs_words import JHS_WORDS
+
+    guest = next(w for w in WORDS if w.word == "guest")
+    assert guest.meanings == ("客", "招待客") and guest.label == "招待客"
+    assert chosen_meaning(guest, "招待客") == "招待客" and chosen_meaning(guest, "「客」") == "客"
+    assert chosen_meaning(guest, "よく分からない") == "客"  # 読めなければ中心の意味
+    chief = next(w for w in WORDS if w.word == "chief")
+    assert chief.label == "組織の長"  # D-2：1 文字の意味だけの語はない（中学の語を除く）
+    assert not [w for w in WORDS if w.word not in JHS_WORDS and not w.label]
+    rng = random.Random(3)
+    word = next(w for w in WORDS if w.word == "decide")
+    cands = pick_distractors(word, rng, CANDIDATES)
+    assert len(cands) == CANDIDATES and not {c.word for c in cands} & JHS_WORDS
+    picked, ok = chosen_others(f"{cands[4].word}, {cands[7].word}, banana, {cands[4].word}", cands)
+    assert not ok and picked[:2] == [cands[4], cands[7]] and len(picked) == 3  # 足りない分は候補から
+    picked, ok = chosen_others(", ".join(c.word for c in cands[2:5]), cands)
+    assert ok and picked == cands[2:5]
+    assert spelling_hint("arrive") == "最後の文字は「e」です。"
+    assert spelling_hint("necessary") == "最後の文字は「y」です。2 文字目は「e」です。"
+    # 中学の語を外しても、高校基礎の語が足りている
+    from collections import Counter
+    usable = Counter((w.level, w.pos) for w in WORDS if w.word not in JHS_WORDS)
+    assert all(usable[(lv, pos)] >= 30 for lv in ("basic", "common") for pos in ("n", "v", "adj", "adv"))
