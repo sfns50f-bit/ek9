@@ -184,3 +184,26 @@ def test_review_model_defaults_to_verifier_and_plan_needs_ollama():
     assert local_review.needs_ollama
     assert not runtime.ModelPlan("anthropic/x", "anthropic/x", 1, "", review=False,
                                  review_model="gemma4:e4b").needs_ollama
+
+
+def test_think_mode_is_recorded_and_exported(settings, sessions, sandbox, client):
+    """処理したときのモデルごとの思考モードを依頼に残し、問題検証モードと書き出しに出す（前の版の問題は「記録なし」）。"""
+    from quizapp.db import Problem
+
+    with sessions.begin() as s:
+        runtime.save_think_setting(s, "gemma4:12b-it-qat", "off")
+        runtime.save_subject_settings(s, "english", {"passage": "anthropic/claude-haiku-5-5"})
+    add_job(sessions, subject="english", scope="tmpl:en-notice", count=2)
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    j = jobs(sessions)[-1]
+    assert j.think == {"anthropic/claude-haiku-5-5": "api", "gemma4:12b-it-qat": "off", "gemma4:e4b": "default"}
+    with sessions() as s:
+        p = s.scalars(select(Problem).where(Problem.status == "ready")).first()
+        assert p.passage.think == "api"
+    md = client.get("/review/export.md?subject=english").text
+    assert "- 思考モード：本文作成 API／作成 思考なし／検証 モデルの既定／見直し モデルの既定" in md
+    assert "思考モード: 本文作成 API／作成 思考なし" in client.get("/review?subject=english").text
+    # 記録のない前の版の問題
+    with sessions.begin() as s:
+        s.get(Job, j.id).think_json = "{}"
+    assert "- 思考モード：記録なし" in client.get("/review/export.md?subject=english").text

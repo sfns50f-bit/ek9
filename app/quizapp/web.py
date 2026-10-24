@@ -687,11 +687,12 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             rows = review.query(s, **review_query_args(f), limit=per + 1, offset=(page - 1) * per)
             for p in rows:
-                _ = p.passage
+                _ = p.passage, p.job
             options = review.filter_options(s)
         return render(request, "review.html", page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
-                      issues=review.text_issues, locked=bool(settings.review_password), msg=msg, n=n)
+                      issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
+                      msg=msg, n=n)
 
     @app.get("/review/export.md")
     def review_export(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
@@ -703,7 +704,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             rows = review.query(s, **review_query_args(f), limit=500)
             for p in rows:
-                _ = p.passage
+                _ = p.passage, p.job
             shown = {"科目": get_subject(subject).name if get_subject(subject) else "",
                      "単元": next((u.label for sub in all_subjects() for u in sub.units() if u.id == unit), unit),
                      "レベル": LEVELS.get(level, ""), "作成役": gen_model,

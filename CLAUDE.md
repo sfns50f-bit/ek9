@@ -78,7 +78,7 @@
   - JSON で返ってきたときも読む（1 本のバックスラッシュの修復、制御文字になった `\frac` などを戻す `llm._fix_controls`）。見出しの揺れ（`**[[question]]**`、`## [[ Hint ]]:`）、同じ見出しが 2 回（後のものを使う）、`<think>…</think>`（開きタグのないものも）、```json の囲みを外す
   - 直しを頼むときに前回の出力を見せるのも同じ見出しの形（JSON で見せると二重のバックスラッシュを書き写す）
 - 出力の上限で切れたら「出力の上限で途中で切れました」。読めなければ 1 回だけ呼び直してから不合格（作り直しの回数は使わない）
-- **思考モード**：モデルごとに /status で「自動／切る／切らない」を選べ、そのモデルに保存される（kv の `think_settings`）。自動は qwen3 系（qwen3.5 も）を切り、gemma4 などはモデルの既定のまま（gemma4 は think=false で format が効かなくなる不具合があった）。`.env` の `OLLAMA_THINK` を書けば自動の代わりにその値
+- **思考モード**：モデルごとに /status で「自動／切る／切らない」を選べ、そのモデルに保存される（kv の `think_settings`）。自動は qwen3 系（qwen3.5 も）を切り、gemma4 などはモデルの既定のまま（gemma4 は think=false で format が効かなくなる不具合があった）。`.env` の `OLLAMA_THINK` を書けば自動の代わりにその値。**処理したときの思考モードをモデルごとに依頼に残す**（`jobs.think`＝`{モデル: "on"/"off"/"default"/"api"}`、本文は `passages.think`。`runtime.think_record`）。問題検証モードの一覧と Markdown の書き出しに役割ごとに出す（`review.think_text`。思考モードの有無でモデルを比べるため。前の版の問題は「記録なし」）
 - LLM の呼び出しごとに時間の内訳（全体・モデルの読み込み・出力トークン数・速さ・料金）を kv の `llm_calls` に新しい 40 件まで残し、/status の「LLM の呼び出し」に出す（`OllamaClient._record`、`Worker._save_llm_calls`）。種類は作成・直し・検証・見直し
 
 ### モデルと依頼

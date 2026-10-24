@@ -48,6 +48,7 @@ from .runtime import (
     plan_for_job,
     provider_of,
     resolve_think,
+    think_record,
     think_settings,
 )
 from .sandbox_client import SandboxClient, SandboxUnavailable
@@ -317,7 +318,7 @@ class Worker:
                               source_title=str(p.get("source_title", "")), source_url=str(p.get("source_url", "")),
                               template=str(p.get("template", "")), topic=str(p.get("topic", "")),
                               status=str(p.get("status", "")), gen_model=str(p.get("gen_model", "")),
-                              log_json=dumps(p.get("log", [])))
+                              think=job.think.get(str(p.get("gen_model", "")), ""), log_json=dumps(p.get("log", [])))
             s.add(passage)
         cache[id(p)] = passage
         return passage
@@ -373,6 +374,10 @@ class Worker:
         if hasattr(self.llm, "think_for"):
             env_think = self.settings.think
             self.llm.think_for = lambda m: resolve_think(m, choices, env_think)
+        # 使うモデルごとの思考モードを依頼に残す（問題検証モードと書き出しで、思考あり・なしを比べられるように）
+        used = [*plan.models.values(), *plan.verify_runs]
+        self._update_job(job_id, think_json=dumps({m: think_record(m, choices, self.settings.think)
+                                                   for m in dict.fromkeys(used) if m}))
         budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
         self._check_cancel(job_id)

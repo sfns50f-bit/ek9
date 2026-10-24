@@ -289,6 +289,17 @@ def save_think_setting(session: Session, model: str, choice: str) -> None:
     kv_set(session, "think_settings", dumps(data))
 
 
+# 問題に残す思考モードの記録（依頼を処理したときの実際の設定）。API のモデルには思考モードの設定がない
+THINK_RECORD = {"on": "思考あり", "off": "思考なし", "default": "モデルの既定", "api": "API"}
+
+
+def think_record(model: str, choices: dict[str, str], env_think: bool | None) -> str:
+    """そのモデルを呼ぶときの思考モード（THINK_RECORD のキー）。"""
+    if provider_of(model)[0] != "ollama":
+        return "api"
+    return {True: "on", False: "off", None: "default"}[resolve_think(model, choices, env_think)]
+
+
 def auto_think(model: str) -> bool | None:
     return False if model.lower().startswith(THINK_OFF_PREFIXES) else None
 

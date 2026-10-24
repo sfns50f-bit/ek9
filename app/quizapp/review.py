@@ -119,6 +119,32 @@ def labels(problem: Problem) -> dict[str, str]:
             "level": LEVELS.get(level, "—"), "format": FORMATS.get(problem.format, problem.format)}
 
 
+def think_text(problem: Problem) -> str:
+    """役割ごとのモデルの思考モード（作成したときの記録）。前の版の問題は「記録なし」。"""
+    from .runtime import THINK_RECORD
+
+    job = problem.job
+    think = job.think if job is not None else {}
+    if not think:
+        return "記録なし"
+    roles: list[tuple[str, str, str]] = []
+    passage = problem.passage
+    if passage is not None and passage.gen_model:
+        roles.append(("本文作成", passage.gen_model, passage.think or think.get(passage.gen_model, "")))
+    roles.append(("作成", problem.gen_model or job.gen_model, ""))
+    roles.append(("検証", job.verify_model, ""))
+    if job.verify_model_2:
+        roles.append(("別系統の検証", job.verify_model_2, ""))
+    if job.explanation_review:
+        roles.append(("見直し", job.review_model or job.verify_model, ""))
+    parts = []
+    for label, model, state in roles:
+        if model:
+            state = state or think.get(model, "")
+            parts.append(f"{label} {THINK_RECORD.get(state, '記録なし')}")
+    return "／".join(parts)
+
+
 def mistake_label(problem: Problem, key: str | None) -> str:
     sub = get_subject(problem.subject)
     return (sub.mistakes.get(key or "", key or "") if sub else key or "") or "—"
@@ -137,7 +163,8 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
                   "", f"- 作成日時：{when(p.created_at) if p.created_at else '—'}／管理番号：#{p.id}",
                   f"- レベル：{lab['level']}／形式：{lab['format']}",
                   f"- {'本文作成役：' + (p.passage.gen_model or '—') + '／' if p.passage is not None else ''}"
-                  f"作成役：{p.gen_model or '—'}／検証役：{p.verify_models or '—'}", ""]
+                  f"作成役：{p.gen_model or '—'}／検証役：{p.verify_models or '—'}",
+                  f"- 思考モード：{think_text(p)}", ""]
         if p.passage is not None and p.passage.body:
             lines += ["### 本文", "", p.passage.body.strip(), ""]
         lines += ["### 問題文", "", p.question.strip(), ""]
