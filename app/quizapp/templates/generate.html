@@ -81,6 +81,9 @@
       {% if j.kind == "review" %}
       <div><strong>#{{ j.id }}</strong> 見直しのやり直し{% if j.review_passage %}（本文も）{% endif %}・{{ j.count }}問・{{ j.review_model or j.verify_model }}</div>
       <div class="small">{{ JOB_STATUS.get(j.status, j.status) }}・見直し {{ j.made }} / {{ j.count }}・{{ j.created_at | localtime }}</div>
+      {% elif j.kind == "golden" %}
+      <div><strong>#{{ j.id }}</strong> 見本集での測定・{{ j.count }}問・検証 {{ j.verify_model }} ×{{ j.verify_count }}{% if j.explanation_review %}・見直し {{ j.review_model or j.verify_model }}{% endif %}{% if j.review_passage %}（本文も）{% endif %}</div>
+      <div class="small">{{ JOB_STATUS.get(j.status, j.status) }}・測定 {{ j.made }} / {{ j.count }}・{{ j.created_at | localtime }}</div>
       {% else %}
       <div><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}・{{ j.count }}問
         {% if j.levels %}・{% for l in j.levels.split(",") %}{{ LEVELS.get(l, l) }}{% if not loop.last %}／{% endif %}{% endfor %}{% endif %}

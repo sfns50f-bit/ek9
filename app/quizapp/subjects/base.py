@@ -130,6 +130,7 @@ REJECT_CODES = {
     "solver_mismatch": "検証役の答えは読めたが、数値が正解と違う",
     "solver_unreadable": "検証役の答えが読み取れなかった",
     "duplicate": "既存の問題と同じ数値",
+    "needs_check": "検証の判定が割れた（要確認。問題検証モードで確かめてストックに入れるか決める）",
 }
 
 
@@ -174,6 +175,10 @@ class Subject:
     # --- 作成・検証（worker） ---------------------------------------------
 
     # 検証のテスト（正解をわざとずらした問題を流す）に使う形式。空なら、この科目はテストに対応しない
+    # 検証の判定が割れたとき（設定の回数のうち一部だけ合格）、すぐ捨てずに「要確認」（needs_check）にするか。
+    # True の科目は、検証の不合格が出ても検証の回数を最後までかける（英語：第 6 回のレビュー 2-4）
+    verify_split_check: bool = False
+
     test_format: str = ""
 
     def generate(self, ctx: GenContext, template: str, fmt: str) -> Draft | list[Draft]:
@@ -196,6 +201,10 @@ class Subject:
         対応しない科目は None を返す（見直しをしない）。
         """
         return None
+
+    def rereview(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
+        """見直しだけをやり直す依頼で、前に作った問題を点検し直す。ふつうは見直しと同じ。"""
+        return self.review(llm, model, problem)
 
     def review_passage(self, llm: LLM, model: str, passage: Any) -> VerifyResult | None:
         """本文だけの見直し（任意）。見直しだけをやり直す依頼で「本文の見直しもする」を選んだときに呼ぶ。

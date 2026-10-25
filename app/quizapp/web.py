@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import backup, review, runtime, stock
+from . import backup, golden, review, runtime, stock
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import (
@@ -747,11 +747,67 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             ollama = kv_json(s, "ollama", {}) or {}
             model_names = [m["name"] for m in ollama.get("models", [])] + api_info(s)["models"]
             reviewer = runtime.model_plan(settings, s, get_subject(subject)).reviewer
-        return render(request, "review.html", page="/review", problems=rows[:per], more=len(rows) > per,
+            goldens = [gs for gs in (golden.golden_set(s, sub.id) for sub in all_subjects()) if gs is not None]
+        return render(request, "review.html", goldens=goldens, subject_name=lambda k: getattr(get_subject(k), "name", k), page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
                       issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
                       msg=msg, n=n, model_names=model_names, reviewer=reviewer, rereviews=review.rereviews,
                       max_rereview=review.MAX_REREVIEW)
+
+    @app.post("/review/golden")
+    def review_golden(request: Request, subject: str = Form(...), verify_model: str = Form(""),
+                      verify_text: str = Form(""), verify_count: str = Form("2"), review_model: str = Form(""),
+                      review_text: str = Form(""), with_review: str = Form(""),
+                      with_passage: str = Form("")) -> Response:
+        """見本集での測定（第 6 回のレビューの 5 章）：見本集の問題に、選んだ検証役・見直し役で検証・見直しをかける。
+        結果は依頼に残すだけ（ストック・問題の記録は変えない）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        verifier = (verify_text.strip() or verify_model.strip())[:128]
+        reviewer_ = (review_text.strip() or review_model.strip())[:128]
+        if not verifier:
+            raise HTTPException(400, "検証役のモデルを選んでください")
+        with sessions.begin() as s:
+            gs = golden.golden_set(s, subject)
+            if gs is None or not gs.samples:
+                raise HTTPException(404, "この科目の見本集がありません")
+            count = max(1, min(runtime.MAX_VERIFY_COUNT, _int(verify_count, 2)))
+            plan = runtime.ModelPlan(gen_model=verifier, verify_model=verifier, verify_count=count, verify_model_2="",
+                                     review=with_review == "on", review_model=reviewer_)
+            job = Job(subject=subject, scope="", format="", count=len(gs.samples), kind="golden",
+                      target_ids_json=json.dumps([x.id for x in gs.samples]), review_passage=with_passage == "on")
+            runtime.apply_plan(job, plan)
+            runtime.record_think(settings, s, job, plan)
+            s.add(job)
+        return redirect(f"/review?msg=golden&n={len(gs.samples)}")
+
+    @app.get("/review/golden.md")
+    def review_golden_table(request: Request, subject: str = "english", download: int = 0) -> Response:
+        """見本集の測定の比べる表（問題 × 構成 → 弾いた／通した／要確認）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions() as s:
+            gs = golden.golden_set(s, subject)
+            if gs is None:
+                raise HTTPException(404, "この科目の見本集がありません")
+            jobs = list(s.execute(select(Job).where(Job.kind == "golden", Job.subject == subject,
+                                                    Job.made > 0).order_by(Job.id)).scalars())
+            text = golden.to_markdown(gs, jobs, golden.past_reviews(s, [x.id for x in gs.samples]))
+        headers = {"Content-Disposition": f'attachment; filename="golden_{subject}.md"'} if download else {}
+        return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+    @app.get("/review/golden.json")
+    def review_golden_json(request: Request, subject: str = "english") -> Response:
+        """データベースから加えた問題も items に入れた見本集（docs/reviews のファイルを差し替えるとき用）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions() as s:
+            gs = golden.golden_set(s, subject)
+            if gs is None:
+                raise HTTPException(404, "この科目の見本集がありません")
+            text = golden.export_json(gs)
+        return Response(text, media_type="application/json; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="golden_set_{subject}.json"'})
 
     @app.post("/review/rereview")
     def review_rereview(request: Request, subject: str = Form(""), unit: str = Form(""), level: str = Form(""),
@@ -854,6 +910,12 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             problem = problem_or_404(s, pid)
             if problem.status == "deleted":
                 problem.status = "ready"
+            elif problem.status == "rejected" and problem.reject_code == "needs_check":
+                # 要確認（検証の判定が割れた）を開発者が確かめてストックに入れる。記録に残す
+                problem.status, problem.reject_code = "ready", ""
+                problem.verification_json = dumps(problem.verification + [
+                    {"step": "要確認からストックへ", "ok": True, "summary": "問題検証モードで確かめてストックに入れた",
+                     "at": utcnow().isoformat()}])
         target = back if back.startswith("/review") else "/review"
         return redirect(target + ("&" if "?" in target else "?") + "msg=restored")
 

@@ -259,6 +259,18 @@ def read_letter(answer: str, work: str, n: int) -> int | None:
     return None
 
 
+# 検証で、正解そのものが合わないことを表す確認（不合格の理由は solver_mismatch。ほかの確認の不合格は正解が複数）
+ANSWER_CHECKS = ("正解の裏付け", "正解が合うか")
+# スペルの問題文の空所「( c _ _ _ _ _ )」
+SPELL_BLANK = r"\(\s*[A-Za-z](?:\s*_)+\s*\)"
+
+
+def _quote(reason: str) -> str:
+    """判定の理由の中の「引用: "…"」。なければ空。"""
+    m = re.search(r"引用\s*[:：]\s*[\"“「『]([^\"”」』]+)[\"”」』]", reason or "")
+    return m.group(1).strip() if m else ""
+
+
 class EnglishSubject(Subject):
     id = "english"
     name = "英語"
@@ -273,9 +285,11 @@ class EnglishSubject(Subject):
         "en_no_passage": "本文を読まなくても解けた（常識で答えられる設問）",
         "en_passage_review": "本文の見直しで誤りを指摘された（時系列・因果・矛盾・英文の誤り）",
         "en_review_unread": "見直しの結果を読めなかった（やり直しても読めない確認があった）",
-        "en_review": "見直しで誤りを指摘された（正解が 1 つに決まらない・英文の誤り・解説の誤り）",
+        "en_review": "見直しで誤りを指摘された（解説・ヒント・訳の誤り、例文・本文の筋）",
+        "en_verify_multiple": "検証で、正解のほかにも合う選択肢・語があった（正解が 1 つに決まらない）",
     }
     test_format = "choice"  # 検証のテスト：正解の印を誤答に移した問題を流す
+    verify_split_check = True  # 2 回の判定が割れたら要確認（第 6 回のレビュー 2-4）
 
     def units(self) -> list[Unit]:
         return _units()
@@ -699,107 +713,132 @@ class EnglishSubject(Subject):
     # --- 検証 ---------------------------------------------------------------
 
     def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any) -> VerifyResult:
-        from ...llm import LLMError
+        """検証（第 6 回のレビュー 2 章）。解かせて正解と突き合わせるのをやめ、正解が 1 つに決まるかを確かめる。
 
-        passage = problem.passage.body if problem.passage is not None else ""
-        choices = list(problem.choices)
-        random.shuffle(choices)  # 毎回並べ替える（記号の位置で当たらないように）
-        expected = str(problem.answer.get("word", ""))
-        pattern = f"答えは「{expected[:1]}」で始まる {len(expected)} 文字の語" if not choices and expected else ""
-        user = prompts.solve_user(problem.question, [c["text"] for c in choices], passage, pattern=pattern)
-        out: dict[str, Any] = {}
-        for attempt in range(2):  # 出力が読めなかったときは 1 回だけ解かせ直す
-            try:
-                out = llm.chat_json(model, prompts.SOLVE_SYSTEM, user, prompts.SOLVE_SCHEMA, temperature=0.6)
-                break
-            except LLMError as exc:
-                if attempt == 1:
-                    return VerifyResult(False, f"{model}: 出力を読めません（{exc}）", "", "llm_output",
-                                        raw=getattr(exc, "raw", ""))
-        raw = json.dumps(out, ensure_ascii=False)
-        work = str(out.get("work") or "").strip()
-        given = str(out.get("answer") or "").strip()
-        if choices:
-            got = read_letter(given, work, len(choices))
-            if got is None:  # 記号でなく選択肢の文をそのまま書いたとき
-                got = next((i for i, c in enumerate(choices) if check.flat(c["text"]) == check.flat(given)
-                            and check.flat(given)), None)
-            if got is None:
-                return VerifyResult(False, f"{model}: 答え「{given[:60] or '（空）'}」の記号を読み取れません", work,
-                                    "solver_unreadable", raw=raw)
-            picked = choices[got]
-            if picked.get("correct"):
-                return VerifyResult(True, f"{model}: 「{picked['text'][:80]}」（一致）", work, raw=raw)
-            right = next((c["text"] for c in choices if c.get("correct")), "")
-            return VerifyResult(False, f"{model}: 「{picked['text'][:80]}」（正解「{right[:80]}」と不一致）", work,
-                                "solver_mismatch", raw=raw)
-        return self._verify_spelling(llm, model, problem, user, given, work, raw)
-
-    def _verify_spelling(self, llm: LLM, model: str, problem: Any, user: str, given: str, work: str,
-                         raw: str) -> VerifyResult:
-        """スペル：問題文で示した最初の文字・文字数に合わない答えは、問題の誤りでなく検証役の誤りとして
-        聞き直す（2 回まで。第 5 回のレビュー A-5：shape と shave、recently と nowadays）。"""
-        from ...llm import LLMError
-
-        expected = problem.answer.get("word", "").lower()
-        pattern = f"答えは「{expected[:1]}」で始まる {len(expected)} 文字の語"
-        tried: list[str] = []
-        for attempt in range(3):
-            word = normalize_word(given.splitlines()[0] if given else "")
-            if not re.fullmatch(r"[a-z][a-z'-]*", word):
-                return VerifyResult(False, f"{model}: 答え「{given[:60] or '（空）'}」を英単語として読み取れません", work,
-                                    "solver_unreadable", raw=raw)
-            if word[:1] == expected[:1] and len(word) == len(expected):
-                if word == expected:
-                    note = f"（最初の文字・文字数に合わない答え「{'」「'.join(tried)}」は聞き直した）" if tried else ""
-                    return VerifyResult(True, f"{model}: {word}（一致）{note}", work, raw=raw)
-                return VerifyResult(False, f"{model}: {word}（正解 {expected} と不一致）", work, "solver_mismatch",
-                                    raw=raw)
-            tried.append(word)
-            if attempt == 2:
-                break
-            retry = prompts.solve_user(problem.question, [], pattern=pattern) + \
-                f"\n前の答え「{word}」は、最初の文字か文字数が合っていません。"
-            try:
-                out = llm.chat_json(model, prompts.SOLVE_SYSTEM, retry, prompts.SOLVE_SCHEMA, temperature=0.6)
-            except LLMError as exc:
-                return VerifyResult(False, f"{model}: 出力を読めません（{exc}）", "", "llm_output",
-                                    raw=getattr(exc, "raw", ""))
-            raw = json.dumps(out, ensure_ascii=False)
-            work = str(out.get("work") or "").strip()
-            given = str(out.get("answer") or "").strip()
-        return VerifyResult(False, f"{model}: 最初の文字・文字数に合わない答えが続いた（{'」「'.join(tried)}）", work,
-                            "solver_unreadable", raw=raw)
-
-    def review(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
-        """見直し：確かめることを絞って 1 つずつ聞く（第 4 回のレビュー C。小さいモデルでも拾いやすいように）。
-
-        読解：① 選択肢ごとに本文で裏付けられるかを判定（どれが正解かは教えない）→ 正解が裏付けられない・
-        ほかの選択肢も裏付けられる（正解が複数）なら不合格、誤答の種類が作成役の申告と違えば付け直す
-        ② 解説・ヒント・英文の点検
-        空所の問題：① 選択肢を 1 つずつ入れた文（Python が作る）の意味が通るかを判定 → 正解の文が通らない・
-        誤答の文も通る（正解が複数）なら不合格 ② 例文・解説の点検
-        意味の問題：① 選択肢の意味ごとに、この文で合うかを判定 ② 例文・解説の点検
-        スペル：② だけ。判定が読めないときは、それだけで不合格にしない（記録に残す）
+        読解：選択肢ごとに「裏付けあり／本文と食い違う／本文に書かれていない…」を、裏付けに使った本文の文の引用とともに
+        判定させる（引用は本文と機械的に照らし、本文にない引用の判定はやり直させる）。正解が裏付けあり以外・誤答が
+        裏付けありなら不合格（2-1）
+        空所・意味：選択肢ごとに文で通るかを判定させ（2-1）、さらに正解を抜いた 3 つと「どれも合わない」から選ばせる（2-2）
+        スペル：最初の文字・文字数・意味に合う語をすべて挙げさせ、正解のほかに例文に入る語があれば不合格（2-3）
+        選択肢は毎回並べ替える。検証の回数（2 回）のどちらかで不合格なら不合格、割れたら要確認（worker。2-4）。
         """
-        checks: list[tuple[str, bool | None, str]] = []  # (確かめたこと, 結果（None は読めなかった）, 内容)
+        if problem.format != "choice":
+            return self._verify_spelling(llm, model, problem)
+        checks: list[tuple[str, bool | None, str]] = []
         raws: list[str] = []
         updates: dict[str, Any] = {}
         choices = list(problem.choices)
+        random.shuffle(choices)  # 毎回並べ替える（記号の位置で決まらないように）
+        sentence = problem.question.split("\n\n")[-1]
         if problem.template in READINGS:
-            self._judge_choices(llm, model, problem, choices, checks, raws, updates)
+            self._judge_choices(llm, model, problem, choices, checks, raws, updates, quote=True)
         elif problem.template == "en-vocab-blank":
-            sentence = problem.question.split("\n\n")[-1]
             sentences = [sentence.replace("(　　　　)", c["text"]) for c in choices]
             self._judge_fit(llm, model, prompts.FIT_JUDGE_SYSTEM, prompts.fit_judge_user(sentences), choices,
                             "空所に選択肢の語を入れた文", checks, raws)
+            self._judge_without_answer(llm, model, prompts.NONE_FIT_BLANK_SYSTEM, sentence, choices, checks, raws)
         elif problem.template == "en-vocab-meaning":
-            sentence = problem.question.split("\n\n")[-1]
             self._judge_fit(llm, model, prompts.MEANING_JUDGE_SYSTEM,
                             prompts.meaning_judge_user(sentence, [c["text"] for c in choices]), choices,
                             "語の意味の選択肢", checks, raws)
-        self._judge_explanation(llm, model, problem, checks, raws)
+            self._judge_without_answer(llm, model, prompts.NONE_FIT_MEANING_SYSTEM, sentence, choices, checks, raws)
+        return self._verdict_of(model, checks, raws, updates)
 
+    @staticmethod
+    def _verdict_of(model: str, checks: list[tuple[str, bool | None, str]], raws: list[str],
+                    updates: dict[str, Any] | None = None) -> VerifyResult:
+        """検証の確認の結果をまとめる。正解が合わない＝solver_mismatch、正解のほかにも合う＝en_verify_multiple、
+        読めない・引用が本文にない判定が残った＝solver_unreadable。"""
+        lines = [f"{'○' if ok else '×' if ok is False else '？'} {name}：{text}" for name, ok, text in checks]
+        detail, raw = "\n".join(lines), "\n\n".join(raws)[:4000]
+        failed = [(name, text) for name, ok, text in checks if ok is False]
+        if failed:
+            code = "solver_mismatch" if any(name in ANSWER_CHECKS for name, _t in failed) else "en_verify_multiple"
+            summary = "／".join(f"{name}（{text[:150]}）" for name, text in failed)
+            return VerifyResult(False, f"{model}: {summary[:400]}", detail, code, raw=raw)
+        unread = [f"{name}：{text[:120]}" for name, ok, text in checks if ok is None]
+        if unread:
+            return VerifyResult(False, f"{model}: 判定を読めなかった（{'／'.join(unread)}）", detail,
+                                "solver_unreadable", raw=raw)
+        relabel = "。誤答の種類を付け直した" if updates else ""
+        return VerifyResult(True, f"{model}: 正解は 1 つに決まる（{len(checks)} つの確認）{relabel}", detail, raw=raw,
+                            updates=updates or {})
+
+    def _judge_without_answer(self, llm: LLM, model: str, system: str, sentence: str,
+                              choices: list[dict[str, Any]], checks: list[tuple[str, bool | None, str]],
+                              raws: list[str]) -> None:
+        """正解を抜いた選択肢と「どれも合わない」から選ばせる（2-2。#911 の「探す」のような 2 つ目の正解を拾う）。"""
+        wrong = [c["text"] for c in choices if not c.get("correct")]
+        options = wrong + [prompts.NONE_FIT]
+        user = prompts.none_fit_user(sentence, options)
+        for _ in range(2):  # 読めなかったら 1 回だけやり直す
+            out, raw = self._ask(llm, model, system, user, prompts.NONE_FIT_SCHEMA)
+            raws.append("【正解を抜いた判定】\n" + raw)
+            given = unicodedata.normalize("NFKC", str(out.get("answer") or "")).strip()
+            m = re.search(r"[0-9]+", given)
+            k = int(m.group()) - 1 if m else next((i for i, o in enumerate(options) if o and o in given), -1)
+            if 0 <= k < len(options):
+                reason = str(out.get("reason") or "").strip()
+                if k == len(options) - 1:
+                    checks.append(("正解を抜いた判定", True, "ほかの選択肢はどれも合わない"))
+                else:
+                    checks.append(("正解を抜いた判定", False, f"正解を抜くと「{options[k]}」を選んだ（正解が 2 つの疑い）"
+                                   + (f"：{reason[:100]}" if reason else "")))
+                return
+        checks.append(("正解を抜いた判定", None, "判定を読めなかった"))
+
+    def _verify_spelling(self, llm: LLM, model: str, problem: Any) -> VerifyResult:
+        """スペル（2-3）：最初の文字・文字数・意味に合う語をすべて挙げさせる。正解が挙がらなければ不一致、
+        正解のほかに挙がった語が例文に自然に入れば不合格（thick と tough）。最初の文字・文字数に合わない語や、
+        正解の語形違い（rose と rise）だけのときは検証役の誤りとして聞き直す（2 回まで。05 A-5）。"""
+        expected = problem.answer.get("word", "").lower()
+        pattern = f"「{expected[:1]}」で始まる {len(expected)} 文字の語"
+        user = prompts.spell_list_user(problem.question, pattern)
+        raws: list[str] = []
+        tried: list[str] = []
+        fit: list[str] = []
+        for attempt in range(3):
+            note = (f"\n前に挙げた「{'」「'.join(tried[-4:])}」は、最初の文字・文字数・語形のどれかが合っていません。"
+                    if tried else "")
+            out, raw = self._ask(llm, model, prompts.SPELL_LIST_SYSTEM, user + note, prompts.SPELL_LIST_SCHEMA)
+            raws.append(raw)
+            if not out:
+                return VerifyResult(False, f"{model}: 出力を読めません", "", "llm_output", raw=raw[:4000])
+            words = [normalize_word(w) for w in re.split(r"[,\s、，/／;]+", str(out.get("words") or ""))]
+            words = [w for w in dict.fromkeys(words) if re.fullmatch(r"[a-z][a-z'-]*", w)]
+            fit = [w for w in words if w[:1] == expected[:1] and len(w) == len(expected)]
+            if expected in fit:
+                break
+            if fit and not any(check._stem(w) == check._stem(expected) for w in fit):
+                return VerifyResult(False, f"{model}: {', '.join(fit)}（正解 {expected} が挙がらない）",
+                                    f"挙げた語：{', '.join(words)}", "solver_mismatch", raw="\n\n".join(raws)[:4000])
+            tried += words or ["（なし）"]
+        else:
+            return VerifyResult(False, f"{model}: 最初の文字・文字数に合わない答えが続いた（{'」「'.join(tried[:6])}）",
+                                "", "solver_unreadable", raw="\n\n".join(raws)[:4000])
+        others = [w for w in fit if w != expected]
+        note = f"（合わない語「{'」「'.join(tried[:4])}」は聞き直した）" if tried else ""
+        if not others:
+            return VerifyResult(True, f"{model}: 条件に合う語は {expected} だけ{note}", f"挙げた語：{', '.join(fit)}",
+                                raw="\n\n".join(raws)[:4000])
+        sentence = re.sub(SPELL_BLANK, "{}", problem.question.split("\n\n")[-1])
+        cands = [{"text": w, "correct": False} for w in others]
+        checks: list[tuple[str, bool | None, str]] = []
+        self._judge_fit(llm, model, prompts.FIT_JUDGE_SYSTEM,
+                        prompts.fit_judge_user([sentence.replace("{}", w) for w in others]),
+                        cands, "ほかの語を入れた例文", checks, raws, has_answer=False)
+        res = self._verdict_of(model, checks, raws)
+        if res.ok:
+            res.summary = f"{model}: {expected} のほかに挙がった {', '.join(others)} は例文に入らない{note}"
+        return res
+
+    def review(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
+        """見直し：解説・ヒント・訳と、例文・本文の筋（第 6 回のレビュー 4-3）。正解が 1 つに決まるかは検証で
+        選択肢ごとに判定するので、見直しでは聞かない。読めないときは 1 回やり直し、それでも読めなければ不合格（05 A-2）。
+        """
+        checks: list[tuple[str, bool | None, str]] = []  # (確かめたこと, 結果（None は読めなかった）, 内容)
+        raws: list[str] = []
+        self._judge_explanation(llm, model, problem, checks, raws)
         failed = [(name, text) for name, ok, text in checks if ok is False]
         lines = [f"{'○' if ok else '×' if ok is False else '？'} {name}：{text}" for name, ok, text in checks]
         detail = "\n".join(lines)
@@ -809,12 +848,23 @@ class EnglishSubject(Subject):
             return VerifyResult(False, f"{model}: 誤りを指摘：{summary[:400]}", detail, "en_review", raw=raw)
         unread = [name for name, ok, _t in checks if ok is None]
         if unread:
-            # 読めなかった確認を合格扱いにしない（第 5 回のレビュー A-2。やり直しても読めなかったもの）
             return VerifyResult(False, f"{model}: 見直しの結果を読めなかった（{'・'.join(unread)}）", detail,
                                 "en_review_unread", raw=raw)
-        relabel = "。誤答の種類を付け直した" if updates else ""
-        return VerifyResult(True, f"{model}: {len(checks)} つの確認で誤りは見つからなかった{relabel}", detail,
-                            raw=raw, updates=updates)
+        return VerifyResult(True, f"{model}: 誤りは見つからなかった", detail, raw=raw)
+
+    def rereview(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
+        """見直しのやり直し：前に作った問題は、選択肢ごとの判定（今の検証。1 回）と解説の見直しの両方で点検し直す
+        （正解が 1 つに決まるかは第 6 回のレビューで検証に移したので、見直しだけでは拾えないため）。"""
+        parts = [("検証の判定", self.verify(llm, None, model, problem)), ("解説の見直し", self.review(llm, model, problem))]
+        bad = [(name, r) for name, r in parts if r is not None and not r.ok]
+        detail = "\n".join(f"【{name}】\n{r.detail}" for name, r in parts if r is not None and r.detail)
+        raw = "\n\n".join(r.raw for _n, r in parts if r is not None and r.raw)[:4000]
+        updates = parts[0][1].updates if parts[0][1] is not None else {}
+        if bad:
+            summary = "／".join(r.summary for _n, r in bad)
+            return VerifyResult(False, summary[:500], detail, bad[0][1].code, raw=raw, updates=updates)
+        return VerifyResult(True, "／".join(r.summary for _n, r in parts if r is not None)[:500], detail, raw=raw,
+                            updates=updates)
 
     @staticmethod
     def _ask(llm: LLM, model: str, system: str, user: str, schema: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -850,18 +900,31 @@ class EnglishSubject(Subject):
         return out
 
     def _judge_choices(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
-                       checks: list[tuple[str, bool | None, str]], raws: list[str], updates: dict[str, Any]) -> None:
+                       checks: list[tuple[str, bool | None, str]], raws: list[str], updates: dict[str, Any],
+                       quote: bool = False) -> None:
+        """読解の選択肢ごとの判定。quote=True（検証）は、判定に使った本文の文を引用させ、本文にそのまま
+        入っているかを照らす（本文にない引用の判定は無効にしてやり直させる。第 6 回のレビュー 2-1）。"""
         passage = problem.passage.body if problem.passage is not None else ""
         user = prompts.choice_judge_user(passage, problem.question, [c["text"] for c in choices])
+        system = prompts.CHOICE_VERIFY_SYSTEM if quote else prompts.CHOICE_JUDGE_SYSTEM
         got: dict[int, tuple[str, str]] = {}
-        for _ in range(2):  # 判定が読めなかったら 1 回だけやり直す（A-2）
-            out, raw = self._ask(llm, model, prompts.CHOICE_JUDGE_SYSTEM, user, prompts.JUDGMENTS_SCHEMA)
+        bad: list[str] = []
+        for _ in range(3 if quote else 2):  # 読めない・引用が本文にないときはやり直す（A-2）
+            out, raw = self._ask(llm, model, system, user + (
+                f"\n\n前の判定の引用「{'」「'.join(q[:60] for q in bad[:2])}」は本文にありません。本文からそのまま引用してください。"
+                if bad else ""), prompts.JUDGMENTS_SCHEMA)
             raws.append("【選択肢の判定】\n" + raw)
             got = self._judgments(str(out.get("judgments") or ""), prompts.CHOICE_LABELS, len(choices))
-            if len(got) >= len(choices):
+            bad = [q for lb, reason in got.values() for q in [_quote(reason)]
+                   if quote and lb != "本文に書かれていない" and (q and not check.contains(passage, q)
+                                                                  or not q and lb == "裏付けあり")]
+            if len(got) >= len(choices) and not bad:
                 break
         if len(got) < len(choices):
             checks.append(("選択肢の判定", None, "判定を読めなかった"))
+            return
+        if bad:
+            checks.append(("選択肢の判定", None, f"本文にない文を引用した・引用のない判定が残った（{bad[0][:60] or '引用なし'}）"))
             return
         right = next(i for i, c in enumerate(choices) if c.get("correct"))
         label, reason = got[right]
@@ -897,7 +960,8 @@ class EnglishSubject(Subject):
             checks.append(("誤答の種類", True, text))
 
     def _judge_fit(self, llm: LLM, model: str, system: str, user: str, choices: list[dict[str, Any]], what: str,
-                   checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:
+                   checks: list[tuple[str, bool | None, str]], raws: list[str], has_answer: bool = True) -> None:
+        """選択肢ごとに文で通るかを判定させる。has_answer=False（スペルのほかの語）は、どれも通らないことだけを見る。"""
         got: dict[int, tuple[str, str]] = {}
         for _ in range(2):  # 判定が読めなかったら 1 回だけやり直す（A-2）
             out, raw = self._ask(llm, model, system, user, prompts.JUDGMENTS_SCHEMA)
@@ -907,6 +971,11 @@ class EnglishSubject(Subject):
                 break
         if len(got) < len(choices):
             checks.append((f"{what}の判定", None, "判定を読めなかった"))
+            return
+        if not has_answer:
+            also = [i for i, (lb, _r) in got.items() if lb == "通る"]
+            checks.append(("正解が 1 つか", not also, "ほかの語は入らない" if not also
+                           else "「" + "」「".join(choices[i]["text"] for i in also) + "」も入る（正解が複数）"))
             return
         right = next(i for i, c in enumerate(choices) if c.get("correct"))
         checks.append(("正解が合うか", got[right][0] == "通る",
@@ -960,11 +1029,8 @@ class EnglishSubject(Subject):
                 out.append("ヒント・解説で段落を「第N条」と書いている")
             if check.main_vs_one(problem.question, str(problem.params.get("evidence", ""))):
                 out.append("設問は main reason などを問うのに、根拠の文は理由の 1 つにすぎない")
-        if problem.passage is not None:
-            for c in problem.choices:
-                if not c.get("correct") and c.get("mistake") == "not_stated" and check.stated_in_passage(
-                        c.get("text", ""), problem.passage.body):
-                    out.append(f"誤答「{c.get('text', '')[:40]}」の種類が「本文に書かれていない」だが、中心の語が本文にある")
+        # 誤答の種類の付け方の食い違い（「本文に書かれていない」なのに中心の語が本文にある）は、致命的な欠陥では
+        # ないので点検に入れない（見本集の通すべき問題 4 問が引っかかった。作成のときの直しと検証の付け直しで扱う）
         if problem.template == "en-vocab-meaning" and (check.blank_words(problem.hint)
                                                          or check.blank_words(problem.explanation)):
             out.append("解説・ヒントに「空所」「入る」などの言葉がある（この問題の例文に空所はない）")

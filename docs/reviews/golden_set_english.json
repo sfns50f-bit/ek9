@@ -1,0 +1,1514 @@
+{
+ "description": "ai-quiz 英語の見本集（検証・見直しの検出力を測るテスト用）。書き出し problems (4)〜(12) から復元。expected=reject は致命的な欠陥あり、pass は問題なし。",
+ "created": "2026-10-25",
+ "defect_types": {
+  "multiple_correct": "正解のほかにも正しい選択肢がある",
+  "unsupported_answer": "正解の内容が本文で裏付けられない",
+  "explanation_mismatch": "解説が正解と食い違う・選択肢の記号がずれている",
+  "wrong_content": "誤った内容を教える",
+  "broken_text": "本文・例文の内容が破綻している"
+ },
+ "to_add_from_db": {
+  "note": "Haiku の見直しで弾かれた不合格の下書き。書き出しに選択肢がないため、データベースから見本集に加える（expected=reject）",
+  "ids": [
+   990,
+   906,
+   905,
+   910,
+   847,
+   805,
+   860,
+   857,
+   796,
+   792
+  ]
+ },
+ "items": [
+  {
+   "expected": "reject",
+   "defect_type": "multiple_correct",
+   "note": "誤答「探す」も文に合う（to find an interesting book）",
+   "id": 911,
+   "category": "英語／語彙／文中の語の意味",
+   "作成日時": "2026/10/25 12:10",
+   "レベル": "高校基礎",
+   "作成役": "gemma4:26b-a4b-it-qat",
+   "passage": null,
+   "question": "次の英文の [ ] で示した語の意味として最も適切なものを選べ。\n\nI decided to [ browse ] the bookshelves in the small library to find an interesting book.",
+   "options": [
+    {
+     "key": "A",
+     "text": "集まる",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "B",
+     "text": "探す",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "C",
+     "text": "分け合う",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "D",
+     "text": "見て回る",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "見て回る",
+   "hint": "書棚にあるたくさんの本の中から、何かを探して眺めている様子に注目しましょう。",
+   "explanation": "訳: 面白い本を見つけるために、小さな図書室の書棚を見て回ることにした。\n\nたくさんの選択肢がある中で、特に目的を絞り込まずに全体を眺める様子を表しています。ここでは図書館で本を眺めて探している場面なので、この意味になります。\n\n答え: browse ＝「見て回る」"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "multiple_correct",
+   "note": "particular・challenging を入れても文が成り立つ",
+   "id": 536,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/24 08:33",
+   "レベル": "共通テスト",
+   "作成役": "bonsai-2:4b-q2_0",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nThis (　　　　) program helps people from different backgrounds get together.",
+   "options": [
+    {
+     "key": "A",
+     "text": "particular",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "eager",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "C",
+     "text": "challenging",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "social",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "social",
+   "hint": "異なる背景を持つ人々が集まるという文脈から，この言葉は人々の交流や社会的な活動に当てはまります。",
+   "explanation": "訳: この社会のプログラムが、異なる背景を持つ人々が集まることに役立ちます。\n\n文の意味から social は「社会的な」または「社会に関わる」という意味で使われています。一方で particular や eager や challenging は、この文の文脈（人々が集まること）には適しません。\n\n答え: social（社会の）"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "multiple_correct",
+   "note": "claim を入れても文が成り立つ",
+   "id": 599,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/24 09:31",
+   "レベル": "共通テスト",
+   "作成役": "gemma4:e4b-it-qat",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nI (　　　　) that the journey to the mountains will take about three hours.",
+   "options": [
+    {
+     "key": "A",
+     "text": "divide",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "reject",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "C",
+     "text": "claim",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "estimate",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "estimate",
+   "hint": "文の中で「〜という推測を述べる」というニュアンスを表している動詞を探してみてください。",
+   "explanation": "訳: 山への道のりは3時間ほどかかるだろうと私は見積もる。\n\nこの文では、実際の時間ではなく、自身の計算や経験に基づいて「約3時間かかるだろう」という予測を述べています。'estimate' は、正確な値ではないが、概算や予測を示す際に使われます。他の動詞（reject, claim, divide）は、これほど「推測や概算を行う」という文脈には適していません。\n\n答え: estimate（見積もる）"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "unsupported_answer",
+   "note": "正解「tip over easily」が本文にない。誤答 B の方が本文に近い",
+   "id": 584,
+   "category": "英語／読解／説明文",
+   "作成日時": "2026/10/24 09:23",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "From Wooden Frame to Safety Bicycle: How the Bicycle Changed\n\nThe bicycle may look simple, but it took many years of experiments to reach its modern form. The first widely recognized ancestor appeared in Germany in 1817. Karl Drais, a German inventor, built a wooden machine with two wheels that a rider pushed along with his feet. Because it had no pedals, it was often called the \"running machine.\" It was expensive and hard to balance on, but it showed that a person could travel quickly on two wheels.\n\nIn the 1860s, a French craftsman named Pierre Michaux and his workers added pedals to the front wheel. This made the machine faster, but it also made the front wheel much larger, since each turn of the pedals moved the bicycle only a short distance. The result was the high-wheeled \"penny-farthing,\" which was exciting to ride but dangerous. Falling from such a great height often caused serious injuries, so many people were reluctant to ride it.\n\nThe solution came in the 1880s with the \"safety bicycle.\" Its two wheels were nearly the same size, and a chain connected the pedals to the back wheel. Riders sat lower and could control the machine more easily. The design was further improved in 1888 when John Boyd Dunlop, a Scottish veterinarian, developed a pneumatic tire filled with air. Air-filled tires absorbed bumps and made riding far more comfortable.\n\nToday, the bicycle is used for transportation, sport, and leisure all over the world. Its basic design has remained almost unchanged for more than a century, which shows how well the safety bicycle solved the problems of its earlier versions.",
+   "question": "According to the article, what issue arose after Pierre Michaux and his workers added pedals to the front wheel?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The bicycle's speed became so immense that it was uncontrollable.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "The design made it difficult for people to balance the bicycle.",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    },
+    {
+     "key": "C",
+     "text": "The traditional wooden frame struggled with the new weight distribution.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "D",
+     "text": "The large front wheel caused the machine to tip over easily.",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "The large front wheel caused the machine to tip over easily.",
+   "hint": "第2段落で、Pierre Michauxと彼の労働者がペダルを追加した後の機械の状態について述べている部分を確認してください。",
+   "explanation": "Pierre Michauxと彼の労働者がペダルを追加した後、自転車はより大きな前輪を持つ「penny-farthing」という形式になりました。この大きな前輪が原因で、高いところから落ちることが多く、危険であり、多くの人が乗りたがらないという問題が生じました。\n他の選択肢については、自転車の速度が制御不能になったという記述は本文にはありません。また、木製のフレームが重みに耐えられなくなったという記述も本文には含まれていません。また、バランスを取ることが難しくなったという側面はありますが、主な問題は大きな前輪による転倒の危険性です。\n\n本文の根拠: “The result was the high-wheeled \"penny-farthing,\" which was exciting to ride but dangerous. Falling from such a great height often caused serious injuries, so many people were reluctant to ride it.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "unsupported_answer",
+   "note": "正解「似た迷子の経験を話した」が本文にない。正しい選択肢がない",
+   "id": 684,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/24 15:47",
+   "レベル": "共通テスト",
+   "本文作成役": "gemma4:26b-a4b-it-qat",
+   "作成役": "gemma4:26b-a4b-it-qat",
+   "passage": "A Surprising First Day\n\nWhen I first heard that a new transfer student would be joining our class, I was not particularly excited. Most of us had been friends for years, and I thought that a new person might disrupt our comfortable routine. I expected him to be quiet and perhaps a bit shy, so I didn't think much about how to welcome him.\n\nOn Monday morning, the teacher introduced a boy named Leo. He was much taller than I expected and had a bright, energetic smile. Instead of sitting at the back of the room as I had imagined, he walked straight to a seat near me and said, \"Hi, I'm Leo. I hope we can be friends!\" His confidence was quite surprising, and I felt a little nervous about my own response.\n\nDuring the lunch break, I noticed Leo sitting alone in the cafeteria, looking at a map of the school. I remembered that I had been lost on my first day, too, so I decided to approach him. When I asked if he was looking for something, he looked up and laughed, saying he was trying to find the library. We ended up talking about our favorite hobbies, and I discovered that we both loved playing basketball.\n\nBy the end of the day, my initial worries had completely disappeared. I realized that I had been wrong to assume he would be a disruption. Instead, Leo's arrival brought a fresh energy to our classroom, and I was glad that I had taken the first step to talk to him.",
+   "question": "What did the writer do when the writer noticed Leo in the cafeteria?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The writer helped Leo find his way to the library.",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    },
+    {
+     "key": "B",
+     "text": "The writer sat down to eat lunch with Leo.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "The writer asked Leo about his favorite hobbies.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "D",
+     "text": "The writer shared a similar experience of being lost.",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "The writer shared a similar experience of being lost.",
+   "hint": "第3段落で、書き手が昼休みにレオを見かけた際、どのように行動したかを確認してください。",
+   "explanation": "書き手は、レオが学校の地図を見ているのを見て、自分も初日に道に迷ったことを思い出し、彼に話しかけることにしました。「話した結果として図書館を探していることがわかりましたが、書き手が直接案内したわけではありません。「一緒に昼食を食べた」とは書かれていません。「話しかけた後に趣味について話しましたが、書き手が最初にしたことは話しかけることです。\n\n本文の根拠: “I remembered that I had been lost on my first day, too, so I decided to approach him.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "explanation_mismatch",
+   "note": "解説が選択肢を記号で呼び、並べ替え後の記号とずれている",
+   "id": 547,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/24 08:53",
+   "レベル": "高校基礎",
+   "本文作成役": "bonsai-2:4b-q2_0",
+   "作成役": "bonsai-2:4b-q2_0",
+   "passage": "Ocean View Pool Summer Schedule\n\nWelcome to Ocean View Pool. Our summer season begins on July 1st and ends on August 31st. The pool is open from 9:00 AM to 6:00 PM every day.\nMembership fees are $50 for one year. Weekday rates are $15, while weekend rates are $20. Children under 14 can swim with parents at no extra cost.\nPlease note that there will be a special event on August 15th called the Summer Festival, where you can enjoy live music. Tickets for this event cost $5.\nPlease contact info@example.org for reservations or questions. You can also check www.example.org/events for more information.\nWe look forward to seeing you at the pool!",
+   "question": "When does the summer season end?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The summer season concludes on the 31st of August.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "The summer season runs until August 30th.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "C",
+     "text": "The summer season ends on June 30th.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "D",
+     "text": "The summer season ends on November 15th.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    }
+   ],
+   "answer": "The summer season concludes on the 31st of August.",
+   "hint": "この設問は本文の第 1 段落から、夏休みシーズンの終了日について尋ねています。",
+   "explanation": "本文の第 1 段落に夏休みシーズンの終了日が 8 月 31 日と書かれている。A 選択肢は正しい。B 選択肢は矛盾する（6 月 30 日）。C 選択肢は書かれていない。D 選択肢は 30 日に終わると誤っている（詳細）。\n\n本文の根拠: “Our summer season begins on July 1st and ends on August 31st.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "explanation_mismatch",
+   "note": "解説「A 選択肢は正しい」だが実際の正解は C。誤答3つも本文なしで外せる",
+   "id": 548,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/24 08:53",
+   "レベル": "高校基礎",
+   "本文作成役": "bonsai-2:4b-q2_0",
+   "作成役": "bonsai-2:4b-q2_0",
+   "passage": "Ocean View Pool Summer Schedule\n\nWelcome to Ocean View Pool. Our summer season begins on July 1st and ends on August 31st. The pool is open from 9:00 AM to 6:00 PM every day.\nMembership fees are $50 for one year. Weekday rates are $15, while weekend rates are $20. Children under 14 can swim with parents at no extra cost.\nPlease note that there will be a special event on August 15th called the Summer Festival, where you can enjoy live music. Tickets for this event cost $5.\nPlease contact info@example.org for reservations or questions. You can also check www.example.org/events for more information.\nWe look forward to seeing you at the pool!",
+   "question": "Where can you check more information about the event?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Tickets for the Summer Festival cost $50 for everyone",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "B",
+     "text": "The phone number listed in the brochure is needed",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "You can check more info at www.example.org/events",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "Children under 14 need to pay a fee just for swimming",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "You can check more info at www.example.org/events",
+   "hint": "この設問はイベントの詳細を見つける場所について尋ねています。",
+   "explanation": "本文にはイベントの詳細は www.example.org/events で確認できることが書かれている。A 選択肢は正しいです。B 選択肢は文中に書かれていません。C 選択肢は価格が $50 と書かれているが、実際は $5 です（矛盾）。D 選択肢は追加料金が必要とされていると矛盾します（無料）\n\n本文の根拠: “You can also check www.example.org/events for more information.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "explanation_mismatch",
+   "note": "解説「C の…」「D の…」が実際は D・B。ヒントが解説の1文目と同じ",
+   "id": 758,
+   "category": "英語／読解／説明文",
+   "作成日時": "2026/10/24 18:17",
+   "レベル": "共通テスト",
+   "本文作成役": "gemma4:12b-it-qat",
+   "作成役": "gemma4:12b-it-qat",
+   "passage": "The Changing Role of Robots in Modern Healthcare\n\nIn recent years, the use of robots in hospitals has moved from science fiction to a practical reality. While many people may imagine robots replacing human doctors, the current trend is actually toward \"collaborative robotics.\" These machines are designed to work alongside healthcare professionals to improve the efficiency and safety of medical services. By taking over repetitive or physically demanding tasks, robots allow nurses and doctors to spend more time focusing on direct patient care.\n\nOne of the primary roles of robots in hospitals is logistics and delivery. For instance, autonomous mobile robots are now frequently used to transport medicine, laboratory samples, and meals to different departments. These machines can navigate complex hallways and elevators without human intervention. This reduces the workload on hospital staff, who previously had to spend a significant portion of their shifts moving supplies between rooms. In a busy urban hospital, this change can lead to faster response times for patients in need of urgent medication.\n\nFurthermore, robots are playing an increasingly important role in surgery and rehabilitation. Surgical robots, controlled by skilled surgeons, enable high-precision procedures that are difficult to perform with human hands alone. These tools can make smaller incisions, resulting in less pain and quicker recovery times for patients. In rehabilitation centers, wearable robotic suits help patients with mobility issues practice walking again. These technologies do not replace the human touch; instead, they provide advanced tools that enhance the quality of care provided by medical experts.",
+   "question": "Why does the use of autonomous mobile robots benefit patients in urban hospitals?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Because they allow for quicker medicine delivery.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "Because they can assist in physical rehabilitation.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "Because they can perform complex surgeries.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "D",
+     "text": "Because they can provide direct patient care.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "Because they allow for quicker medicine delivery.",
+   "hint": "第2段落の最後に、都市部の病院において、これらのロボットによる変化が「必要としている患者への迅速な対応（faster response times for patients in need of urgent medication）」につながると述べられています。",
+   "explanation": "第2段落の最後に、都市部の病院において、これらのロボットによる変化が「必要としている患者への迅速な対応（faster response times for patients in need of urgent medication）」につながると述べられています。したがって、「より迅速な薬品の配送を可能にする」が正解です。「複雑な手術を行う」という選択肢は、外科手術のロボットに関する記述であり、Cの「直接的な患者ケアを提供する」はロボットの役割ではないと書かれており、Dの「身体のリハビリを支援する」はウェアラブルスーツに関する記述であるため、この設問の文脈（配送ロボット）における正解ではありません。\n\n本文の根拠: “In a busy urban hospital, this change can lead to faster response times for patients in need of urgent medication.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "wrong_content",
+   "note": "ホテルの客なのに guest＝「招待客」",
+   "id": 569,
+   "category": "英語／語彙／文中の語の意味",
+   "作成日時": "2026/10/24 09:21",
+   "レベル": "高校基礎",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の [ ] で示した語の意味として最も適切なものを選べ。\n\nThe hotel manager greeted every [ guest ] at the entrance with a warm smile.",
+   "options": [
+    {
+     "key": "A",
+     "text": "招待客",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "期間",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "C",
+     "text": "建物",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "D",
+     "text": "機械",
+     "correct": false,
+     "mistake": "別の語の意味"
+    }
+   ],
+   "answer": "招待客",
+   "hint": "「with a warm smile」の前後にある人物や場所の語句から、誰に対してあいさつしたのかに注目しましょう。",
+   "explanation": "訳: ホテルの支配人は、入口で一人ひとりの客に温かい笑顔であいさつした。\n\n文の主語はホテルの支配人で、入口で温かい笑顔であいさつした相手は「every guest（一人ひとりの客）」です。ホテルに来て迎えられる人を指すので、「招待客」の意味の guest が適切です。\n\n答え: guest ＝「招待客」"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "wrong_content",
+   "note": "解説で cousin を「兄弟の呼称にも近い」と説明",
+   "id": 642,
+   "category": "英語／語彙／スペル",
+   "作成日時": "2026/10/24 09:58",
+   "レベル": "高校基礎",
+   "作成役": "qwen3.5:9b-q8_0",
+   "passage": null,
+   "question": "日本語の意味に合う英単語を書け（6 文字。最初の文字は示してある）。\n\n意味: いとこ（名詞）\n\nMy ( c _ _ _ _ _ ), who lives in Canada, will visit us next month.",
+   "options": [],
+   "answer": "cousin",
+   "hint": "文の中の場所を示す国名「Canada」と家族関係にある人について考えてみてください。",
+   "explanation": "訳: カナダに住んでいるいとこが、来月私たちに会いに来ます。\n\nこの文では、「カナダに住んでいる」という部分から、その人が私の血縁者であることがわかります。血縁関係にある人を指す単語は cousin で、日本でのいとこや兄弟の呼称にも近い感覚です。もし My friend や My neighbor などの他の語句を入れても、「カナダに住んでいる友人が来月会いに来る」という意味になり得ますが、親戚としての結びつきを表したい文脈では cousin が最も適切です。したがって、ここではいとこのことだけを指す cousin が正解となります。\n\n答え: cousin"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "例文が成り立たない（従業員の若者がいるのに母親が唯一の adult）。解説も誤り、「入らない語」の漏れ",
+   "id": 485,
+   "category": "英語／語彙／文中の語の意味",
+   "作成日時": "2026/10/23 23:03",
+   "レベル": "高校基礎",
+   "作成役": "qwen3.5:9b-q8_0",
+   "passage": null,
+   "question": "次の英文の [ ] で示した語の意味として最も適切なものを選べ。\n\nThe young man at the door is an employee, but his mother who is waiting inside is the only [ adult ] in the building.",
+   "options": [
+    {
+     "key": "A",
+     "text": "大人",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "方法",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "C",
+     "text": "飛行便",
+     "correct": false,
+     "mistake": "別の語の意味"
+    },
+    {
+     "key": "D",
+     "text": "びん",
+     "correct": false,
+     "mistake": "別の語の意味"
+    }
+   ],
+   "answer": "大人",
+   "hint": "「建物にいた人」の中に「誰だけが特定された属性を持っているか」を考えれば答えが分かります。",
+   "explanation": "訳: ドアにいる若者は従業員ですが、中を待っている母親は建物内にいる唯一の大人です。\n\nこの文脈では、「子供や学生ばかりいる場所」であることを示すために、「大人である」という属性を持つ人が一人だけいる状況を描いています。もし「入らない語」である「student（学生）」や「child（子供）」を入れると、「唯一の学生」「唯一の子供」となり、建物に若者たちがいて母親だけ大人という逆の意味になってしまい、文脈が矛盾してしまいます。したがって、全員が未成年であることを強調し、例外となる大人を指す「adult」がこの空所に自然に入ります。\n\n答え: adult ＝「大人」"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "例文の理由と結果がつながらない（予報が不正確だったので家にいた）",
+   "id": 775,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/24 20:36",
+   "レベル": "共通テスト",
+   "作成役": "gemma4:12b-it-qat",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nThe weather forecast was not (　　　　), so we stayed home.",
+   "options": [
+    {
+     "key": "A",
+     "text": "accurate",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "complex",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "C",
+     "text": "urban",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "moral",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "accurate",
+   "hint": "予報の内容が正しかったかどうかに注目してください。",
+   "explanation": "訳: 天気予報が正確ではなかったので、私たちは家にいることにしました。\n\n「天気予報が正しくなかった（正確ではなかった）」という文脈から、accurate（正確な）が入るのが適切です。moral（道徳的な）やurban（都市の）、complex（複雑な）といった単語は、この文脈では不自然です。\n\n答え: accurate（正確な）"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "本文（The Letter from Berlin）の時系列・内容が破綻",
+   "id": 491,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/23 23:18",
+   "レベル": "共通テスト",
+   "作成役": "qwen3.5:9b-q8_0",
+   "passage": "The Letter from Berlin\n\nLast summer, I finally received the long-awaited letter from my pen pal, Klaus. We had been writing to each other for over two years via email, but he always insisted on sending traditional postcards or letters by mail when we met during our annual video calls. This time, his letter arrived with a stamp featuring a bear, which I immediately recognized as a souvenir from the Berlin Zoo.\n\nKlaus explained that he had traveled to a small village in Bavaria last month while visiting his grandparents. He was supposed to stay for only three days, but the weather turned unexpectedly cold and rainy. Because of this sudden change, he decided to extend his stay by two more days to wait out the storm with his family. During those extra days, he explored an old castle nearby and even tried local traditional bread making under his grandmother's supervision.\n\nHowever, the most important part of his letter was not about the trip itself, but about a small misunderstanding that occurred on the third day. Klaus had promised to send a postcard every week from different places in Germany. On this particular day, he forgot to mail one because he got distracted by helping his neighbor fix a bicycle wheel. He felt terrible about breaking his promise and wrote this letter as an apology. I could feel his sincere regret through the words on the page.\n\nTo make up for the delay, Klaus included three postcards from his favorite spots in Bavaria attached to the envelope. He also mentioned that he is planning to visit my hometown next year if our schedules align. The news made me very happy, even though I missed having his weekly updates. Reading his story about the rainy days and the bicycle wheel repair gave me a new appreciation for how things can go wrong in unexpected ways. Klaus ended his letter by asking me to send him some Japanese snacks when he returns to Berlin, promising to try them before sending another reply.",
+   "question": "Why did Klaus decide to stay in Bavaria longer than originally planned?",
+   "options": [
+    {
+     "key": "A",
+     "text": "He wanted to visit an old castle and learn how to make bread.",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    },
+    {
+     "key": "B",
+     "text": "He met a neighbor who needed help fixing a bicycle.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "C",
+     "text": "His grandparents invited him to join them for extra activities.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "D",
+     "text": "The weather became colder and rainier than expected.",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "The weather became colder and rainier than expected.",
+   "hint": "本文の 2 パラグラフ後半部分に、滞在期間を延ばした理由が書かれています。",
+   "explanation": "本文によると、Klaus は当初 3 日間しか滞在予定ではありませんでしたが、天気が突然寒く、雨が強くなったため、さらに 2 日間残って嵐を凌ぐことにしました。「滞在期間を延ばした理由」としての「城への訪問やパン作り」は事実ですが、原因ではありません。また、「自転車修理の手伝い」は後日起きた出来事であり、「祖父母が特別な活動を誘った」という記述も本文にはありません。\n\n本文の根拠: “He was supposed to stay for only three days, but the weather turned unexpectedly cold and rainy. Because of this sudden change, he decided to extend his stay by two more days to wait out the storm with his family.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "本文が破綻。解説も主客が逆（近所の人が手伝った→Klaus が手伝った）",
+   "id": 492,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/23 23:18",
+   "レベル": "共通テスト",
+   "作成役": "qwen3.5:9b-q8_0",
+   "passage": "The Letter from Berlin\n\nLast summer, I finally received the long-awaited letter from my pen pal, Klaus. We had been writing to each other for over two years via email, but he always insisted on sending traditional postcards or letters by mail when we met during our annual video calls. This time, his letter arrived with a stamp featuring a bear, which I immediately recognized as a souvenir from the Berlin Zoo.\n\nKlaus explained that he had traveled to a small village in Bavaria last month while visiting his grandparents. He was supposed to stay for only three days, but the weather turned unexpectedly cold and rainy. Because of this sudden change, he decided to extend his stay by two more days to wait out the storm with his family. During those extra days, he explored an old castle nearby and even tried local traditional bread making under his grandmother's supervision.\n\nHowever, the most important part of his letter was not about the trip itself, but about a small misunderstanding that occurred on the third day. Klaus had promised to send a postcard every week from different places in Germany. On this particular day, he forgot to mail one because he got distracted by helping his neighbor fix a bicycle wheel. He felt terrible about breaking his promise and wrote this letter as an apology. I could feel his sincere regret through the words on the page.\n\nTo make up for the delay, Klaus included three postcards from his favorite spots in Bavaria attached to the envelope. He also mentioned that he is planning to visit my hometown next year if our schedules align. The news made me very happy, even though I missed having his weekly updates. Reading his story about the rainy days and the bicycle wheel repair gave me a new appreciation for how things can go wrong in unexpected ways. Klaus ended his letter by asking me to send him some Japanese snacks when he returns to Berlin, promising to try them before sending another reply.",
+   "question": "What caused Klaus to feel bad about breaking his promise?",
+   "options": [
+    {
+     "key": "A",
+     "text": "He forgot to mail a postcard because he helped his neighbor.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "The stamp on his letter was not recognized by the post office.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "C",
+     "text": "He could not visit the castle due to heavy rain.",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    },
+    {
+     "key": "D",
+     "text": "He lost the postcards he had written before sending them.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    }
+   ],
+   "answer": "He forgot to mail a postcard because he helped his neighbor.",
+   "hint": "本文の 3 パラグラフ中段に、約束を破った原因と彼の気持ちについて記述があります。",
+   "explanation": "Klaus は毎週異なる場所からポストカードを送るという約束をしていましたが、ある日、近所の人が自転車のホイール修理を手伝っている最中に忘れ、送ることができませんでした。そのことが彼にとって非常に悪く、謝罪の手紙を書きました。「ポストカードの紛失」や「切手の問題」という記述は本文にありませんし、「雨で城に行けなかった」ということも延期の原因ではあるものの、約束を破った直接の理由ではありません。\n\n本文の根拠: “On this particular day, he forgot to mail one because he got distracted by helping his neighbor fix a bicycle wheel. He felt terrible about breaking his promise and wrote this letter as an apology.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "本文が破綻。「his hometown」が誰の故郷か曖昧、筆者を He と呼ぶ",
+   "id": 493,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/23 23:18",
+   "レベル": "共通テスト",
+   "作成役": "qwen3.5:9b-q8_0",
+   "passage": "The Letter from Berlin\n\nLast summer, I finally received the long-awaited letter from my pen pal, Klaus. We had been writing to each other for over two years via email, but he always insisted on sending traditional postcards or letters by mail when we met during our annual video calls. This time, his letter arrived with a stamp featuring a bear, which I immediately recognized as a souvenir from the Berlin Zoo.\n\nKlaus explained that he had traveled to a small village in Bavaria last month while visiting his grandparents. He was supposed to stay for only three days, but the weather turned unexpectedly cold and rainy. Because of this sudden change, he decided to extend his stay by two more days to wait out the storm with his family. During those extra days, he explored an old castle nearby and even tried local traditional bread making under his grandmother's supervision.\n\nHowever, the most important part of his letter was not about the trip itself, but about a small misunderstanding that occurred on the third day. Klaus had promised to send a postcard every week from different places in Germany. On this particular day, he forgot to mail one because he got distracted by helping his neighbor fix a bicycle wheel. He felt terrible about breaking his promise and wrote this letter as an apology. I could feel his sincere regret through the words on the page.\n\nTo make up for the delay, Klaus included three postcards from his favorite spots in Bavaria attached to the envelope. He also mentioned that he is planning to visit my hometown next year if our schedules align. The news made me very happy, even though I missed having his weekly updates. Reading his story about the rainy days and the bicycle wheel repair gave me a new appreciation for how things can go wrong in unexpected ways. Klaus ended his letter by asking me to send him some Japanese snacks when he returns to Berlin, promising to try them before sending another reply.",
+   "question": "What is the writer's reaction to Klaus's news about visiting his hometown?",
+   "options": [
+    {
+     "key": "A",
+     "text": "He is worried that they might not be able to meet next year.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "B",
+     "text": "He is angry because Klaus sent too many postcards at once.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "C",
+     "text": "He is happy despite missing weekly updates from Klaus.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "He feels disappointed because he cannot go with Klaus.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    }
+   ],
+   "answer": "He is happy despite missing weekly updates from Klaus.",
+   "hint": "本文の 4 パラグラフ冒頭から、著者が Klaus の近況をどう受け止めたかが書かれています。",
+   "explanation": "Klaus が著者の故郷を訪れる予定であるというニュースは、著者にとって非常に嬉しいものでしたが、毎週の更新が欠けていたことは残念な点でした。それでも全体的に喜ばしい出来事と捉えています。「失望している」「会えないことを心配している」という感情は本文の記述とは一致しませんし、「ポストカードが多すぎて怒った」という記述も誤りです。\n\n本文の根拠: “The news made me very happy, even though I missed having his weekly updates. Reading his story about the rainy days and the bicycle wheel repair gave me a new appreciation for how things can go wrong in unexpected ways.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "本文が神話上の文明（Atlantis）の遺物を本物の出土品として扱っている",
+   "id": 570,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/24 09:21",
+   "レベル": "高校基礎",
+   "本文作成役": "bonsai-2:4b-q2_0",
+   "作成役": "bonsai-2:4b-q2_0",
+   "passage": "The Lost City of Atlantis\n\nThe City Museum invites you to view our new special exhibition titled \"The Lost City of Atlantis\". This unique display features artifacts recovered from underwater excavations in the Mediterranean Sea, showcasing historical treasures.\n\nOpened on Saturday, March 15th from 9:00 AM to 5:00 PM, the exhibition runs for four weeks. Visitors can explore ancient pottery, rare mosaics, and intricate jewelry from this mythical civilization. A guided tour is available every Tuesday at 3:00 PM for advanced learners.\n\nEntry is free for students under 18, while general admission costs ¥500. Please arrive at least ten minutes early to secure your spot. The museum closes on Sundays. For further information, visit www.example.org/events or email info@example.org.",
+   "question": "Which of the following visitors can enter the exhibition for free?",
+   "options": [
+    {
+     "key": "A",
+     "text": "A visitor who has booked a place online before coming to the museum",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "A general adult visitor who is admitted without paying any fee",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "C",
+     "text": "A student who has just turned eighteen and is still in school",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "D",
+     "text": "A student who has not yet reached the age of eighteen",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "A student who has not yet reached the age of eighteen",
+   "hint": "第3段落の入場料に関する文を読んでください。無料になる人の条件が書かれています。",
+   "explanation": "「Entry is free for students under 18（18歳未満の学生は入場無料）」とあるので、18歳に達していない学生が無料になります。「一般の大人は¥500」なので、大人が無料で入れるという選択肢は本文と食い違います。18歳の学生が無料になるという記述は本文にありません。事前予約についても本文には書かれていません。\n\n本文の根拠: “Entry is free for students under 18, while general admission costs ¥500.”"
+  },
+  {
+   "expected": "reject",
+   "defect_type": "broken_text",
+   "note": "同上の本文。解説で博物館を「美術館」と誤記",
+   "id": 571,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/24 09:21",
+   "レベル": "高校基礎",
+   "本文作成役": "bonsai-2:4b-q2_0",
+   "作成役": "bonsai-2:4b-q2_0",
+   "passage": "The Lost City of Atlantis\n\nThe City Museum invites you to view our new special exhibition titled \"The Lost City of Atlantis\". This unique display features artifacts recovered from underwater excavations in the Mediterranean Sea, showcasing historical treasures.\n\nOpened on Saturday, March 15th from 9:00 AM to 5:00 PM, the exhibition runs for four weeks. Visitors can explore ancient pottery, rare mosaics, and intricate jewelry from this mythical civilization. A guided tour is available every Tuesday at 3:00 PM for advanced learners.\n\nEntry is free for students under 18, while general admission costs ¥500. Please arrive at least ten minutes early to secure your spot. The museum closes on Sundays. For further information, visit www.example.org/events or email info@example.org.",
+   "question": "When and for whom is the guided tour offered?",
+   "options": [
+    {
+     "key": "A",
+     "text": "On Saturdays at 9:00 a.m., for beginners who are new to the subject",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "B",
+     "text": "On Sundays in the afternoon, for students who are under eighteen years old",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "C",
+     "text": "On Tuesdays at 3:00 p.m., for learners who have reached an advanced level",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "On Tuesdays at 3:00 p.m., for every visitor who comes to the museum",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    }
+   ],
+   "answer": "On Tuesdays at 3:00 p.m., for learners who have reached an advanced level",
+   "hint": "第2段落の後半にあるガイドツアーの説明を読んでください。実施される曜日・時刻と対象者が書かれています。",
+   "explanation": "「every Tuesday at 3:00 PM for advanced learners」は、毎週火曜日の午後3時に、上級の学習者向けに行われるという意味です。正解はこの内容を言い換えた選択肢です。「毎週火曜日の午後3時」は合っていますが、対象を全来館者としている選択肢は一部だけが正しく、対象が誤っています。土曜日の午前9時は展示の開館時間で、ガイドツアーの時間ではありません。日曜日は美術館が休館のため、日曜日のツアーはありえません。\n\n本文の根拠: “A guided tour is available every Tuesday at 3:00 PM for advanced learners.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 568,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/24 09:21",
+   "レベル": "共通テスト",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nAfter the players broke the team rules during the trip, the coach's warning was (　　　　).",
+   "options": [
+    {
+     "key": "A",
+     "text": "equal",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "severe",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "former",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "creative",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "severe",
+   "hint": "「warning（警告）」の様子を表し、be動詞の後ろに置かれる形容詞に注目しよう。",
+   "explanation": "訳: 遠征中にチームの規則を破ったあと、コーチの警告は厳しいものだった。\n\n文の内容は、選手が規則を破った後にコーチが警告を出したというもので、その警告の程度が「厳しい」ことを表す語が入ると自然です。「equal（等しい）」「creative（創造的な）」「former（以前の）」を入れても、警告の厳しさを表す意味にはならず文が通りません。\n\n答え: severe（厳しい）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 582,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/24 09:23",
+   "レベル": "共通テスト",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nApplying for this scholarship will (　　　　) a personal essay and two teacher recommendations.",
+   "options": [
+    {
+     "key": "A",
+     "text": "require",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "cheer",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "C",
+     "text": "operate",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "treat",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "require",
+   "hint": "助動詞 will の直後に置かれ、その後に「作文と推薦状」という書類が続く動詞に注目しましょう。",
+   "explanation": "訳: この奨学金に申し込むには、個人的な作文と教師の推薦状二通が必要です。\n\n「奨学金に申し込むには作文と推薦状が必要だ」という文脈なので、「必要とする」という意味の require が入ります。「operate（操作する）」「cheer（元気づける）」「treat（扱う・もてなす）」を入れても、書類が求められることを表す文として意味が通りません。\n\n答え: require（必要とする）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": "Haiku の見直しが emotional も合うと指摘した（微妙）。通すのが妥当",
+   "id": 586,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/24 09:23",
+   "レベル": "共通テスト",
+   "作成役": "gemma4:e4b-it-qat",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nThe (　　　　) kitten slowly crept toward the new toy on the shelf.",
+   "options": [
+    {
+     "key": "A",
+     "text": "emotional",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "curious",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "complex",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "reasonable",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "curious",
+   "hint": "「新しいおもちゃに近づく」という行動に対して、猫がどのような性格なのかを示す言葉を入れましょう。",
+   "explanation": "訳: その好奇心旺盛な子猫は、棚にある新しいおもちゃにそっと近づいた。\n\n「curious」は「好奇心の強い」という意味です。猫が新しいものに対して興味を持ち、観察しようとする様子をこの単語で表しています。「reasonable」や「emotional」といった単語を使うと、この文の示す状況に合わないため、単語の意味と文脈が一致する「curious」が正解です。\n\n答え: curious（好奇心の強い）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 588,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/24 09:24",
+   "レベル": "高校基礎",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "Schedule for the Year 11 Science Museum Trip\n\nDate: Thursday, June 12\nMeeting place: Main gate of Midori High School, 7:30 a.m.\nDeparture: 8:00 a.m. by bus (Bus No. 3)\n\nStudents will visit the Harbor City Science Museum. The museum is about 90 minutes from school by bus.\n\n10:00–11:30 a.m.: Space Theater (Reservation required. Please bring your ticket number.)\n11:30 a.m.–12:30 p.m.: Lunch in the museum café (Lunch costs 800 yen. Students who bring their own lunch may eat in the Garden Area.)\n1:00–3:00 p.m.: Free time in small groups (Groups must have four to six members and must be approved by your teacher by June 5.)\n\nReturn: The bus leaves the museum at 3:30 p.m. and arrives at school at 5:00 p.m. Students must not leave the group without permission. For more information, please contact Ms. Sato in the Science Office or visit www.example.org/trip.",
+   "question": "According to the schedule, what must students do if they want to eat lunch in the Garden Area?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Arrive at the museum by bus before 10:00 a.m.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "Pay 800 yen to eat lunch in the Garden Area.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "C",
+     "text": "Bring their own lunch from home to eat there.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "Show a group approval form at the Garden Area entrance.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    }
+   ],
+   "answer": "Bring their own lunch from home to eat there.",
+   "hint": "第1段落ではなく、昼食（11:30 a.m.–12:30 p.m.）の項目の中で、カッコ内の説明を読みましょう。",
+   "explanation": "根拠の文は「自分で昼食を持参した生徒はガーデンエリアで食べてよい」という意味です。したがって、自分の昼食を持ってくることが正解です。800円の昼食代はカフェで食べる場合の費用なので、ガーデンエリアで払って食べるという内容は誤りです。ガーデンエリアでの確認書類や、朝の到着時刻についての記述は本文にありません。\n\n本文の根拠: “Students who bring their own lunch may eat in the Garden Area.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 589,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/24 09:24",
+   "レベル": "高校基礎",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "Schedule for the Year 11 Science Museum Trip\n\nDate: Thursday, June 12\nMeeting place: Main gate of Midori High School, 7:30 a.m.\nDeparture: 8:00 a.m. by bus (Bus No. 3)\n\nStudents will visit the Harbor City Science Museum. The museum is about 90 minutes from school by bus.\n\n10:00–11:30 a.m.: Space Theater (Reservation required. Please bring your ticket number.)\n11:30 a.m.–12:30 p.m.: Lunch in the museum café (Lunch costs 800 yen. Students who bring their own lunch may eat in the Garden Area.)\n1:00–3:00 p.m.: Free time in small groups (Groups must have four to six members and must be approved by your teacher by June 5.)\n\nReturn: The bus leaves the museum at 3:30 p.m. and arrives at school at 5:00 p.m. Students must not leave the group without permission. For more information, please contact Ms. Sato in the Science Office or visit www.example.org/trip.",
+   "question": "According to the schedule, which rule must students follow during the trip?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Students may go off alone whenever they wish during free time.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "B",
+     "text": "Students must bring their ticket number to the café.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "Students must contact Ms. Sato before they eat lunch.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "D",
+     "text": "Students must get permission before leaving their group.",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "Students must get permission before leaving their group.",
+   "hint": "「Return」（帰りの便）の説明の中にある、生徒の行動に関する注意を探しましょう。",
+   "explanation": "根拠の文は「生徒は許可なくグループから離れてはいけない」という意味です。したがって、許可を得ることが必要だという内容が正解です。自由時間に一人で行動してよいという内容は、本文の注意と反対なので誤りです。チケット番号はシアターの予約に関するもので、カフェでの持ち物ではありません。昼食前にサトウ先生へ連絡する必要も本文にはありません。\n\n本文の根拠: “Students must not leave the group without permission.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 596,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/24 09:25",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "My First Day at the Riverside Cafe\n\nWhen I saw the \"Help Wanted\" sign in the window of the Riverside Cafe, I felt both excited and nervous. I was sixteen, and it was my first time applying for a real job. I had never made coffee for anyone except my parents, so I was not sure I could do it. Still, I walked in and asked for an application form.\n\nThe manager, Mrs. Hayashi, was a calm woman with silver hair. She read my form quickly and smiled. \"You don't need experience,\" she said. \"You need patience and a willingness to learn.\" Her words made me feel a little better. A week later, she called me and offered me a job on Saturday mornings.\n\nMy first shift was on a rainy Saturday in March. I arrived fifteen minutes early, wearing an apron that was far too big for me. Mrs. Hayashi showed me the espresso machine, the cash register, and the list of drinks. I tried to memorize everything, but my head was spinning. Within an hour, I had already spilled milk on the counter and mixed up two orders.\n\nAt first, I wanted to hide in the storeroom. However, a regular customer, an elderly man who always ordered black coffee, noticed my trembling hands. He winked at me and said, \"Everyone starts somewhere, young man.\" His kindness gave me the courage to keep going.\n\nBy noon, I was working more smoothly. I remembered the orders, cleaned the tables, and even laughed when a little girl asked me to draw a cat in the foam of her hot chocolate. When my shift ended, Mrs. Hayashi handed me my first paycheck and said, \"You did well today.\"\n\nWalking home that afternoon, I realized that I was no longer afraid of making mistakes. I was proud of myself, and I couldn't wait for my next Saturday at the cafe.",
+   "question": "What had changed in the writer's work by noon?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The writer had decided to leave the job early.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "B",
+     "text": "The writer had stopped making any mistakes at all.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "The writer had begun to work more smoothly than before.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "The writer had asked Mrs. Hayashi to take over the espresso machine.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    }
+   ],
+   "answer": "The writer had begun to work more smoothly than before.",
+   "hint": "第五段落の冒頭を読み、正午ごろの筆者の働きぶりがどう変わったかを確かめましょう。",
+   "explanation": "根拠の文は「正午までに、私はより手際よく働けるようになっていた」という意味です。注文を覚えたり、テーブルを片付けたりできるようになったことが続けて書かれています。正解の「以前より手際よく働けるようになった」はこの内容と一致します。「ミスを一切しなくなった」とは書かれておらず、むしろ後の部分でも失敗を恐れなくなったとだけ述べられています。「仕事を早くやめる決心をした」は本文と食い違います。「エスプレッソマシンを任せてほしいと頼んだ」という記述はありません。\n\n本文の根拠: “By noon, I was working more smoothly.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 605,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/24 09:37",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "Lost in Translation\n\nWhen I arrived at the airport in Melbourne, I was nervous. It was my first time living abroad, and I had only three months to study at a high school there as an exchange student. My host family, the Parkers, met me at the arrival gate with a big sign that said \"Welcome, Yuki!\" I felt a little better right away.\n\nThe first week was full of surprises. At breakfast, Mrs. Parker asked me if I wanted a \"cuppa.\" I smiled and nodded, thinking it was some kind of special tea. When she handed me a mug of plain tea with milk, I realized that \"cuppa\" simply meant \"cup of tea.\" I laughed, and so did she.\n\nThings became harder at school. On my second day, my homeroom teacher asked me to introduce myself to the class. I stood up, spoke slowly, and said I liked \"football.\" Everyone looked confused. Then a boy named Liam said, \"Oh, you mean soccer!\" I felt my face turn red. In Australia, \"football\" usually means Australian rules football, so I had made a small but embarrassing mistake.\n\nThe biggest surprise came at lunch. I had prepared a sandwich, but I saw that my classmates were sharing food from one big box in the middle of the table. Nobody seemed to mind that they were eating each other's snacks. In Japan, we usually keep our own food separate, so I hesitated. Then Emma offered me a biscuit, and I took it. It tasted wonderful, and I began to understand that sharing was a way of showing friendship.\n\nLooking back, I think those small misunderstandings helped me. Each time I got something wrong, I learned something new about my host country and about myself. By the end of the three months, I was no longer afraid of making mistakes. I was simply excited to see what would happen next.",
+   "question": "Why did the writer hesitate when classmates shared food at lunch?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Because the writer did not like the snacks in the big box.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "Because in Japan people usually keep their own food separate from others'.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "Because the writer had forgotten to bring any food to school.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "D",
+     "text": "Because the writer thought sharing food was impolite in Australia.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    }
+   ],
+   "answer": "Because in Japan people usually keep their own food separate from others'.",
+   "hint": "第4段落で、昼食時に書き手がためらった理由が述べられている部分を読みましょう。",
+   "explanation": "根拠の文は「日本では普段、自分の食べ物を他人のものと分けて置くので、私はためらった」という意味です。書き手は一つの大きな箱から友だちが食べ物を分け合うのを見て、日本の習慣との違いからためらいました。「書き手はスナックが好きではなかった」は、後で書き手がビスケットをおいしいと感じているので誤りです。「お弁当を忘れた」は、書き手が昼食用のサンドイッチを用意していたので誤りです。「オーストラリアでは食べ物を分け合うのは失礼だと思った」は本文にない内容です。\n\n本文の根拠: “In Japan, we usually keep our own food separate, so I hesitated.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 759,
+   "category": "英語／読解／説明文",
+   "作成日時": "2026/10/24 18:17",
+   "レベル": "共通テスト",
+   "本文作成役": "gemma4:12b-it-qat",
+   "作成役": "gemma4:12b-it-qat",
+   "passage": "The Changing Role of Robots in Modern Healthcare\n\nIn recent years, the use of robots in hospitals has moved from science fiction to a practical reality. While many people may imagine robots replacing human doctors, the current trend is actually toward \"collaborative robotics.\" These machines are designed to work alongside healthcare professionals to improve the efficiency and safety of medical services. By taking over repetitive or physically demanding tasks, robots allow nurses and doctors to spend more time focusing on direct patient care.\n\nOne of the primary roles of robots in hospitals is logistics and delivery. For instance, autonomous mobile robots are now frequently used to transport medicine, laboratory samples, and meals to different departments. These machines can navigate complex hallways and elevators without human intervention. This reduces the workload on hospital staff, who previously had to spend a significant portion of their shifts moving supplies between rooms. In a busy urban hospital, this change can lead to faster response times for patients in need of urgent medication.\n\nFurthermore, robots are playing an increasingly important role in surgery and rehabilitation. Surgical robots, controlled by skilled surgeons, enable high-precision procedures that are difficult to perform with human hands alone. These tools can make smaller incisions, resulting in less pain and quicker recovery times for patients. In rehabilitation centers, wearable robotic suits help patients with mobility issues practice walking again. These technologies do not replace the human touch; instead, they provide advanced tools that enhance the quality of care provided by medical experts.",
+   "question": "Which of the following is true about surgical robots as described in the text?",
+   "options": [
+    {
+     "key": "A",
+     "text": "They are designed to reduce the cost of medical services.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "They are used to perform operations on the brain.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "They help patients recover more quickly from surgery.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "They are operated independently by computer programs.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "They help patients recover more quickly from surgery.",
+   "hint": "第3段落の、外科手術ロボット（Surgical robots）に関する記述に注目してください。",
+   "explanation": "第3段落に、外科手術ロボットが「より小さな切開を可能にし、その結果、患者の痛みを少なくし、より早い回復時間を実現できる」とあるため、「手術から患者がより早く回復するのを助ける」が正解です。「コンピュータプログラムによって独立して操作される」という選択肢は、本文では「熟練した外科医によって操作される（controlled by skilled surgeons）」とあり、食い違います。「脳への手術」や「医療サービスのコスト削減」については本文に記載されていません。\n\n本文の根拠: “These tools can make smaller incisions, resulting in less pain and quicker recovery times for patients.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": "解説に軽い難（全勝しなかった→優勝しなかったの飛躍）。通すべきだが、見直しで直されるのは可",
+   "id": 762,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/24 18:19",
+   "レベル": "共通テスト",
+   "本文作成役": "gemma4:12b-it-qat",
+   "作成役": "gemma4:12b-it-qat",
+   "passage": "The Lesson Beyond the Scoreboard\n\nWhen I became the captain of the high school soccer team last year, I felt a heavy sense of responsibility. I was passionate about winning, and my main goal was to lead my teammates to a championship. However, I quickly realized that being a captain was not just about giving orders or showing off my own skills on the field. It was about understanding the feelings of every player in the team.\n\nDuring the middle of the season, our team faced a difficult period. We lost three matches in a row, and the atmosphere in the locker room became very tense. Some players started to argue with each other, and many seemed to lose their confidence. I felt frustrated and worried, but I knew I had to do something to change the situation.\n\nInstead of focusing only on our mistakes, I decided to hold a small meeting after practice one evening. I sat down with everyone and shared my own feelings of disappointment. I admitted that I was also scared of losing. This honesty seemed to surprise my teammates, and soon, they began to open up about their own struggles. We talked about our fears and listened to each other’s opinions with respect.\n\nFrom that day on, the mood changed completely. We started to support one another more actively during practice. Although we did not win every game, we finished the season with a sense of unity that I had never felt before. I learned that true leadership is not about being the best player, but about building a bridge between people.",
+   "question": "What was the result of the team's experience at the end of the season?",
+   "options": [
+    {
+     "key": "A",
+     "text": "They improved their individual skills greatly.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "They achieved the championship they desired.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "C",
+     "text": "They developed a stronger sense of togetherness.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "They won every match in the final period.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "They developed a stronger sense of togetherness.",
+   "hint": "第4段落の、シーズンの終わりの部分を読んでください。",
+   "explanation": "書き手は「すべての試合に勝ったわけではないが、かつて感じたことのない団結感（sense of unity）を持ってシーズンを終えた」と述べています。これが「より強い連帯感」と言い換えられます。「望んでいた優勝を達成した」という選択肢や「最終期間のすべての試合に勝った」という選択肢は、「すべての試合に勝ったわけではない」という記述と矛盾します。「個々のスキルを大幅に向上させた」という選択肢は本文に書かれていません。\n\n本文の根拠: “Although we did not win every game, we finished the season with a sense of unity that I had never felt before.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 969,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/25 12:39",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "The Day the Trains Stopped\n\nI still remember the morning of February 8th, when I woke up to a silence that felt strange. Outside my window, the whole street was covered in thick white snow. I checked my phone and saw a message from my train company: \"Due to heavy snow, all lines are suspended until further notice.\" I groaned. I had an important history test that day, and I had planned to arrive at school early to review my notes.\n\nI hurried to the station anyway, pulling my scarf up over my nose. When I arrived, the platform was crowded with people staring at a large board that showed nothing but red letters. Nobody knew when the trains would start again. An old man beside me sighed and said, \"I have been waiting here for two hours already.\"\n\nI felt frustrated and worried. Then I noticed a girl about my age sitting on a bench, sharing her hot chocolate with a little boy who was crying because he was cold. Her kindness changed my mood. I decided to stop worrying about the test and do something useful. I walked to a nearby convenience store and bought some hot tea for the people who were waiting in the cold.\n\nBy noon, the station staff announced that a few trains would run slowly. A cheer rose from the crowd. I boarded a train with the girl and the boy, and we talked about how strange the day had been. When I finally reached school, the test had already begun. My teacher looked at my wet shoes and gave me a sympathetic smile, and she let me take the test in the library.\n\nLooking back, I realized that the day had not gone the way I had planned, but I had learned something more important than any test score. Sometimes a small act of kindness can make a cold day feel warm.",
+   "question": "What did the teacher do when the writer arrived at school after the test had begun?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The teacher let the writer take the test in the school hall the next day.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え／見直しでは「本文と食い違う」"
+    },
+    {
+     "key": "B",
+     "text": "The teacher gave the writer a sympathetic smile and let the writer take the test in the library.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "The teacher canceled the test for the whole class because of the snow.",
+     "correct": false,
+     "mistake": "本文と食い違う／見直しでは「本文に書かれていない」"
+    },
+    {
+     "key": "D",
+     "text": "The teacher sent the writer home because the test had already begun.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "The teacher gave the writer a sympathetic smile and let the writer take the test in the library.",
+   "hint": "第4段落の後半、主人公が学校に着いたあとの先生の対応を読みましょう。",
+   "explanation": "正解は「先生は同情的な笑顔を見せ、図書室でテストを受けることを許した」です。本文には「My teacher looked at my wet shoes and gave me a sympathetic smile, and she let me take the test in the library.」（先生は私のぬれた靴を見て、同情するように微笑み、図書室でテストを受けさせてくれた）とあります。「家に帰らせた」という内容は、先生が図書室でのテストを許したことと食い違います。「クラス全員のテストを中止した」という内容は、主人公がテストを予定どおり図書室で受けたという本文と食い違います。「翌日、講堂で受けた」という内容は、同じ日に図書室で受けたという本文と異なります。\n\n本文の根拠: “My teacher looked at my wet shoes and gave me a sympathetic smile, and she let me take the test in the library.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 970,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/25 12:39",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "The Day the Trains Stopped\n\nI still remember the morning of February 8th, when I woke up to a silence that felt strange. Outside my window, the whole street was covered in thick white snow. I checked my phone and saw a message from my train company: \"Due to heavy snow, all lines are suspended until further notice.\" I groaned. I had an important history test that day, and I had planned to arrive at school early to review my notes.\n\nI hurried to the station anyway, pulling my scarf up over my nose. When I arrived, the platform was crowded with people staring at a large board that showed nothing but red letters. Nobody knew when the trains would start again. An old man beside me sighed and said, \"I have been waiting here for two hours already.\"\n\nI felt frustrated and worried. Then I noticed a girl about my age sitting on a bench, sharing her hot chocolate with a little boy who was crying because he was cold. Her kindness changed my mood. I decided to stop worrying about the test and do something useful. I walked to a nearby convenience store and bought some hot tea for the people who were waiting in the cold.\n\nBy noon, the station staff announced that a few trains would run slowly. A cheer rose from the crowd. I boarded a train with the girl and the boy, and we talked about how strange the day had been. When I finally reached school, the test had already begun. My teacher looked at my wet shoes and gave me a sympathetic smile, and she let me take the test in the library.\n\nLooking back, I realized that the day had not gone the way I had planned, but I had learned something more important than any test score. Sometimes a small act of kindness can make a cold day feel warm.",
+   "question": "What did the writer do after the station staff announced that some trains would run slowly?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The writer boarded a train with the girl at nine in the morning.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え"
+    },
+    {
+     "key": "B",
+     "text": "The writer boarded a train with the girl and the boy.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "The writer went back home and stayed there for the rest of the day.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "D",
+     "text": "The writer waited alone at the station until the snow melted.",
+     "correct": false,
+     "mistake": "本文に書かれていない／見直しでは「本文と食い違う」"
+    }
+   ],
+   "answer": "The writer boarded a train with the girl and the boy.",
+   "hint": "第4段落の前半、正午ごろに列車の運行が再開したあとの場面を読みましょう。",
+   "explanation": "正解は「女の子と男の子と一緒に電車に乗った」です。本文には「I boarded a train with the girl and the boy, and we talked about how strange the day had been.」（私は女の子と男の子と一緒に電車に乗り、その日がどんなに奇妙な一日だったかを話した）とあります。「家に帰って一日中過ごした」という内容は、主人公が学校に向かったことと食い違います。「雪が溶けるまで一人で駅で待った」という内容は本文に書かれていません。「朝の九時に女の子と電車に乗った」という内容は、正午ごろの運行再開という時刻と合いません。\n\n本文の根拠: “I boarded a train with the girl and the boy, and we talked about how strange the day had been.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 975,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/25 12:39",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "The Hike That Almost Went Wrong\n\nLast summer, my older brother Ken and I decided to climb Mount Hotaka, a peak in the Japanese Alps. We had planned the trip for months. We packed our bags the night before, checked the weather forecast, and saw that it would be sunny in the morning with only a small chance of clouds in the afternoon. I was excited, and I thought we would be back at the bottom by lunchtime.\n\nWe started early. The trail was steep, but the views were wonderful. By nine o'clock, we had reached a wide ridge, and I could see the valley below us covered in a soft white mist. Ken took a photo and said, \"This is why we came.\"\n\nAround ten, the sky changed quickly. Dark clouds rolled over the peaks, and a cold wind began to blow. Within twenty minutes, the trail was hidden in fog, and rain started to fall. I pulled out my phone to check the forecast, but there was no signal. I felt my stomach drop. I had trusted the forecast too much and had not brought a backup plan.\n\nKen stayed calm. He looked at the map, found a small shelter marked about one kilometer away, and told me to stay close behind him. We walked slowly, shouting to each other through the rain so we would not get separated. My hands were numb, and my boots were soaked, but I kept my eyes on Ken's red jacket.\n\nAfter nearly an hour, we reached the shelter. We sat inside, shivering, and ate the snacks we had saved. Slowly, the rain stopped, and a thin patch of blue appeared above us. We waited another hour before starting down, but by then we were both tired and quiet.\n\nLooking back, I realized how lucky we were. The trip did not go as planned, but Ken's calm decision made all the difference. I learned that a good mountain trip depends not only on the weather, but also on preparation and on trusting the people beside you.",
+   "question": "What did the writer and Ken do after the rain stopped at the shelter?",
+   "options": [
+    {
+     "key": "A",
+     "text": "They stayed for about another hour before starting down.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "They started down after only about twenty minutes.",
+     "correct": false,
+     "mistake": "数・日時・人などの取り違え／見直しでは「本文と食い違う」"
+    },
+    {
+     "key": "C",
+     "text": "They called for rescue using the phone.",
+     "correct": false,
+     "mistake": "本文に書かれていない／見直しでは「本文と食い違う」"
+    },
+    {
+     "key": "D",
+     "text": "They started down the mountain right away.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "They stayed for about another hour before starting down.",
+   "hint": "小屋で雨がやんだあとの行動が書かれている段落を読みましょう。下山を始めるまでの時間に注目してください。",
+   "explanation": "正解は「雨がやんだあと、さらに1時間ほど小屋にとどまってから下山した」です。本文には「We waited another hour before starting down」（下山を始める前にもう1時間待った）とあり、待ち時間が1時間だったことが分かります。「すぐに下山を始めた」は、本文の待機の記述と食い違います。「20分ほどで下山した」は、待ち時間の数の取り違えです。「電話で救助を頼んだ」は、本文では電話が通じなかったうえに、救助を呼んだことは書かれていません。\n\n本文の根拠: “We waited another hour before starting down, but by then we were both tired and quiet.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 976,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/25 12:39",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "The Hike That Almost Went Wrong\n\nLast summer, my older brother Ken and I decided to climb Mount Hotaka, a peak in the Japanese Alps. We had planned the trip for months. We packed our bags the night before, checked the weather forecast, and saw that it would be sunny in the morning with only a small chance of clouds in the afternoon. I was excited, and I thought we would be back at the bottom by lunchtime.\n\nWe started early. The trail was steep, but the views were wonderful. By nine o'clock, we had reached a wide ridge, and I could see the valley below us covered in a soft white mist. Ken took a photo and said, \"This is why we came.\"\n\nAround ten, the sky changed quickly. Dark clouds rolled over the peaks, and a cold wind began to blow. Within twenty minutes, the trail was hidden in fog, and rain started to fall. I pulled out my phone to check the forecast, but there was no signal. I felt my stomach drop. I had trusted the forecast too much and had not brought a backup plan.\n\nKen stayed calm. He looked at the map, found a small shelter marked about one kilometer away, and told me to stay close behind him. We walked slowly, shouting to each other through the rain so we would not get separated. My hands were numb, and my boots were soaked, but I kept my eyes on Ken's red jacket.\n\nAfter nearly an hour, we reached the shelter. We sat inside, shivering, and ate the snacks we had saved. Slowly, the rain stopped, and a thin patch of blue appeared above us. We waited another hour before starting down, but by then we were both tired and quiet.\n\nLooking back, I realized how lucky we were. The trip did not go as planned, but Ken's calm decision made all the difference. I learned that a good mountain trip depends not only on the weather, but also on preparation and on trusting the people beside you.",
+   "question": "What did the writer learn from the hike?",
+   "options": [
+    {
+     "key": "A",
+     "text": "A good mountain trip depends only on the weather.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "B",
+     "text": "A good mountain trip needs careful planning and trust in the people who climb with you.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "Climbing alone is safer than climbing with a companion.",
+     "correct": false,
+     "mistake": "本文と食い違う／見直しでは「本文に書かれていない」"
+    },
+    {
+     "key": "D",
+     "text": "A backup plan is unnecessary when the forecast looks good.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "A good mountain trip needs careful planning and trust in the people who climb with you.",
+   "hint": "最後の段落で、語り手が登山から得た教訓を述べている部分を読みましょう。",
+   "explanation": "正解は「よい登山には入念な準備と、一緒にいる人への信頼が必要だ」です。本文には「I learned that a good mountain trip depends not only on the weather, but also on preparation and on trusting the people beside you.」（よい登山は天候だけでなく、準備と、そばにいる人を信頼することにもよると学んだ）とあります。「天候だけで決まる」は、天候以外の準備や信頼も大切だという本文の内容と食い違います。「一人で登るほうが安全」は、Ken と一緒に行動して助かったという本文と反対です。「天気予報がよければ予備の計画はいらない」は、語り手が予報を信じすぎて予備の計画がなかったことを後悔している本文と食い違います。\n\n本文の根拠: “I learned that a good mountain trip depends not only on the weather, but also on preparation and on trusting the people beside you.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 980,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/25 12:41",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "Stepping onto the Stage\n\nWhen I entered Kawaguchi High School in April, I had no plans to join any club. I had spent most of my middle school years playing basketball, but a knee injury during the spring tournament had forced me to stop. I told myself that I would simply go home after class and focus on my studies.\n\nThat plan changed on a rainy afternoon in May. While walking past the small auditorium, I heard a loud burst of laughter coming from inside. I peeked through the half-open door and saw a group of students reading lines from a script. One of them, a tall girl with a clipboard, noticed me and waved me in. Her name was Aya Mori, and she was the director of the drama club.\n\n\"We need one more actor for our autumn play,\" she said. \"Do you want to try?\"\n\nI almost said no. Acting had never been part of my life, and I was sure I would freeze the moment I stood in front of people. Still, something in her warm smile made me hesitate. Before I could change my mind, I found myself reading a short line from the script.\n\nMy voice shook badly, and my face felt hot. The others, however, did not laugh at me. Instead, they gave me encouraging nods and asked me to try again. By the end of the hour, I had read the same line a dozen times, and it had become a little easier each time.\n\nI joined the club that week. Over the following months, I spent countless evenings practicing lines, painting scenery, and learning how to breathe before speaking. Although I still felt nervous, I began to enjoy the feeling of standing under the bright lights.\n\nOn the night of the performance in October, I looked out at the full audience and felt my heart pound. Then I remembered the rainy afternoon and the friendly faces that had welcomed me. I took a deep breath and began to speak. For the first time in a long while, I felt truly alive.",
+   "question": "Why did the writer stop playing basketball?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Because the writer had lost interest in the sport after a series of losses",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "B",
+     "text": "Because the writer's coach had asked the writer to give up the sport",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "Because the writer's team had been removed from the spring tournament",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "D",
+     "text": "Because the writer had hurt a knee at the spring tournament and could no longer keep playing",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "Because the writer had hurt a knee at the spring tournament and could no longer keep playing",
+   "hint": "第1段落を読み、筆者が中学校で続けていたスポーツをやめることになった理由に注目しよう。",
+   "explanation": "正解は「膝のけがで、春の大会の最中に、やめざるを得なくなったから」という内容の選択肢です。根拠となる本文は「春の大会での膝のけがで、私はやめることになった」（a knee injury during the spring tournament had forced me to stop）で、筆者が膝をけがしたことが理由だと述べられています。他の選択肢は、興味を失ったこと、チームが大会から外されたこと、コーチに言われたことについて、本文には書かれていないため誤りです。\n\n本文の根拠: “a knee injury during the spring tournament had forced me to stop.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 982,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/25 12:41",
+   "レベル": "共通テスト",
+   "本文作成役": "anthropic/claude-haiku-5-5",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": "Stepping onto the Stage\n\nWhen I entered Kawaguchi High School in April, I had no plans to join any club. I had spent most of my middle school years playing basketball, but a knee injury during the spring tournament had forced me to stop. I told myself that I would simply go home after class and focus on my studies.\n\nThat plan changed on a rainy afternoon in May. While walking past the small auditorium, I heard a loud burst of laughter coming from inside. I peeked through the half-open door and saw a group of students reading lines from a script. One of them, a tall girl with a clipboard, noticed me and waved me in. Her name was Aya Mori, and she was the director of the drama club.\n\n\"We need one more actor for our autumn play,\" she said. \"Do you want to try?\"\n\nI almost said no. Acting had never been part of my life, and I was sure I would freeze the moment I stood in front of people. Still, something in her warm smile made me hesitate. Before I could change my mind, I found myself reading a short line from the script.\n\nMy voice shook badly, and my face felt hot. The others, however, did not laugh at me. Instead, they gave me encouraging nods and asked me to try again. By the end of the hour, I had read the same line a dozen times, and it had become a little easier each time.\n\nI joined the club that week. Over the following months, I spent countless evenings practicing lines, painting scenery, and learning how to breathe before speaking. Although I still felt nervous, I began to enjoy the feeling of standing under the bright lights.\n\nOn the night of the performance in October, I looked out at the full audience and felt my heart pound. Then I remembered the rainy afternoon and the friendly faces that had welcomed me. I took a deep breath and began to speak. For the first time in a long while, I felt truly alive.",
+   "question": "How did the writer's feelings about standing on stage change over the months after joining the club?",
+   "options": [
+    {
+     "key": "A",
+     "text": "The writer became completely free of nervousness and no longer felt any tension",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "B",
+     "text": "The writer began to enjoy the feeling of being under the bright lights, though nervousness remained",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "The writer came to prefer painting scenery to acting and stopped performing",
+     "correct": false,
+     "mistake": "本文に書かれていない／見直しでは「本文と食い違う」"
+    },
+    {
+     "key": "D",
+     "text": "The writer found that practicing lines was boring and felt relieved to quit",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    }
+   ],
+   "answer": "The writer began to enjoy the feeling of being under the bright lights, though nervousness remained",
+   "hint": "第6段落を読み、入部後の数か月間で、筆者が舞台に立つことをどう感じるようになったかに注目しよう。",
+   "explanation": "正解は「緊張は残っていたが、明るい照明の下に立つ感覚を楽しめるようになった」という内容の選択肢です。根拠となる本文は「まだ緊張していたけれど、明るい照明の下に立つ感覚を楽しみ始めた」（Although I still felt nervous, I began to enjoy the feeling of standing under the bright lights.）です。他の選択肢のうち、緊張がまったくなくなったことは「まだ緊張していた」と食い違い、演劇をやめたことや、練習が退屈になったことは本文に書かれていないか、本文と食い違うため誤りです。\n\n本文の根拠: “Although I still felt nervous, I began to enjoy the feeling of standing under the bright lights.”"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 985,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/25 12:43",
+   "レベル": "共通テスト",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nSome reporters (　　　　) the mayor for raising taxes without explaining why.",
+   "options": [
+    {
+     "key": "A",
+     "text": "organize",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "influence",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "C",
+     "text": "criticize",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "announce",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "criticize",
+   "hint": "文の主語である記者が、市長に対してどのような態度を取っているかに注目しよう。",
+   "explanation": "訳: 一部の記者たちは、理由を説明せずに増税したとして市長を批判している。\n\n増税の理由を説明しなかったことが問題視されており、市長への非難の文脈なので「批判する」の意味の動詞が入る。announce（発表する）、organize（組織する・企画する）、influence（影響を与える）は、どれを入れても文の意味が通らない。\n\n答え: criticize（批判する）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 987,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/25 12:43",
+   "レベル": "共通テスト",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nThe old bridge was (　　　　) destroyed by the flood last summer.",
+   "options": [
+    {
+     "key": "A",
+     "text": "previously",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "completely",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "accidentally",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "temporarily",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "completely",
+   "hint": "空所は過去分詞 destroyed を修飾しており、橋がどの程度壊れたかを表す語が入ります。",
+   "explanation": "訳: その古い橋は、去年の夏の洪水によって完全に壊されてしまった。\n\n洪水で橋が壊れた「程度」を表す語が入るので、「完全に」という意味の副詞が適切です。previously は「以前に」と時期を表すため、「洪水の前にすでに壊れていた」という意味になってしまいます。accidentally は「偶然に」という意味で、洪水による破壊の説明として合いません。temporarily は「一時的に」という意味で、壊れた状態が一時的だったことになり、文脈に合いません。\n\n答え: completely（完全に）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 993,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/25 12:46",
+   "レベル": "共通テスト",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nHer diet plan was so (　　　　) that her doctor told her to stop it.",
+   "options": [
+    {
+     "key": "A",
+     "text": "extreme",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "fair",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "C",
+     "text": "practical",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "complex",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "extreme",
+   "hint": "「so ～ that …」の形に注目し、that の後ろで医者が何をしたかから、前の語がどんな様子を表すかを考えよう。",
+   "explanation": "訳: 彼女の食事制限はあまりにも極端だったので、医者は彼女にそれをやめるよう言った。\n\n「so ～ that …」は「あまりにも～なので…」という意味を表す構文です。医者が食事制限をやめるよう言ったのは、その内容がふつうの範囲を超えていたからだと考えられるので、「極端な」という意味の形容詞が入ります。\n\n答え: extreme（極端な）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 995,
+   "category": "英語／語彙／空所に入る語",
+   "作成日時": "2026/10/25 12:46",
+   "レベル": "共通テスト",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "次の英文の空所（　　）に入る最も適切な語を選べ。\n\nPlease (　　　　) your shoes before entering the room.",
+   "options": [
+    {
+     "key": "A",
+     "text": "submit",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "B",
+     "text": "remove",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "C",
+     "text": "inform",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    },
+    {
+     "key": "D",
+     "text": "recommend",
+     "correct": false,
+     "mistake": "文脈に合わない別の語"
+    }
+   ],
+   "answer": "remove",
+   "hint": "空所の後ろにある「your shoes」が何をする対象かに注目してください。部屋に入る前にどうするかを考えます。",
+   "explanation": "訳: 部屋に入る前に、靴を脱いでください。\n\n「部屋に入る前に靴を○○してください」という文なので、靴を身につけた状態から外す意味の語が入ります。「remove」は「取り除く」という意味で、ここでは「靴を脱ぐ」の意味になります。recommend（勧める）、submit（提出する）、inform（知らせる）は、靴を対象にしても意味が通りません。\n\n答え: remove（取り除く）"
+  },
+  {
+   "expected": "pass",
+   "defect_type": null,
+   "note": null,
+   "id": 1006,
+   "category": "英語／語彙／スペル",
+   "作成日時": "2026/10/25 12:47",
+   "レベル": "高校基礎",
+   "作成役": "anthropic/claude-haiku-5-5",
+   "passage": null,
+   "question": "日本語の意味に合う英単語を書け（6 文字。最初の文字は示してある）。\n\n意味: 方法（名詞）\n\nOne ( m _ _ _ _ _ ) for learning English vocabulary effectively is making flashcards, and I found it works best for me.",
+   "options": [],
+   "answer": "method",
+   "hint": "最後の文字は「d」です。",
+   "explanation": "訳: 英単語を効果的に覚える一つの方法は単語カードを作ることで、それが私には一番合っていました。\n\n「英単語を効果的に覚えるための具体的なやり方」を表す語として、「方法」を意味する名詞 method が入ります。文の後半で「単語カードを作ること」という具体的な手段を挙げているので、文脈から「方法」の意味がはっきり決まります。\n\n答え: method"
+  }
+ ]
+}

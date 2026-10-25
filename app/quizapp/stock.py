@@ -274,7 +274,9 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
     1 問あたりの検証時間 = 検証役の eval の合計 ÷ 検証にかけた下書きの数
     モデルの読み込み（load）は混ぜずに、依頼全体の合計を別に出す
     """
-    q = select(Job).where(Job.is_test.is_(False)).order_by(Job.id.desc()).limit(limit)
+    # 見直しのやり直し・見本集での測定の依頼は作成しないので比べない
+    q = (select(Job).where(Job.is_test.is_(False), or_(Job.kind.is_(None), Job.kind.not_in(("review", "golden"))))
+         .order_by(Job.id.desc()).limit(limit))
     if days > 0:
         q = q.where(Job.created_at >= utcnow() - timedelta(days=days))
     if from_job > 0:
