@@ -7,6 +7,7 @@
 {% if msg == "restored" %}<p class="notice">ストックに戻しました。</p>{% endif %}
 {% if msg == "normalized" %}<p class="notice">{{ n }} 問の表記を直しました。下は、直したあとも表記の点検で引っかかる問題です（直せないもの：KaTeX にない命令、数式の中の日本語、中国語の字など）。</p>{% endif %}
 {% if msg == "rereview" %}<p class="notice">{{ n }} 問の見直しのやり直しを順番待ちに入れました。進み具合は「作る」の依頼の一覧に出ます。終わったら「状態」で「{{ options.statuses.reflagged }}」を選ぶか、Markdown で書き出して見てください。</p>{% endif %}
+{% if msg == "golden" %}<p class="notice">見本集の {{ n }} 問の測定を順番待ちに入れました。進み具合は「作る」の依頼の一覧に出ます。終わったら下の「見本集で測る」の比べる表で見てください。</p>{% endif %}
 {% if msg == "rereview_empty" %}<p class="notice warn">絞り込みに当てはまる問題がないので、見直しのやり直しは頼みませんでした。</p>{% endif %}
 {% if msg == "deleted_ids" %}<p class="notice">{{ n }} 問を削除しました（今後出題しません。回答の記録は残ります）。足りない分は「作る」から作成を依頼してください。</p>{% endif %}
 {% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) ~ "&date_from=" ~ f.date_from ~ "&date_to=" ~ f.date_to ~ "&id_from=" ~ f.id_from ~ "&id_to=" ~ f.id_to %}
@@ -59,6 +60,32 @@
   <p class="small"><a href="/review/rereview.md?{{ qs }}" target="_blank">見直しのやり直しの比較表（Markdown）</a>：
     上の絞り込みの問題について、見直しのやり直しの結果を「問題 × 依頼（見直し役）」の表（○ 誤りなし・× 誤りあり・？ 読めなかった）で出します。</p>
 </details>
+{% for gs in goldens %}
+<details class="card">
+  <summary>見本集で測る（{{ subject_name(gs.subject) }}：{{ gs.samples | length }} 問。検証役・見直し役の組み合わせを比べる）</summary>
+  <p class="small">見本集（{{ gs.path }}）の問題に、選んだ検証役・見直し役で検証と見直しをかけ、「弾くべき問題を弾けたか」「通すべき問題を誤って弾かなかったか」を数えます。
+    結果は依頼に残すだけで、ストックや問題の記録は変えません。弾くべき {{ gs.counts.reject }} 問・通すべき {{ gs.counts.pass }} 問。
+    データベースから加えた問題 {{ gs.db_found | length }}／{{ gs.db_wanted | length }} 問{% if gs.db_missing %}（加えられなかった問題：{{ gs.db_missing | join("、") }}）{% endif %}。</p>
+  <form method="post" action="/review/golden">
+    <input type="hidden" name="subject" value="{{ gs.subject }}">
+    <label>検証役
+      <select name="verify_model">{% for m in model_names %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select></label>
+    <label>一覧にない検証役（書けばこちらを使う）
+      <input type="text" name="verify_text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label>検証の回数 <input type="number" name="verify_count" value="2" min="1" max="5" inputmode="numeric"></label>
+    <label class="check"><input type="checkbox" name="with_review" value="on" checked><span>見直しもする</span></label>
+    <label>見直し役
+      <select name="review_model">{% for m in model_names %}<option value="{{ m }}" {{ 'selected' if m == reviewer }}>{{ m }}</option>{% endfor %}</select></label>
+    <label>一覧にない見直し役（書けばこちらを使う）
+      <input type="text" name="review_text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label class="check"><input type="checkbox" name="with_passage" value="on" checked><span>本文の見直しもする（本文のある問題）</span></label>
+    <button type="submit" class="secondary">見本集で測る</button>
+  </form>
+  <p class="small"><a href="/review/golden.md?subject={{ gs.subject }}" target="_blank">見本集での測定の比べる表（Markdown）</a>：問題 × 依頼（構成）で「弾いた／通した／要確認」、構成ごとの成績、弾いた理由、参考としてデータベースにあるこれまでの見直しの記録。
+    <a href="/review/golden.md?subject={{ gs.subject }}&download=1">保存</a>／
+    <a href="/review/golden.json?subject={{ gs.subject }}">データベースから加えた問題も入れた見本集（JSON）を保存</a></p>
+</details>
+{% endfor %}
 <details class="card">
     <summary>前に作った問題の手入れ</summary>
     <p class="small">表記の直し：度の記号の揺れ（^\top・^° など）、\\sin のような二重のバックスラッシュ、文字どおりの「\n」などを、作成のときと同じ方法でまとめて直します（数式の意味は変えません。LLM は使いません）。直す前の文章は各問題の「検証の記録」に残ります。念のため、先にバックアップを取ってください（README の「バックアップ」の「いますぐ取るとき」）。</p>

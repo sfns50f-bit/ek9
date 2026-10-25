@@ -49,6 +49,8 @@ x-app: &app
     # データは NAS の HDD 上のフォルダ（DATA_PATH）。HDD がまだマウントされていないときは
     # 目印ファイル .ai-quiz-data が見えないので、アプリは何も書かずに終了し、少し後に再起動される
     - ${DATA_PATH:?.env に DATA_PATH（HDD 上のデータの場所）を書いてください}:/data
+    # 見本集（docs/reviews/golden_set_<科目>.json。検証・見直しの検出力を測る）。git pull だけで新しいものが読まれる
+    - ./docs/reviews:/app/golden:ro
   depends_on:
     sandbox:
       condition: service_healthy

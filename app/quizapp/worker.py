@@ -378,7 +378,7 @@ class Worker:
     def process(self, job_id: int) -> None:
         job = self._job(job_id)
         subject = get_subject(job.subject)
-        if job.kind != "review":
+        if job.kind not in ("review", "golden"):
             if subject is None:
                 self._finish(job_id, "failed", f"未知の科目です: {job.subject}")
                 return
@@ -403,6 +403,9 @@ class Worker:
                                             else resolve_think(m, choices, env_think))
         if job.kind == "review":
             self._rereview(job_id, plan.reviewer)
+            return
+        if job.kind == "golden":
+            self._golden(job_id, plan)
             return
         budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
@@ -528,6 +531,65 @@ class Worker:
         self._update_job(job_id, made=len(mine))
         self._finish(job_id, "done", f"{len(mine)} 問を {model} で見直しました（誤りの指摘 {flagged} 問）。"
                                      "結果は問題検証モードの「見直しのやり直しで指摘された問題」と書き出しで見られます")
+
+    def _golden(self, job_id: int, plan: ModelPlan) -> None:
+        """見本集での測定（第 6 回のレビューの 5 章）：見本集の問題に、機械的な点検・検証（設定の回数）・見直し
+        （と本文の見直し）をかけ、弾いた／通した／要確認を依頼の results に残す。ストックや問題の記録は変えない。
+        どの段階も最後までかける（どこで拾えたかを比べるため）。待機・再起動のあとは、まだ測っていない問題から続ける。
+        """
+        from . import golden
+
+        job = self._job(job_id)
+        subject = get_subject(job.subject)
+        with self.sessions() as s:
+            gs = golden.golden_set(s, job.subject)
+        if subject is None or gs is None:
+            self._finish(job_id, "failed", f"見本集のファイル（golden_set_{job.subject}.json）が見つかりません")
+            return
+        samples = gs.by_id()
+        ids = [i for i in job.target_ids if i in samples]
+        self._update_job(job_id, status="running", error="")
+        for k, sid in enumerate(ids, 1):
+            self._check_cancel(job_id)
+            if any(r.get("id") == sid for r in self._job(job_id).results):
+                continue
+            x = samples[sid]
+            text = f"見本集 {k}/{len(ids)}（#{sid}）"
+            self._update_job(job_id, progress=text)
+            self.set_status(f"依頼 #{job_id} — {text}", job_id)
+            steps: list[dict[str, Any]] = []
+            issues = subject.text_issues(x)
+            steps.append({"step": "機械的な点検", "model": "", "ok": not issues, "code": "" if not issues else "text_issues",
+                          "summary": "／".join(issues)[:400]})
+            calls: list[tuple[str, str, Any]] = [("検証", m, lambda m=m: subject.verify(self.llm, self.sandbox, m, x))
+                                                 for m in plan.verify_runs]
+            if job.explanation_review:
+                calls.append(("解説の見直し", plan.reviewer, lambda: subject.review(self.llm, plan.reviewer, x)))
+            if job.review_passage and x.passage is not None:
+                calls.append(("本文の見直し", plan.reviewer,
+                              lambda: subject.review_passage(self.llm, plan.reviewer, x.passage)))
+            for step, model, call in calls:
+                self._label(step if step != "解説の見直し" else "見直し")
+                try:
+                    res = call()
+                except LLMError as exc:
+                    res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
+                                       raw=getattr(exc, "raw", ""))
+                finally:
+                    self._save_llm_calls(job_id)
+                if res is None:
+                    continue
+                steps.append({"step": step, "model": model, "ok": res.ok, "code": "" if res.ok else res.code,
+                              "summary": res.summary[:400], "detail": res.detail[:2000]})
+            result = {"id": sid, "expected": x.expected, "defect_type": x.defect_type,
+                      "outcome": golden.outcome_of(steps), "steps": steps}
+            with self.sessions.begin() as s:
+                row = s.get(Job, job_id)
+                row.results_json = dumps([r for r in row.results if r.get("id") != sid] + [result])
+                row.made = len(row.results)
+        results = self._job(job_id).results
+        self._finish(job_id, "done", f"見本集 {len(results)} 問を測りました：{golden.score_text(golden.score(results))}。"
+                                     "問題検証モードの「見本集での測定」で問題ごとの結果を見られます")
 
     def _finish(self, job_id: int, status: str, message: str) -> None:
         self._update_job(job_id, status=status, error=message, progress="", finished_at=utcnow())

@@ -333,3 +333,168 @@ def test_quality_and_rereview_exports(settings, sessions, sandbox, client):
     # 不合格の問題（本文なしで解けた設問）にも選択肢が残り、同じ形で書き出せる
     rejected_md = client.get("/review/export.md?subject=english&status=rejected").text
     assert "### 選択肢" in rejected_md and "### 検証と見直しの記録" in rejected_md
+
+
+# --- 見本集での測定（第 6 回のレビューの 5 章） ----------------------------------------
+
+import json as _json
+import re as _re
+
+from quizapp import golden
+from quizapp.db import Problem
+
+
+def test_the_golden_set_file_is_read_whole():
+    """docs/reviews/golden_set_english.json の問題は、すべて小単元に当てはまり、通常の問題と同じ形で点検できる。"""
+    data = golden.load("english")
+    samples = [golden.sample_from_item("english", it) for it in data["items"]]
+    assert len(samples) == len(data["items"]) >= 37 and all(samples)
+    assert {x.expected for x in samples} == {"reject", "pass"}
+    sub = get_subject("english")
+    for x in samples:
+        assert x.template in sub.subunit_map()
+        assert (x.format == "choice") == bool(x.choices)
+        if x.choices:
+            assert sum(c["correct"] for c in x.choices) == 1
+            assert all(c["mistake"] in sub.mistakes for c in x.choices if not c["correct"])
+        sub.text_issues(x)  # 点検がそのまま通る（属性が足りている）
+    spelling = next(x for x in samples if x.template == "en-spelling")
+    assert spelling.answer["word"] and spelling.passage is None
+    assert any(x.passage is not None and x.passage.body for x in samples)
+
+
+class GoldenLLM:
+    """見本集の測定のテスト用の LLM。検証役は正解の記号を答える。見直しの判定は、正解と also_fit の選択肢を
+    「裏付けあり・通る」にする（also_fit に入れた誤答があれば、その問題は「正解が複数」で弾かれる）。"""
+
+    def __init__(self, samples, also_fit=()):
+        self.right = {c["text"] for x in samples for c in x.choices if c["correct"]}
+        self.words = {_re.search(r"意味: .*", x.question).group(): x.answer.get("word", "")
+                      for x in samples if not x.choices}
+        self.also_fit = set(also_fit)
+        self.calls = []
+        self.label = ""
+
+    def chat_json(self, model, system, user, schema, *, temperature=0.7):
+        props = schema["properties"]
+        self.calls.append(model)
+        if "judgments" in props:
+            items = _re.findall(r"^(\d+): (.*)$", user, _re.M)
+            good = self.right | self.also_fit
+            lines = []
+            for n, text in items:
+                fit = text in good or any(_re.search(rf"\b{_re.escape(w)}\b", text) for w in good if w.isascii())
+                if "本文と照らして" in system:
+                    lines.append(f"{n}: {'裏付けあり' if fit else '本文と食い違う'} — 本文")
+                else:
+                    lines.append(f"{n}: {'通る' if fit else '通らない'} — 理由")
+            return {"judgments": "\n".join(lines)}
+        if "verdict" in props:
+            return {"verdict": "問題なし", "issues": "なし"}
+        letters = _re.findall(r"^([A-D]): (.*)$", user, _re.M)
+        if letters:
+            return {"work": "読んだ", "answer": next(c for c, t in letters if t in self.right)}
+        meaning = _re.search(r"意味: .*", user)
+        return {"work": "考えた", "answer": self.words.get(meaning.group() if meaning else "", "")}
+
+    def list_models(self):
+        return [{"name": "gemma4:12b-it-qat", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4"}]
+
+
+def _small_golden(tmp_path, monkeypatch, db_ids):
+    data = golden.load("english")
+    meaning = next(it for it in data["items"] if it["id"] == 911)  # 弾くべき（誤答「探す」も合う）
+    blank = next(it for it in data["items"] if it["expected"] == "pass" and "空所" in it["category"])
+    small = {**{k: v for k, v in data.items() if k != "_path"}, "items": [meaning, blank],
+             "to_add_from_db": {"note": "テスト", "ids": db_ids}}
+    (tmp_path / "golden_set_english.json").write_text(_json.dumps(small, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("GOLDEN_DIR", str(tmp_path))
+    return meaning, blank
+
+
+def test_golden_measurement(settings, sessions, sandbox, client, tmp_path, monkeypatch):
+    """見本集の測定：データベースに残っている to_add_from_db の問題を加え、検証・見直しをかけて、
+    弾いた／通した／要確認を依頼に残す。ストック・問題の記録は変えない。"""
+    meaning, blank = _small_golden(tmp_path, monkeypatch, [990, 991])
+    db_item = {**blank, "id": 990}  # データベースに残っている不合格の下書き（991 はない）
+    x = golden.sample_from_item("english", db_item)
+    with sessions.begin() as s:
+        s.add(Problem(id=990, subject="english", unit=x.unit, template=x.template, format="choice", status="rejected",
+                      question=x.question, choices_json=_json.dumps(x.choices, ensure_ascii=False),
+                      answer_json='{"kind": "choice"}', answer_display=x.answer_display, explanation=x.explanation,
+                      hint=x.hint, params_json=_json.dumps(x.params), reject_code="en_review",
+                      reject_reason="haiku: 誤答も文に合う",
+                      verification_json=_json.dumps([{"step": "解説の見直し", "model": "anthropic/claude-haiku-5-5",
+                                                      "ok": False, "summary": "誤答も合う"}])))
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    assert [i.id for i in gs.samples] == [911, blank["id"], 990]
+    assert gs.db_found == [990] and gs.db_missing == ["#991（データベースにない）"]
+    assert "データベースから加えた問題 1／2 問（加えられなかった問題：#991（データベースにない））" in \
+        client.get("/review").text.replace("\n", "").replace("    ", "")
+    # 測る（検証 1 回＋見直し）。「探す」も合うと判定させる → #911 だけ弾く
+    r = client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:12b-it-qat",
+                                            "verify_count": "1", "with_review": "on", "review_model": "gemma4:e4b"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    llm = GoldenLLM(gs.samples, also_fit={"探す"})
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.kind == "golden" and jb.status == "done" and jb.made == 3, jb.error
+    outcome = {r["id"]: r["outcome"] for r in jb.results}
+    assert outcome == {911: "reject", blank["id"]: "pass", 990: "pass"}
+    assert {"gemma4:12b-it-qat", "gemma4:e4b"} <= set(llm.calls)
+    assert "致命的な欠陥あり 1／2 問を弾いた" in jb.error and "問題なし 0／1 問を誤って弾いた" in jb.error
+    with sessions() as s:  # 問題の記録・状態は変えない
+        p = s.get(Problem, 990)
+        assert p.status == "rejected" and len(p.verification) == 1
+    md = client.get("/review/golden.md?subject=english").text
+    assert f"依頼 #{jb.id}（検証 gemma4:12b-it-qat×1／見直し gemma4:e4b）" in md
+    assert "| #911 | 弾くべき | 正解のほかにも正しい選択肢がある | ○ 弾いた |" in md
+    assert "| #990（DB） | 弾くべき |" in md and "× 通した" in md
+    assert "記録：anthropic/claude-haiku-5-5" in md and "誤りあり" in md
+    assert "解説の見直し（gemma4:e4b）" in md
+    # データベースから加えた問題も入れた見本集（ファイルの差し替え用）
+    exported = _json.loads(client.get("/review/golden.json?subject=english").text)
+    assert [it["id"] for it in exported["items"]] == [911, blank["id"], 990]
+    assert exported["to_add_from_db"]["ids"] == [991]
+    assert exported["items"][2]["options"] == blank["options"]
+    # 依頼の一覧と、作成の比較から外れること
+    assert "見本集での測定" in client.get("/generate").text
+    from quizapp import stock
+    with sessions() as s:
+        assert all(r["job"].id != jb.id for r in stock.job_stats(s, days=0))
+
+
+def test_golden_measurement_resumes(settings, sessions, sandbox, client, tmp_path, monkeypatch):
+    """待機・再起動のあとは、まだ測っていない問題から続ける。"""
+    _small_golden(tmp_path, monkeypatch, [])
+    client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:12b-it-qat",
+                                        "verify_count": "1"})
+    jb = jobs(sessions)[-1]
+    with sessions.begin() as s:
+        s.get(Job, jb.id).results_json = _json.dumps([{"id": 911, "expected": "reject", "outcome": "reject",
+                                                       "steps": []}])
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    llm = GoldenLLM(gs.samples)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.status == "done" and [r["id"] for r in jb.results] == [911, gs.samples[1].id]
+    assert len(llm.calls) == 1  # 測っていない 1 問の検証だけ（見直しなし）
+
+
+def test_golden_measurement_runs_over_the_whole_file(settings, sessions, sandbox, client):
+    """見本集のファイルの全問に、検証・見直し・本文の見直しが最後まで通る（読めない・属性が足りないで落ちない）。"""
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:12b-it-qat", "verify_count": "1",
+                                        "with_review": "on", "review_model": "gemma4:12b-it-qat",
+                                        "with_passage": "on"})
+    make_worker(settings, sessions, sandbox, GoldenLLM(gs.samples)).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.status == "done" and jb.made == len(gs.samples)
+    steps = [st for r in jb.results for st in r["steps"]]
+    assert {st["step"] for st in steps} == {"機械的な点検", "検証", "解説の見直し", "本文の見直し"}
+    assert not [st for st in steps if st["code"] in golden.UNSURE_CODES], \
+        [(r["id"], st["summary"]) for r in jb.results for st in r["steps"] if st["code"] in golden.UNSURE_CODES]
