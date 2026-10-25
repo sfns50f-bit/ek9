@@ -13,7 +13,7 @@
   <p class="muted small">ここで選んだものが全科目の既定値です。科目ごとに変えたい役割は、下の「科目ごとのモデル」で上書きします。
     「作る」画面の初期値は、その科目の設定です。依頼ごとに作る画面で変えられ、依頼したときのモデルで最後まで処理します。</p>
   <p class="small">いまの設定: 作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>／見直し <strong>{{ plan.reviewer if plan.review else "しない" }}</strong></p>
-  {% if plan.same_gen_verify %}<p class="notice warn">作成役と検証役が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>{% endif %}
+  {% if plan.same_gen_verify %}<p class="notice warn">作成役と検証役（または見直し役）が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>{% endif %}
   <form method="post" action="/status/models">
     {% macro model_select(name, current, env_value, allow_none=false) %}
     <select name="{{ name }}">
@@ -61,7 +61,11 @@
         {% if mine.get(role) and mine.get(role) not in model_names %}<option value="{{ mine.get(role) }}" selected>{{ mine.get(role) }}（Ollama に見当たらない）</option>{% endif %}
       </select></label>
     {% endfor %}
-    <p class="notice warn same-model" {{ 'hidden' if not sp.same_gen_verify }}>作成役と検証役が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+    <p class="notice warn same-model" {{ 'hidden' if not sp.same_gen_verify }}>作成役と検証役（または見直し役）が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+    {% for key, spec in sub.verify_options.items() %}{% set cur = mine.get("opt_" ~ key, spec.default) %}
+    <label>検証のやり方：{{ spec.label }}
+      <select name="opt_{{ key }}">{% for v, text in spec.choices.items() %}<option value="{{ v }}" {{ 'selected' if cur == v }}>{{ text }}{{ "（既定）" if v == spec.default }}</option>{% endfor %}</select></label>
+    {% endfor %}
     {% if api.configured %}
     {% set used = today.get(sub.id, {}) %}
     <p class="small">今日の API の利用：${{ "%.3f" | format(used.get("usd", 0)) }}・{{ used.get("calls", 0) | int }} 回</p>

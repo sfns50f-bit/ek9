@@ -41,7 +41,7 @@ class EnglishOracle:
 
     def __init__(self, sessions, *, bad_evidence_once=False, bad_passage_once=False, blind_correct=(),
                  review_verdict="問題なし", passage_verdict="問題なし", bad_questions=(), judge="right",
-                 multiple_calls=None):
+                 multiple_calls=None, absent="museum", awkward=False):
         self.sessions = sessions
         self.bad_evidence_once = bad_evidence_once
         self.bad_passage_once = bad_passage_once
@@ -54,6 +54,8 @@ class EnglishOracle:
         self.judge = judge
         self.multiple_calls = multiple_calls  # judge="multiple" を最初の何回の判定だけにするか（None はいつも）
         self.n_judgments = 0
+        self.absent = absent  # 読解の「本文に書かれていない」の根拠に書く内容（D）
+        self.awkward = awkward  # 語彙の誤答を「文法的には入るが不自然」と判定する（C）
         self.n_sentences = 0
         self.calls = []
         self.label = ""
@@ -116,6 +118,14 @@ class EnglishOracle:
         return self.judge == "multiple" and (self.multiple_calls is None or self.n_judgments <= self.multiple_calls)
 
     def _judgments(self, system, user):
+        text = self._judgments2(system, user)
+        if "自然に入る" in system:  # 3 段階の判定（第 7 回のレビュー C）
+            text = text.replace("通らない", "入らない").replace("通る", "自然に入る")
+            if self.awkward:  # 正解以外の「入らない」を「文法的には入るが不自然」にする
+                text = text.replace("入らない", "文法的には入るが不自然")
+        return text
+
+    def _judgments2(self, system, user):
         if self.judge == "garbled":
             return "よく分かりません"
         items = re.findall(r"^(\d+): (.*)$", user, re.M)
@@ -130,7 +140,8 @@ class EnglishOracle:
                 if self.judge == "relabel" and "park" in text:
                     label = "本文に書かれていない"
                 part = int(re.search(r"answer (\d+)", text).group(1))
-                quote = f' — 引用: "{SENTENCES[(part - 1) % len(SENTENCES)]}"' if label != "本文に書かれていない" else ""
+                quote = (f' — 引用: "{SENTENCES[(part - 1) % len(SENTENCES)]}"' if label != "本文に書かれていない"
+                         else f" — ない内容: {self.absent}" if "ない内容" in system else "")
                 if self.judge == "bad_quote" and label == "裏付けあり":
                     quote = ' — 引用: "This sentence is not in the passage."'
                 lines.append(f"{n}: {label}{quote} — 本文の第1段落")
@@ -884,12 +895,18 @@ def test_spelling_verifier_lists_every_word_that_fits():
     assert not res.ok and res.code == "solver_unreadable" and "合わない答えが続いた" in res.summary
     res = sub.verify(Lister(["shapes", "shape"]), None, "m", _Spell())  # 語形違いは聞き直す
     assert res.ok
-    # 正解のほかに条件に合う語が挙がった：例文に入るかを判定させる
-    llm = Lister(["shape, sharp"], fits="1: 通らない — 意味が合わない")
+    # 正解のほかに条件に合う語が挙がった：例文に入るかを 3 段階で判定させる
+    llm = Lister(["shape, sharp"], fits="1: 入らない — 意味が合わない")
     res = sub.verify(llm, None, "m", _Spell())
     assert res.ok and "sharp は例文に入らない" in res.summary and "What sharp is it?" in llm.users[-1]
-    res = sub.verify(Lister(["shape, style"], fits="1: 通る — 自然"), None, "m", _Spell())
+    res = sub.verify(Lister(["shape, style"], fits="1: 自然に入る — 自然"), None, "m", _Spell())
     assert not res.ok and res.code == "en_verify_multiple" and "style" in res.summary
+    # スペルは不自然でも入れば答えが 2 つになる（#1006 の method と manner。第 7 回のレビュー H）
+    res = sub.verify(Lister(["shape, style"], fits="1: 文法的には入るが不自然 — ふつう言わない"), None, "m", _Spell())
+    assert not res.ok and res.code == "en_verify_multiple"
+    # 2 段階（今の方式）に切り替えたとき
+    res = sub.verify(Lister(["shape, style"], fits="1: 通らない — 合わない"), None, "m", _Spell(), options={"fit3": "off"})
+    assert res.ok
 
 
 # --- 第 5 回のレビューの B（本文の在庫） ------------------------------------------------
@@ -1005,3 +1022,135 @@ def test_review05_more_checks():
          "hint": "第1条を読もう。", "explanation": "本文に植物が育つのを助けるとある。ほかの選択肢は本文と合わない内容である。"}
     issues = _question_issues(q, body)
     assert any("第N条" in x for x in issues) and any("One reason" in x for x in issues)
+
+
+# --- 第 7 回のレビュー（見本集の結果を受けた検証の改善） ------------------------------------
+
+class _Replies:
+    """決まった平文を順に返す LLM（見出しの読み取りは本物の parse_tagged を使う）。"""
+
+    def __init__(self, *texts):
+        self.texts, self.users, self.think = list(texts), [], []
+        self.think_for = None
+
+    def chat_json(self, model, system, user, schema, **kw):
+        from quizapp.llm import parse_tagged
+
+        self.users.append(user)
+        self.think.append(self.think_for(model) if self.think_for else None)
+        return parse_tagged(self.texts.pop(0) if len(self.texts) > 1 else self.texts[0], schema)
+
+
+_CHOICES = [{"text": "集まる", "correct": False}, {"text": "探す", "correct": False},
+            {"text": "見て回る", "correct": True}, {"text": "分け合う", "correct": False}]
+
+
+@pytest.mark.parametrize("reply,ok", [
+    ("4", True), ("4: どれも合わない", True), ("**4**", True), ("なし", True), ("なし\n探すも分け合うも合わない", True),
+    ("[[answer]]\n4\n[[reason]]\nどれも合わない", True), ("[[answer]]\nなし\n[[reason]]\n合う語はない", True),
+    ("2", False), ("答え: 2\n理由: 探すも文に合う", False), ("2. 探す", False), ("[[answer]]\n(2)\n[[reason]]\n合う", False),
+])
+def test_none_fit_reads_replies_without_headings(reply, ok):
+    """正解を抜いた判定（第 7 回のレビュー A）：見出しなしの「4」・「なし」・番号と選択肢の言葉も読む。
+    見本集の測定で、どのモデルでも「判定を読めなかった」になっていた（要確認の大半）。"""
+    from quizapp.subjects.english import prompts
+
+    checks, raws = [], []
+    EnglishSubject()._judge_without_answer(_Replies(reply), "m", prompts.NONE_FIT_MEANING_SYSTEM,
+                                           "I decided to [ browse ] the shelves.", _CHOICES, checks, raws)
+    assert checks[0][0] == "正解を抜いた判定" and checks[0][1] is ok, checks
+    if not ok:
+        assert "探す" in checks[0][2]
+
+
+def test_none_fit_retries_once_then_needs_a_person():
+    """選択肢ごとに説明を書いた長い返事は、最初の数字を拾って取り違えないよう読まずに 1 回だけやり直す。"""
+    from quizapp.subjects.english import prompts
+
+    rambling = "1: 集まる → 合わない\n2: 探す → 合わない\n3: 分け合う → 合わない\nよって 4"
+    llm = _Replies(rambling, "4")
+    checks, raws = [], []
+    EnglishSubject()._judge_without_answer(llm, "m", prompts.NONE_FIT_MEANING_SYSTEM, "x", _CHOICES, checks, raws)
+    assert checks == [("正解を抜いた判定", True, "ほかの選択肢はどれも合わない")]
+    assert "前の出力は形が違って読めませんでした" in llm.users[1] and "[[answer]] の下に番号を 1 つだけ" in llm.users[0]
+    checks = []
+    EnglishSubject()._judge_without_answer(_Replies(rambling), "m", prompts.NONE_FIT_MEANING_SYSTEM, "x", _CHOICES,
+                                           checks, [])
+    assert checks[0][1] is None  # 読めなければ「読めなかった」（要確認）
+
+
+def test_spelling_list_without_headings_is_read():
+    """スペルの「条件に合う語」も、見出しなしで語だけ返す返事を読む（#642 の「出力を読めません」）。"""
+    res = EnglishSubject().verify(_Replies("shape"), None, "m", _Spell())
+    assert res.ok
+
+
+def test_vocab_three_levels_do_not_reject_awkward_words(settings, sessions, sandbox):
+    """語彙の判定を 3 段階に（第 7 回のレビュー C）：「文法的には入るが不自然」な誤答では弾かず、記録に残す（#987）。"""
+    llm = EnglishOracle(sessions, awkward=True)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
+    p = problems(sessions, status="ready")[0]
+    verify = next(e for e in p.verification if e["step"] == "検証")
+    assert "文法的には入るが不自然" in verify["detail"]
+
+
+def test_vocab_two_levels_can_be_chosen(settings, sessions, sandbox):
+    """今の方式（2 段階）にも切り替えられる。依頼に記録した検証のやり方で最後まで検証する。"""
+    jid = add_job(sessions, subject="english", scope="tmpl:en-vocab-blank", count=1,
+                  options_json='{"fit3": "off", "reading_strict": "on", "reading_think": "model"}')
+    llm = EnglishOracle(sessions)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert job(sessions, jid).options["fit3"] == "off"
+    p = problems(sessions, status="ready")[0]
+    assert "○ 正解が合うか：正解「" in next(e for e in p.verification if e["step"] == "検証")["detail"]
+
+
+def test_reading_wrong_options_need_a_reason(settings, sessions, sandbox):
+    """読解の誤答ごとに否定の根拠（食い違いの引用か、本文にない中心の内容）を書かせる（第 7 回のレビュー D）。
+    書けない・「ない内容」が実は本文にある誤答は、裏付けられる可能性ありとして要確認にする（#860 の dopamine）。"""
+    llm = EnglishOracle(sessions, absent="library")  # 「本文にない」と言った library が本文にある
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
+    assert problems(sessions, status="ready") == []
+    p = problems(sessions, status="rejected")[0]
+    assert p.reject_code == "needs_check" and "ない内容「library」は本文にある" in p.reject_reason
+    verify = next(e for e in p.verification if e["step"] == "検証")
+    assert "× 誤答の否定の根拠" in verify["detail"]
+
+
+def test_reading_reason_check_can_be_turned_off(settings, sessions, sandbox):
+    add_job(sessions, subject="english", scope="tmpl:en-notice", count=1,
+            options_json='{"fit3": "on", "reading_strict": "off", "reading_think": "model"}')
+    llm = EnglishOracle(sessions, absent="library")
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert problems(sessions, status="ready")
+
+
+def test_reading_think_applies_only_to_reading_judgments():
+    """読解の選択肢の判定だけ思考モードを決められる（第 7 回のレビュー E）。終わったら元に戻す。"""
+    class P:
+        template = "en-notice"
+        format = "choice"
+        question = "What is true?"
+        passage = type("Pa", (), {"body": "The library opens at nine. It closes at five."})()
+        choices = [{"text": "It opens at nine.", "correct": True, "mistake": None},
+                   {"text": "It opens at ten.", "correct": False, "mistake": "detail"}]
+
+    judged = ('1: 裏付けあり — 引用: "The library opens at nine." — 理由\n'
+              '2: 細部の取り違え — 引用: "The library opens at nine." — 理由')
+    llm = _Replies(f"[[judgments]]\n{judged}")
+    llm.think_for = original = (lambda m: False)
+    shuffled = random.getstate()
+    random.seed(1)
+    res = EnglishSubject().verify(llm, None, "m", P(), options={"reading_think": "on", "reading_strict": "on"})
+    random.setstate(shuffled)
+    assert llm.think == [True] and llm.think_for is original
+    assert res.ok or res.code != "solver_unreadable"
+
+
+def test_spelling_rivals_are_not_asked():
+    """スペル：同じ最初の文字・文字数・品詞で意味が重なる語がある語は出さない（第 7 回のレビュー H）。"""
+    from quizapp.subjects.english import spelling_rivals
+
+    severe = next(w for w in WORDS if w.word == "severe")
+    assert spelling_rivals(severe) == ["strict"]
+    assert spelling_rivals(next(w for w in WORDS if w.word == "decide")) == []

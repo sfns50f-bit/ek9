@@ -44,7 +44,7 @@
     {% endfor %}
     <label>作成役 {{ model_choice(p ~ "gen_model", plan.gen_model) }}</label>
     <label>検証役 {{ model_choice(p ~ "verify_model", plan.verify_model) }}</label>
-    <p class="notice warn same-model" {{ 'hidden' if not plan.same_gen_verify }}>作成役と検証役が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+    <p class="notice warn same-model" {{ 'hidden' if not plan.same_gen_verify }}>作成役と検証役（または見直し役）が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
     <label>検証役に解かせる回数（全部一致したら合格）
       <select name="{{ p }}verify_count">{% for n in range(1, max_verify + 1) %}<option value="{{ n }}" {{ 'selected' if n == plan.verify_count }}>{{ n }} 回</option>{% endfor %}</select></label>
     <label>別系統の検証役（1 回だけ追加） {{ model_choice(p ~ "verify_model_2", plan.verify_model_2, true) }}</label>

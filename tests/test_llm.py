@@ -355,6 +355,9 @@ def test_single_field_reply_without_heading_is_read():
     one = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
     assert parse_tagged("B", one) == {"answer": "B"}
     assert parse_tagged("<think>…</think>\nAnswer: X", one) == {"answer": "Answer: X"}
+    # 答えの項目が 1 つだけ必須なら、見出しなしの返事をその項目とみなす（第 7 回のレビュー A：正解を抜いた判定の「4」）
     two = {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}, "required": ["a"]}
+    assert parse_tagged("4\n理由: どれも合わない", two) == {"a": "4\n理由: どれも合わない"}
+    both = {**two, "required": ["a", "b"]}
     with pytest.raises(LLMError):
-        parse_tagged("B", two)
+        parse_tagged("B", both)

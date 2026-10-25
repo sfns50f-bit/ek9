@@ -86,8 +86,9 @@ class ModelPlan:
 
     @property
     def same_gen_verify(self) -> bool:
-        """作成役と検証役が同じモデル（見落としが重なりやすいので画面で注意を出す）。"""
-        return self.gen_model == self.verify_model
+        """作成役と検証役（見直しをするときは見直し役も）が同じモデル（見落としが重なりやすいので画面で注意を出す。
+        第 7 回のレビュー F で見直し役も含めた）。"""
+        return self.gen_model == self.verify_model or (self.review and self.gen_model == self.reviewer)
 
 
 def overrides(session: Session) -> dict[str, str]:
@@ -115,6 +116,24 @@ def save_subject_settings(session: Session, subject_id: str, values: dict[str, s
     if not data[subject_id]:
         data.pop(subject_id)
     kv_set(session, "subject_models", dumps(data))
+
+
+def verify_options(session: Session, subject: object | None) -> dict[str, str]:
+    """科目の検証のやり方（Subject.verify_options の既定値に、科目ごとの設定 opt_<キー> を重ねたもの）。"""
+    opts = getattr(subject, "verify_options", {}) or {}
+    mine = subject_settings(session).get(getattr(subject, "id", ""), {})
+    out = {}
+    for key, spec in opts.items():
+        value = mine.get(f"opt_{key}", spec.get("default", ""))
+        out[key] = value if value in spec.get("choices", {}) else spec.get("default", "")
+    return out
+
+
+def option_label(subject: object | None, options: dict[str, str]) -> str:
+    """依頼に記録した検証のやり方の短い説明（書き出し・依頼の一覧用）。"""
+    opts = getattr(subject, "verify_options", {}) or {}
+    return "／".join(f"{spec['label']}：{spec['choices'].get(options.get(key, ''), options.get(key, ''))}"
+                     for key, spec in opts.items() if key in options)
 
 
 def daily_limits(session: Session, subject_id: str) -> tuple[float, int]:
@@ -151,7 +170,8 @@ def model_plan(settings: Settings, session: Session, subject: object | None = No
         mine = subject_settings(session).get(getattr(subject, "id", ""), {})
         gen = mine.get("gen") or gen
         verify = mine.get("verify") or verify
-        review_model = mine.get("review") or review_model
+        # 見直し役：科目の設定 → 全体の設定 → 科目の既定（英語は gemma4:12b。第 7 回のレビュー F）→ 検証役
+        review_model = mine.get("review") or review_model or getattr(subject, "default_models", {}).get("review", "")
         extra = [(role, mine[role]) for role in getattr(subject, "model_roles", {}) if mine.get(role)]
     return ModelPlan(
         gen_model=gen,

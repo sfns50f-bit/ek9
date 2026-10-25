@@ -48,6 +48,7 @@ from .runtime import (
     plan_for_job,
     provider_of,
     record_think,
+    verify_options,
     resolve_think,
     think_from_record,
     think_settings,
@@ -57,6 +58,11 @@ from .subjects import get_subject
 from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit, VerifyResult
 
 log = logging.getLogger("worker")
+
+
+def _opts(subject: Subject, options: dict[str, str] | None) -> dict[str, Any]:
+    """検証のやり方（Subject.verify_options）を持つ科目にだけ options を渡す（持たない科目は verify を変えなくてよい）。"""
+    return {"options": options or {}} if subject.verify_options else {}
 
 OPEN_STATUSES = ("pending", "running", "waiting")
 CANCEL_STATUSES = ("cancelling", "cancelled")
@@ -397,15 +403,19 @@ class Worker:
             if not recorded:
                 record_think(self.settings, s, row, plan)
                 recorded = row.think
+            if row.options_json in ("", "{}") and subject is not None and subject.verify_options:
+                # 検証のやり方の記録がない依頼（前の版・画面を通らない依頼）は、取りかかった時点の設定を記録する
+                row.options_json = dumps(verify_options(s, subject))
+            options = row.options
         if hasattr(self.llm, "think_for"):
             env_think = self.settings.think
             self.llm.think_for = lambda m: (think_from_record(recorded[m]) if m in recorded
                                             else resolve_think(m, choices, env_think))
         if job.kind == "review":
-            self._rereview(job_id, plan.reviewer)
+            self._rereview(job_id, plan.reviewer, options)
             return
         if job.kind == "golden":
-            self._golden(job_id, plan)
+            self._golden(job_id, plan, options)
             return
         budget = TEST_ATTEMPTS if job.is_test else job.count * self.settings.max_attempts
         done_statuses = ("test",) if job.is_test else ("ready",)
@@ -456,7 +466,7 @@ class Worker:
                 Problem.job_id == job_id, Problem.status == "rejected",
                 Problem.reject_code.in_(("solver_mismatch", "solver_unreadable", "needs_check")))).scalar_one() > 0
 
-    def _rereview(self, job_id: int, model: str) -> None:
+    def _rereview(self, job_id: int, model: str, options: dict[str, str] | None = None) -> None:
         """見直しだけをやり直す依頼：選んだ問題を指定のモデルで見直し、結果を各問題の記録に足す。
 
         合否・選択肢は変えない（見直し役のモデルを比べる・前に作った問題を点検し直すため。「問題あり」と出た問題は
@@ -482,7 +492,8 @@ class Worker:
             self.set_status(f"依頼 #{job_id} — {text}", job_id)
             self._label("見直し")
             try:
-                res = subject.rereview(self.llm, model, problem) or VerifyResult(True, "この科目は見直しに対応していません")
+                res = (subject.rereview(self.llm, model, problem, **_opts(subject, options))
+                       or VerifyResult(True, "この科目は見直しに対応していません"))
             except LLMError as exc:
                 res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
                                    raw=getattr(exc, "raw", ""))
@@ -532,7 +543,7 @@ class Worker:
         self._finish(job_id, "done", f"{len(mine)} 問を {model} で見直しました（誤りの指摘 {flagged} 問）。"
                                      "結果は問題検証モードの「見直しのやり直しで指摘された問題」と書き出しで見られます")
 
-    def _golden(self, job_id: int, plan: ModelPlan) -> None:
+    def _golden(self, job_id: int, plan: ModelPlan, options: dict[str, str] | None = None) -> None:
         """見本集での測定（第 6 回のレビューの 5 章）：見本集の問題に、機械的な点検・検証（設定の回数）・見直し
         （と本文の見直し）をかけ、弾いた／通した／要確認を依頼の results に残す。ストックや問題の記録は変えない。
         どの段階も最後までかける（どこで拾えたかを比べるため）。待機・再起動のあとは、まだ測っていない問題から続ける。
@@ -561,7 +572,7 @@ class Worker:
             issues = subject.text_issues(x)
             steps.append({"step": "機械的な点検", "model": "", "ok": not issues, "code": "" if not issues else "text_issues",
                           "summary": "／".join(issues)[:400]})
-            calls: list[tuple[str, str, Any]] = [("検証", m, lambda m=m: subject.verify(self.llm, self.sandbox, m, x))
+            calls: list[tuple[str, str, Any]] = [("検証", m, lambda m=m: subject.verify(self.llm, self.sandbox, m, x, **_opts(subject, options)))
                                                  for m in plan.verify_runs]
             if job.explanation_review:
                 calls.append(("解説の見直し", plan.reviewer, lambda: subject.review(self.llm, plan.reviewer, x)))
@@ -580,7 +591,8 @@ class Worker:
                 if res is None:
                     continue
                 steps.append({"step": step, "model": model, "ok": res.ok, "code": "" if res.ok else res.code,
-                              "summary": res.summary[:400], "detail": res.detail[:2000]})
+                              "summary": res.summary[:400], "detail": res.detail[:2000],
+                              "raw": res.raw[:3000]})  # 生の出力（読めなかった原因を後で確かめる。第 7 回のレビュー A）
             result = {"id": sid, "expected": x.expected, "defect_type": x.defect_type,
                       "outcome": golden.outcome_of(steps), "steps": steps}
             with self.sessions.begin() as s:
@@ -672,7 +684,7 @@ class Worker:
                         if step == REVIEW_STEP:
                             res = subject.review(self.llm, model, problem) or VerifyResult(True, "見直しなし")
                         else:
-                            res = subject.verify(self.llm, self.sandbox, model, problem)
+                            res = subject.verify(self.llm, self.sandbox, model, problem, **_opts(subject, job.options))
                         ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
                         if res.updates:
                             updates[pid] = res.updates

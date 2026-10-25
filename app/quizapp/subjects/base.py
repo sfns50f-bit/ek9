@@ -131,6 +131,7 @@ REJECT_CODES = {
     "solver_unreadable": "検証役の答えが読み取れなかった",
     "duplicate": "既存の問題と同じ数値",
     "needs_check": "検証の判定が割れた（要確認。問題検証モードで確かめてストックに入れるか決める）",
+    "checked_rejected": "要確認を確かめて捨てた",
 }
 
 
@@ -178,6 +179,12 @@ class Subject:
     # 検証の判定が割れたとき（設定の回数のうち一部だけ合格）、すぐ捨てずに「要確認」（needs_check）にするか。
     # True の科目は、検証の不合格が出ても検証の回数を最後までかける（英語：第 6 回のレビュー 2-4）
     verify_split_check: bool = False
+    # 検証のやり方の切り替え（第 7 回のレビュー：見本集で今の方式と新しい方式を並べて測るため）。
+    # {キー: {"label": 名前, "choices": {値: 説明}, "default": 既定の値}}。「状態 → モデルと思考モード」の科目ごとの
+    # 設定で変えられ、依頼に記録して（jobs.options）verify(options=…) に渡す
+    verify_options: dict[str, dict[str, Any]] = {}
+    # 役割ごとの既定のモデル（全体・科目の設定がないときに使う。英語の見直し役＝gemma4:12b など）
+    default_models: dict[str, str] = {}
 
     test_format: str = ""
 
@@ -189,7 +196,8 @@ class Subject:
         """
         raise NotImplementedError
 
-    def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any) -> VerifyResult:
+    def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any,
+               options: dict[str, str] | None = None) -> VerifyResult:
         """検証役に模範解答を見せずに 1 回解かせ、正解と突き合わせる。"""
         raise NotImplementedError
 
@@ -202,7 +210,8 @@ class Subject:
         """
         return None
 
-    def rereview(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
+    def rereview(self, llm: LLM, model: str, problem: Any,
+                 options: dict[str, str] | None = None) -> VerifyResult | None:
         """見直しだけをやり直す依頼で、前に作った問題を点検し直す。ふつうは見直しと同じ。"""
         return self.review(llm, model, problem)
 

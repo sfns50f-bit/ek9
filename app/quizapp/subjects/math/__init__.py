@@ -176,7 +176,8 @@ class MathSubject(Subject):
 
     # --- 検証 ---------------------------------------------------------------
 
-    def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any) -> VerifyResult:
+    def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any,
+               options: dict[str, str] | None = None) -> VerifyResult:
         from ...llm import LLMError
 
         ans = problem.answer
