@@ -234,7 +234,8 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
         if p.choices:
             lines += ["### 選択肢", ""]
             for i, c in enumerate(p.choices):
-                mark = "（正解）" if c.get("correct") else f"（誤答：{mistake_label(p, c.get('mistake'))}）"
+                doubt = f"／見直しでは「{mistake_label(p, c['label_doubt'])}」" if c.get("label_doubt") else ""
+                mark = "（正解）" if c.get("correct") else f"（誤答：{mistake_label(p, c.get('mistake'))}{doubt}）"
                 lines.append(f"{'ABCDEFGH'[i]}. {c.get('text', '')} {mark}")
             lines.append("")
         lines += ["### 正解", "", p.answer_display or "—", ""]

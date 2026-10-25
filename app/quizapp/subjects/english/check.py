@@ -143,6 +143,42 @@ def bad_hosts(text: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+_STOP = frozenset("""
+about above after again also although among another because been before being below between both could
+does doing down during each even every from have having here into just like many more most much must only
+other over same should since some such than that their them then there these they this those through very
+want were what when where which while will with would your yours the and for are was not but can did had
+has her him his its our out own she who why how all any few nor off too yet one two three four five
+""".split())
+
+
+def _stem(w: str) -> str:
+    for suf in ("ing", "ed", "es", "s"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            return w[: -len(suf)]
+    return w
+
+
+def content_coverage(option: str, passage: str) -> tuple[float, list[str]]:
+    """選択肢の中心の語（4 文字以上で、ありふれた語でないもの）のうち、本文にある語の割合と、その語。
+
+    「本文に書かれていない」という誤答の種類が正しいかを機械的に確かめるのに使う（第 5 回のレビュー C-3）。
+    中心の語が 2 つ未満なら (0, [])（判断しない）。"""
+    have = {_stem(w.lower()) for w in words(passage)}
+    keys = [w.lower() for w in words(option) if len(w) >= 4 and w.lower() not in _STOP]
+    keys = list(dict.fromkeys(keys))
+    if len(keys) < 2:
+        return 0.0, []
+    found = [w for w in keys if _stem(w) in have]
+    return len(found) / len(keys), found
+
+
+def stated_in_passage(option: str, passage: str) -> bool:
+    """選択肢の中心の語のほとんど（6 割以上・2 語以上）が本文にある（＝「本文に書かれていない」ではない）。"""
+    share, found = content_coverage(option, passage)
+    return share >= 0.6 and len(found) >= 2
+
+
 def first_sentence(text: str) -> str:
     body = (text or "").strip()
     return re.split(r"(?<=[。．！？!?])", body, maxsplit=1)[0].strip()

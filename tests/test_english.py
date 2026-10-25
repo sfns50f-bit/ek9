@@ -633,16 +633,32 @@ def test_review_passes_and_records_each_check(settings, sessions, sandbox):
     assert entry["ok"] and "○ 正解が合うか" in entry["detail"] and "○ 解説・例文" in entry["detail"]
 
 
-def test_review_relabels_wrong_mistake_types(settings, sessions, sandbox):
-    """誤答の種類が見直しの判定と違えば、不合格にせずに付け直す（C-3）。"""
+def test_review_keeps_label_when_judgments_disagree(settings, sessions, sandbox):
+    """見直し役の判定が作成役の誤答の種類と違うだけでは付け直さず、食い違いを記録して書き出しに出す（第 5 回のレビュー C）。"""
     llm = EnglishOracle(sessions, judge="relabel")
     run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2)
     ready = problems(sessions, status="ready")
     assert len(ready) == 2
     for p in ready:
         park = next(c for c in p.choices if "park" in c["text"])
-        assert park["mistake"] == "not_stated"  # 作成役の申告は contradicts
-        assert any("誤答の種類を付け直した" in e["summary"] for e in p.verification)
+        assert park["mistake"] == "contradicts" and park["label_doubt"] == "not_stated"  # 作成役の申告のまま
+        assert any("判定が分かれた" in (e.get("detail") or "") for e in p.verification)
+    md = TestClient(create_app(settings, sessions, sandbox)).get("/review/export.md?subject=english").text
+    assert "（誤答：本文と食い違う／見直しでは「本文に書かれていない」）" in md
+
+
+def test_not_stated_label_is_checked_mechanically():
+    """「本文に書かれていない」の誤答の中心の語が本文にあれば、作成のときに直させ、見直しでは付け直す（C-3）。"""
+    from quizapp.subjects.english import _question_issues
+
+    body = "Ocean Life\n\nThe aquarium has many fish and turtles.\n\nVisitors can see a coral reef where fish live and hide."
+    q = {"question": "What can visitors see?", "options": ["A coral reef", "A home for fish in the coral reef",
+                                                            "Tickets for twenty dollars", "A large dinosaur"],
+         "answer": 0, "wrong": {"B": "not_stated", "C": "not_stated", "D": "not_stated"},
+         "evidence": "Visitors can see a coral reef where fish live and hide.", "hint": "第2段落を読もう。",
+         "explanation": "本文にサンゴ礁が見られるとある。ほかの選択肢は本文と合わない内容である。"}
+    issues = _question_issues(q, body)
+    assert len(issues) == 1 and "A home for fish" in issues[0] and "not_stated" in issues[0]
 
 
 def test_unreadable_judgments_are_retried_then_rejected(settings, sessions, sandbox):

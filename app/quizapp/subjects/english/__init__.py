@@ -112,6 +112,11 @@ def _question_issues(q: dict[str, Any], passage: str, *, check_paragraph: bool =
     wrong = [c for i, c in enumerate(LETTERS) if i != q["answer"]]
     if any(q["wrong"].get(c) not in READING_MISTAKES for c in wrong):
         out.append("誤答の種類（Wrong: B=not_stated のような行）が足りない・種類の記号が違う")
+    for c in wrong:  # 「本文に書かれていない」なのに、中心の語が本文にある（第 5 回のレビュー C-3）
+        option = q["options"][LETTERS.index(c)]
+        if q["wrong"].get(c) == "not_stated" and check.stated_in_passage(option, passage):
+            out.append(f"誤答「{option[:60]}」の種類が not_stated だが、中心の語が本文にある"
+                       "（本文と食い違うなら contradicts、一部だけ違うなら partial、細部の違いなら detail に直す）")
     if not q["evidence"]:
         out.append("根拠の文（Evidence:）がない")
     elif not check.contains(passage, q["evidence"]):
@@ -853,18 +858,30 @@ class EnglishSubject(Subject):
         checks.append(("正解が 1 つか", not also,
                        "ほかに裏付けのある選択肢はない" if not also
                        else "「" + "」「".join(choices[i]["text"][:60] for i in also) + "」も本文で裏付けられる（正解が複数）"))
-        # 誤答の種類（作成役の申告）が判定と違えば付け直す（不合格にはしない）
-        fixed = []
-        new_choices = []
+        # 誤答の種類：見直し役の判定はモデルごとにばらつく（第 5 回のレビュー C-1）ので、判定が違うだけでは付け直さない。
+        # 付け直すのは機械的な確認が見直し役を支持するときだけ（作成役の「本文に書かれていない」なのに中心の語が本文にある）。
+        # それ以外の食い違いは記録に残し（label_doubt）、書き出しに出す（C-3）
+        fixed, doubts, new_choices = [], [], []
         for i, c in enumerate(choices):
             code = prompts.CHOICE_LABELS.get(got[i][0], "")
-            if not c.get("correct") and code and code != c.get("mistake"):
-                fixed.append(f"「{c['text'][:40]}」{MISTAKES.get(str(c.get('mistake')), c.get('mistake'))}→{MISTAKES[code]}")
+            mine = c.get("mistake")
+            if c.get("correct") or not code or code == mine:
+                new_choices.append({k: v for k, v in c.items() if k != "label_doubt"})
+                continue
+            stated = check.stated_in_passage(c["text"], passage)
+            if mine == "not_stated" and stated and code != "not_stated":
+                fixed.append(f"「{c['text'][:40]}」{MISTAKES.get(str(mine), mine)}→{MISTAKES[code]}")
                 c = {**c, "mistake": code}
+                c.pop("label_doubt", None)
+            else:
+                doubts.append(f"「{c['text'][:40]}」作成役 {MISTAKES.get(str(mine), mine)}／見直し {MISTAKES[code]}")
+                c = {**c, "label_doubt": code}
             new_choices.append(c)
-        if fixed:
+        if fixed or doubts:
             updates["choices"] = new_choices
-            checks.append(("誤答の種類", True, "付け直した：" + "、".join(fixed)))
+            text = "／".join(x for x in ("付け直した：" + "、".join(fixed) if fixed else "",
+                                         "判定が分かれた（そのまま）：" + "、".join(doubts) if doubts else "") if x)
+            checks.append(("誤答の種類", True, text))
 
     def _judge_fit(self, llm: LLM, model: str, system: str, user: str, choices: list[dict[str, Any]], what: str,
                    checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:
@@ -918,6 +935,11 @@ class EnglishSubject(Subject):
             out += check.choice_issues(texts, correct, english=problem.template != "en-vocab-meaning")
             if check.letter_reference(problem.explanation) or check.letter_reference(problem.hint):
                 out.append("解説・ヒントが選択肢を記号で呼んでいる")
+        if problem.passage is not None:
+            for c in problem.choices:
+                if not c.get("correct") and c.get("mistake") == "not_stated" and check.stated_in_passage(
+                        c.get("text", ""), problem.passage.body):
+                    out.append(f"誤答「{c.get('text', '')[:40]}」の種類が「本文に書かれていない」だが、中心の語が本文にある")
         if problem.template == "en-vocab-meaning" and (check.blank_words(problem.hint)
                                                          or check.blank_words(problem.explanation)):
             out.append("解説・ヒントに「空所」「入る」などの言葉がある（この問題の例文に空所はない）")
