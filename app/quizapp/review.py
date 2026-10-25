@@ -24,6 +24,9 @@ STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストッ�
             "reflagged": "ストックのうち見直しのやり直しで誤りを指摘された問題",
             "deleted": "削除した問題", "rejected": "検証で不合格"}
 REREVIEW_STEP = "見直しのやり直し"  # worker.REREVIEW_STEP と同じ（web は worker を読み込まない）
+PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
+# 本文の記録（passages.log）から書き出しに出す段階（B-3）
+_PASSAGE_STEPS = ("本文の点検", "本文の見直し", "使い回す前の本文の見直し", PASSAGE_REREVIEW_STEP)
 MAX_REREVIEW = 200  # 1 回の見直しのやり直しで見る問題の数の上限
 TEXT_FIELDS = ("question", "hint", "explanation")
 
@@ -72,12 +75,13 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
 
 def rereviews(problem: Problem) -> list[dict[str, Any]]:
     """見直しのやり直しの記録（古い順）。"""
-    return [e for e in problem.verification if e.get("step") == REREVIEW_STEP]
+    return [e for e in problem.verification if e.get("step") in (REREVIEW_STEP, PASSAGE_REREVIEW_STEP)]
 
 
 def reflagged(problem: Problem) -> bool:
     """見直しのやり直しのどれかで誤りを指摘された（出力が読めなかっただけのものは除く）。"""
-    return any(not e.get("ok") and e.get("code") != "llm_output" for e in rereviews(problem))
+    return any(not e.get("ok") and e.get("code") not in ("llm_output", "en_review_unread")
+               for e in rereviews(problem))
 
 
 def text_issues(problem: Problem) -> list[str]:
@@ -161,7 +165,7 @@ def think_text(problem: Problem) -> str:
 
 
 # 書き出しに出す記録の段階（作成の途中の細かい記録は出さない）
-_EXPORT_STEPS = ("文章", "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
+_EXPORT_STEPS = ("文章", "使い回す前の本文の見直し", PASSAGE_REREVIEW_STEP, "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
                  "検証", "解説の見直し", REREVIEW_STEP, "設問")
 
 
@@ -177,6 +181,16 @@ def verification_lines(problem: Problem) -> list[str]:
         label = codes.get(problem.reject_code or "", problem.reject_code or "—")
         out.append(f"- **不合格**：{label}（{(problem.reject_reason or '').strip()[:300]}）")
     shown = 0
+    # 本文の記録（本文を作ったとき・使い回す前・やり直しの見直し）。設問の記録と同じものは出さない（B-3）
+    passage = problem.passage
+    if passage is not None:
+        mine = {(e.get("step"), e.get("summary")) for e in problem.verification}
+        for e in passage.log:
+            if e.get("step") in _PASSAGE_STEPS and (e.get("step"), e.get("summary")) not in mine:
+                model = f"（{e['model']}）" if e.get("model") else ""
+                out.append(f"- {'○' if e.get('ok') else '×'} 本文：{e.get('step')}{model}："
+                           f"{str(e.get('summary', '')).strip()[:300]}")
+                shown += 1
     for e in problem.verification:
         if e.get("step") not in _EXPORT_STEPS:
             continue
@@ -216,11 +230,13 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
                   f"- 思考モード：{think_text(p)}", ""]
         if p.passage is not None and p.passage.body:
             lines += ["### 本文", "", p.passage.body.strip(), ""]
-        lines += ["### 問題文", "", p.question.strip(), ""]
+        question = p.question.strip() or "（作成の途中で不合格になったので、問題文はありません。下の記録に作成役の出力があります）"
+        lines += ["### 問題文", "", question, ""]
         if p.choices:
             lines += ["### 選択肢", ""]
             for i, c in enumerate(p.choices):
-                mark = "（正解）" if c.get("correct") else f"（誤答：{mistake_label(p, c.get('mistake'))}）"
+                doubt = f"／見直しでは「{mistake_label(p, c['label_doubt'])}」" if c.get("label_doubt") else ""
+                mark = "（正解）" if c.get("correct") else f"（誤答：{mistake_label(p, c.get('mistake'))}{doubt}）"
                 lines.append(f"{'ABCDEFGH'[i]}. {c.get('text', '')} {mark}")
             lines.append("")
         lines += ["### 正解", "", p.answer_display or "—", ""]
@@ -228,6 +244,82 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
         lines += ["### 解説", "", (p.explanation or "—").strip(), ""]
         lines += verification_lines(p) + ["---", ""]
     return "\n".join(lines)
+
+
+def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], rejected: list[Problem],
+                     codes: dict[str, str], period: str,
+                     when: Callable[[datetime], str] = lambda dt: dt.strftime("%Y/%m/%d %H:%M")) -> str:
+    """「検証の成績」の内容（集計表・依頼ごとの比較・不合格の一覧と生の出力）を Markdown に（第 5 回のレビュー E-1）。"""
+    def label(code: str) -> str:
+        return codes.get(code, code)
+
+    out = ["# 検証の成績", "", f"期間：{period}（検証のテストは含めない）", "",
+           f"作成 {stats['total']} 問のうち合格 {stats['passed']} 問（{stats['pass_rate']}%）", "",
+           "## 作成役のモデルごと", "", "| 作成役 | 作った数 | 合格 | 不合格の内訳 |", "|---|---|---|---|"]
+    out += [f"| {g['model']} | {g['total']} | {g['passed']}（{g['rate']}%） | "
+            + ("、".join(f"{label(c)} {n}" for c, n in g["codes"]) or "—") + " |" for g in stats["by_gen"]]
+    out += ["", "## 検証役のモデルごと", "", "| 検証役 | 検証した数 | 弾いた数 | 弾いた割合 |", "|---|---|---|---|"]
+    out += [f"| {m['model']} | {m['reached']} | {m['rejected']} | {m['rate']}% |" for m in stats["by_model"]]
+    out += ["", "## 不合格の理由", "", "| 理由 | 数 |", "|---|---|"]
+    out += [f"| {label(c)} | {n} |" for c, n in stats["by_code"]]
+    out += ["", "## 依頼ごとの比較", "", "| 依頼 | 作成役 | 検証役 | 合格／作成 | 作成 1 問（秒） | 検証 1 問（秒） | 読み込み（秒） | API（ドル） | 不合格 |",
+            "|---|---|---|---|---|---|---|---|---|"]
+    for r in job_rows:
+        j = r["job"]
+        gen = j.gen_model or (r["old_models"][0] if r.get("old_models") else "—")
+        ver = (f"{j.verify_model} ×{j.verify_count}" if j.verify_model else
+               (r["old_models"][1] if r.get("old_models") else "—"))
+        rate = f"（{r['pass_rate']}%）" if r.get("pass_rate") is not None else ""
+        out.append(f"| #{j.id} | {gen} | {ver} | {r['made']}／{r['tried']}{rate} | {r['gen_per'] if r['gen_per'] is not None else '—'} "
+                   f"| {r['verify_per'] if r['verify_per'] is not None else '—'} | {r['load_s']} | "
+                   f"{'%.3f' % j.api_cost_usd if j.api_cost_usd else '—'} | "
+                   + ("、".join(f"{label(c)} {n}" for c, n in r["codes"]) or "—") + " |")
+    out += ["", "## 不合格の一覧", ""]
+    for p in rejected:
+        fail = next((e for e in reversed(p.verification) if not e.get("ok")), {})
+        out += [f"### #{p.id} {label(p.reject_code or '')}（{when(p.created_at) if p.created_at else '—'}）", "",
+                f"- 作成役：{p.gen_model or '—'}／落ちた段階：{fail.get('step', '—')}（{fail.get('model', '—')}）",
+                f"- 理由：{(p.reject_reason or '').strip()[:400]}"]
+        if p.question:
+            out.append(f"- 問題文：{p.question.strip()[:300]}")
+        if fail.get("raw"):
+            out += ["", "```", str(fail["raw"])[:1500], "```"]
+        out.append("")
+    return "\n".join(out)
+
+
+def rereview_table(problems: list[Problem]) -> str:
+    """見直しのやり直しの結果を、問題 × 依頼（見直し役）の表に（○ 誤りなし・× 誤りあり・？ 読めなかった。E-2）。"""
+    cols: dict[tuple[int, str], None] = {}
+    cells: dict[tuple[int, int, str], str] = {}
+    for p in problems:
+        for e in rereviews(p):
+            key = (int(e.get("job") or 0), str(e.get("model") or ""))
+            cols.setdefault(key, None)
+            unread = e.get("code") in ("llm_output", "en_review_unread")
+            mark = "？" if unread else ("○" if e.get("ok") else "×")
+            tag = "本文" if e.get("step") == PASSAGE_REREVIEW_STEP else "設問"
+            cells[(p.id, key[0], tag)] = mark
+    keys = sorted(cols)
+    out = ["# 見直しのやり直しの比較", "", "○ 誤りなし／× 誤りあり／？ 読めなかった（本文の見直しもしたときは「設問 本文」の順）", ""]
+    out.append("| 問題 | 小単元 | " + " | ".join(f"#{j} {m}" for j, m in keys) + " |")
+    out.append("|---|---|" + "---|" * len(keys))
+    for p in problems:
+        if not any((p.id, j, "設問") in cells for j, _m in keys):
+            continue
+        row = []
+        for j, _m in keys:
+            mark = cells.get((p.id, j, "設問"), "—")
+            if (p.id, j, "本文") in cells:
+                mark += " " + cells[(p.id, j, "本文")]
+            row.append(mark)
+        out.append(f"| #{p.id} | {labels(p)['subunit']} | " + " | ".join(row) + " |")
+    out += ["", "## 誤りありの指摘", ""]
+    for p in problems:
+        for e in rereviews(p):
+            if not e.get("ok"):
+                out.append(f"- #{p.id}（#{e.get('job')} {e.get('model')}）{e.get('step')}：{str(e.get('summary', ''))[:300]}")
+    return "\n".join(out)
 
 
 def filter_options(s: Session) -> dict[str, Any]:

@@ -139,7 +139,12 @@ def parse_tagged(text: str, schema: dict[str, Any]) -> dict[str, Any]:
         try:
             data = extract_json(body)
         except LLMError:
-            raise LLMError("出力に見出し（[[" + "]] [[".join(keys) + "]]）が見つかりません", raw=raw) from None
+            if len(keys) == 1 and body.strip():
+                # 項目が 1 つだけのとき（本文なしの確認の記号など）は、見出しを書かずに答えだけ返すモデルが多い。
+                # そのときは出力全体をその項目とみなす（第 5 回のレビュー A-1）
+                data = {keys[0]: _FENCE_RE.sub("", body).strip()}
+            else:
+                raise LLMError("出力に見出し（[[" + "]] [[".join(keys) + "]]）が見つかりません", raw=raw) from None
     else:
         data = {}
         for i, m in enumerate(found):

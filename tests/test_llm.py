@@ -338,9 +338,23 @@ def test_unreadable_output_keeps_the_thinking_part(fake):
     """出力が読めないときは、思考の部分（message.thinking）も記録に残す。答えが思考の部分にしかなければそこから読む（E-4）。"""
     from quizapp.llm import LLMError
 
+    two = {"type": "object", "properties": {"answer": {"type": "string"}, "work": {"type": "string"}},
+           "required": ["answer", "work"]}
     server = fake("thinking")
     with pytest.raises(LLMError) as exc:
-        OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA)
+        OllamaClient(server.url).chat_json("m", "sys", "user", two)
     assert "no tags here" in exc.value.raw and "[思考の部分（message.thinking）の最後]" in exc.value.raw
     server = fake("thinkonly")
     assert OllamaClient(server.url).chat_json("m", "sys", "user", SCHEMA) == {"answer": "9"}
+
+
+def test_single_field_reply_without_heading_is_read():
+    """項目が 1 つだけのときは、見出しのない答えもその項目とみなす（本文なしの確認。第 5 回のレビュー A-1）。"""
+    from quizapp.llm import LLMError, parse_tagged
+
+    one = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+    assert parse_tagged("B", one) == {"answer": "B"}
+    assert parse_tagged("<think>…</think>\nAnswer: X", one) == {"answer": "Answer: X"}
+    two = {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}, "required": ["a"]}
+    with pytest.raises(LLMError):
+        parse_tagged("B", two)

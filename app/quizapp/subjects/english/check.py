@@ -11,7 +11,11 @@ import unicodedata
 
 from ... import latexfix
 
-_CJK_RE = re.compile(r"[぀-ヿ㐀-鿿！-～]")
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uff01-\uff5e\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]")
+# ハングル（第 5 回のレビュー A-4：解説に「到着하자」が混ざった）
+_HANGUL_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]+")
+# 二重の括弧「[[ leak ]]」「[ [leak] ]」（作成役が例文の語に付けた括弧に、Python がさらに付けた。A-3）
+_DOUBLE_BRACKET_RE = re.compile(r"\[\s*\[\s*([^\[\]\n]+?)\s*\]\s*\]")
 _JA_RE = re.compile(r"[぀-ヿ㐀-鿿]")
 _WORD_RE = re.compile(r"[A-Za-z]+(?:['’-][A-Za-z]+)*")
 # 解説が選択肢を記号で呼んでいる（選択肢は画面で並べ替えるので、記号が合わなくなる）。
@@ -63,6 +67,7 @@ def normalize(text: str) -> str:
     """意味を変えずに直せる表記の揺れ：文字どおりの \\n を改行に、日本語の文の簡体字を日本の字に、前後の空白。"""
     t = (text or "").replace("\r\n", "\n").replace("\\n", "\n")
     t = t.translate(latexfix._ZH_TO_JA)
+    t = _DOUBLE_BRACKET_RE.sub(r"[ \1 ]", t)
     return t.strip()
 
 
@@ -72,7 +77,7 @@ def english_issues(text: str, field: str) -> list[str]:
     if not (text or "").strip():
         return [f"{field}が空"]
     if _CJK_RE.search(text):
-        out.append(f"{field}に日本語・全角の文字が入っている")
+        out.append(f"{field}に日本語・全角・韓国語の文字が入っている")
     if "[[" in text or "]]" in text:
         out.append(f"{field}に見出し [[…]] が残っている")
     hosts = bad_hosts(text)
@@ -94,6 +99,9 @@ def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
     zh = latexfix._simplified_chinese(body)
     if zh:
         out.append(f"{field}に中国語の字（{''.join(zh[:5])}）")
+    ko = _HANGUL_RE.findall(body)
+    if ko:
+        out.append(f"{field}に韓国語の文字（{''.join(ko)[:8]}）")
     if latexfix._META_RE.search(body):
         out.append(f"{field}が作成の指示に触れている")
     inside = internal_words(body)
@@ -133,6 +141,72 @@ def bad_hosts(text: str) -> list[str]:
         if host and "." in host and not _ALLOWED_HOST_RE.match(host):
             out.append(host)
     return list(dict.fromkeys(out))
+
+
+_STOP = frozenset("""
+about above after again also although among another because been before being below between both could
+does doing down during each even every from have having here into just like many more most much must only
+other over same should since some such than that their them then there these they this those through very
+want were what when where which while will with would your yours the and for are was not but can did had
+has her him his its our out own she who why how all any few nor off too yet one two three four five
+""".split())
+
+
+def _stem(w: str) -> str:
+    """語形の違いをそろえる（decide・decided・decides・deciding → decid）。"""
+    for suf in ("ing", "ed", "es", "s"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            w = w[: -len(suf)]
+            break
+    return w[:-1] if len(w) > 4 and w.endswith("e") else w
+
+
+def content_coverage(option: str, passage: str) -> tuple[float, list[str]]:
+    """選択肢の中心の語（4 文字以上で、ありふれた語でないもの）のうち、本文にある語の割合と、その語。
+
+    「本文に書かれていない」という誤答の種類が正しいかを機械的に確かめるのに使う（第 5 回のレビュー C-3）。
+    中心の語が 2 つ未満なら (0, [])（判断しない）。"""
+    have = {_stem(w.lower()) for w in words(passage)}
+    keys = [w.lower() for w in words(option) if len(w) >= 4 and w.lower() not in _STOP]
+    keys = list(dict.fromkeys(keys))
+    if len(keys) < 2:
+        return 0.0, []
+    found = [w for w in keys if _stem(w) in have]
+    return len(found) / len(keys), found
+
+
+def stated_in_passage(option: str, passage: str) -> bool:
+    """選択肢の中心の語のほとんど（6 割以上・2 語以上）が本文にある（＝「本文に書かれていない」ではない）。"""
+    share, found = content_coverage(option, passage)
+    return share >= 0.6 and len(found) >= 2
+
+
+def stray_english(explanation: str, allowed_texts: list[str]) -> list[str]:
+    """語彙の問題の解説に出てくる英単語のうち、例文にも選択肢にもないもの（第 5 回のレビュー D-1：
+    選択肢にない語の説明をしていた）。語形の違い（-s・-ed・-ing）と、ありふれた語は見ない。"""
+    have = {_stem(w.lower()) for t in allowed_texts for w in words(t)}
+    out = []
+    for w in words(explanation):
+        lw = w.lower()
+        if len(lw) < 3 or lw in _STOP or _stem(lw) in have:
+            continue
+        out.append(w)
+    return list(dict.fromkeys(out))
+
+
+_ARTICLE_RE = re.compile(r"第\s*[0-9０-９一二三四五六七八九十]+\s*条")
+_MAIN_Q_RE = re.compile(r"\b(main|most important|biggest|primary)\s+(reason|idea|purpose|point|cause)\b", re.I)
+_ONE_OF_RE = re.compile(r"\b(one|another|a|second|third)\s+(reason|idea|purpose|point|cause)\b|\bone of the\b", re.I)
+
+
+def article_typo(text: str) -> bool:
+    """段落を「第N条」と書いている（第 5 回のレビュー D-3）。"""
+    return bool(_ARTICLE_RE.search(text or ""))
+
+
+def main_vs_one(question: str, evidence: str) -> bool:
+    """「main reason」などを問うのに、根拠の文が「One reason」など 1 つの理由にすぎない（D-4）。"""
+    return bool(_MAIN_Q_RE.search(question or "")) and bool(_ONE_OF_RE.search(evidence or ""))
 
 
 def first_sentence(text: str) -> str:

@@ -66,6 +66,7 @@ LLM_CALLS_KEEP = 40
 VERIFY_STEP = "検証"
 REVIEW_STEP = "解説の見直し"
 REREVIEW_STEP = "見直しのやり直し"  # 見直しだけをやり直す依頼（kind = "review"）の記録。合否は変えない
+PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
 # Ollama の依頼と API の依頼は別のスレッドで同時に処理する。kv の読み書き（呼び出しの記録・利用額）は 1 つずつ
 _KV_LOCK = threading.Lock()
 # 順番待ちの分け方：ollama＝作成役・検証役のどれかが Ollama のモデル、api＝全部 API のモデル、None＝両方（テスト用）
@@ -307,7 +308,18 @@ class Worker:
                     by[model] = by.get(model, 0) + 1
             return [{"id": r.id, "title": r.title, "body": r.body, "topic": r.topic, "status": r.status,
                      "gen_model": r.gen_model, "questions": questions.get(r.id, []), "rejected": rejected.get(r.id, 0),
-                     "rejected_by": rejected_by.get(r.id, {})} for r in rows]
+                     "rejected_by": rejected_by.get(r.id, {}), "log": r.log} for r in rows]
+
+    def update_passage(self, passage_id: int, changes: dict[str, Any]) -> None:
+        """本文の状態を変え、記録を足す（使い回す前の見直しの結果など）。"""
+        with self.sessions.begin() as s:
+            row = s.get(Passage, passage_id)
+            if row is None:
+                return
+            if "status" in changes:
+                row.status = str(changes["status"])
+            if changes.get("log_add"):
+                row.log_json = dumps(row.log + list(changes["log_add"]))
 
     @staticmethod
     def _passage_row(s: Session, job: Job, p: dict[str, Any] | None, cache: dict[int, Passage]) -> Passage | None:
@@ -348,7 +360,9 @@ class Worker:
         p = exc.partial
         unit, su = subject.subunit_map().get(template, (None, None))
         with self.sessions.begin() as s:
-            row = self._passage_row(s, job, passage, cache if cache is not None else {})
+            # 本文の段階で落ちたもの（本文の見直しなど）は、partial に入った本文（状態 rejected）を残して結び付ける
+            row = self._passage_row(s, job, passage if passage is not None else p.get("passage"),
+                                    cache if cache is not None else {})
             s.add(Problem(passage=row,
                 subject=job.subject, unit=unit.id if unit else "", template=template, format=job.format,
                 level=su.level if su else "", related_units=",".join(su.related) if su else "",
@@ -445,7 +459,9 @@ class Worker:
         合否・選択肢は変えない（見直し役のモデルを比べる・前に作った問題を点検し直すため。「問題あり」と出た問題は
         問題検証モードで開発者が見て決める）。待機・再起動のあとは、この依頼でまだ見直していない問題から続ける。
         """
-        ids = self._job(job_id).target_ids
+        job = self._job(job_id)
+        ids = job.target_ids
+        passage_done: dict[int, dict[str, Any]] = {}  # この依頼で見直した本文（同じ本文の設問は 1 回だけ）
         self._update_job(job_id, status="running", error="")
         for k, pid in enumerate(ids, 1):
             self._check_cancel(job_id)
@@ -474,13 +490,41 @@ class Worker:
                                      "job": job_id, "at": utcnow().isoformat()}
             if res.updates:
                 entry["updates"] = res.updates  # 付け直しの案（このやり直しでは書き込まない）
+            # 機械的な点検も今のものでかけ直す（第 5 回のレビュー D-2）
+            issues = subject.text_issues(problem)
+            if issues:
+                entry["ok"] = False
+                entry["code"] = entry["code"] or "text_issues"
+                entry["summary"] = f"{entry['summary']}／機械的な点検：{'／'.join(issues)[:300]}"
+            entries = [entry]
+            # 本文の見直しもやり直す（B-2。同じ本文は 1 回だけ。結果は本文の記録にも足す）
+            if job.review_passage and problem.passage is not None:
+                pe = passage_done.get(problem.passage.id)
+                if pe is None:
+                    self._label("本文の見直し")
+                    try:
+                        pres = subject.review_passage(self.llm, model, problem.passage)
+                    except LLMError as exc:
+                        pres = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output")
+                    finally:
+                        self._save_llm_calls(job_id)
+                    if pres is not None:
+                        pe = {"step": PASSAGE_REREVIEW_STEP, "ok": pres.ok, "summary": pres.summary,
+                              "detail": pres.detail, "model": model, "code": "" if pres.ok else pres.code,
+                              "raw": pres.raw[:4000], "job": job_id, "at": utcnow().isoformat()}
+                        passage_done[problem.passage.id] = pe
+                        self.update_passage(problem.passage.id, {"log_add": [pe]})
+                if pe is not None:
+                    entries.append(pe)
             with self.sessions.begin() as s:
                 row = s.get(Problem, pid)
-                row.verification_json = dumps(row.verification + [entry])
+                row.verification_json = dumps(row.verification + entries)
         with self.sessions() as s:
             rows = list(s.execute(select(Problem).where(Problem.id.in_(ids))).scalars())
         mine = [e for p in rows for e in p.verification if e.get("step") == REREVIEW_STEP and e.get("job") == job_id]
-        flagged = sum(1 for e in mine if not e.get("ok"))
+        flagged = sum(1 for p in rows if any(not e.get("ok") for e in p.verification
+                                             if e.get("step") in (REREVIEW_STEP, PASSAGE_REREVIEW_STEP)
+                                             and e.get("job") == job_id))
         self._update_job(job_id, made=len(mine))
         self._finish(job_id, "done", f"{len(mine)} 問を {model} で見直しました（誤りの指摘 {flagged} 問）。"
                                      "結果は問題検証モードの「見直しのやり直しで指摘された問題」と書き出しで見られます")
@@ -492,7 +536,8 @@ class Worker:
                         plan: ModelPlan, label: str) -> None:
         ctx = GenContext(llm=self.llm, sandbox=self.sandbox, gen_model=plan.gen_model, rng=self.rng,
                          is_test=job.is_test, existing_keys=self.existing_keys, models=plan.models,
-                         review=plan.review and not job.is_test, passages=self.passages_for)
+                         review=plan.review and not job.is_test, passages=self.passages_for,
+                         update_passage=self.update_passage)
         order = list(templates)
         self.rng.shuffle(order)
         produced = 0
