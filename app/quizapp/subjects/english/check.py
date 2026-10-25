@@ -11,7 +11,11 @@ import unicodedata
 
 from ... import latexfix
 
-_CJK_RE = re.compile(r"[぀-ヿ㐀-鿿！-～]")
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uff01-\uff5e\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]")
+# ハングル（第 5 回のレビュー A-4：解説に「到着하자」が混ざった）
+_HANGUL_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]+")
+# 二重の括弧「[[ leak ]]」「[ [leak] ]」（作成役が例文の語に付けた括弧に、Python がさらに付けた。A-3）
+_DOUBLE_BRACKET_RE = re.compile(r"\[\s*\[\s*([^\[\]\n]+?)\s*\]\s*\]")
 _JA_RE = re.compile(r"[぀-ヿ㐀-鿿]")
 _WORD_RE = re.compile(r"[A-Za-z]+(?:['’-][A-Za-z]+)*")
 # 解説が選択肢を記号で呼んでいる（選択肢は画面で並べ替えるので、記号が合わなくなる）。
@@ -63,6 +67,7 @@ def normalize(text: str) -> str:
     """意味を変えずに直せる表記の揺れ：文字どおりの \\n を改行に、日本語の文の簡体字を日本の字に、前後の空白。"""
     t = (text or "").replace("\r\n", "\n").replace("\\n", "\n")
     t = t.translate(latexfix._ZH_TO_JA)
+    t = _DOUBLE_BRACKET_RE.sub(r"[ \1 ]", t)
     return t.strip()
 
 
@@ -72,7 +77,7 @@ def english_issues(text: str, field: str) -> list[str]:
     if not (text or "").strip():
         return [f"{field}が空"]
     if _CJK_RE.search(text):
-        out.append(f"{field}に日本語・全角の文字が入っている")
+        out.append(f"{field}に日本語・全角・韓国語の文字が入っている")
     if "[[" in text or "]]" in text:
         out.append(f"{field}に見出し [[…]] が残っている")
     hosts = bad_hosts(text)
@@ -94,6 +99,9 @@ def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
     zh = latexfix._simplified_chinese(body)
     if zh:
         out.append(f"{field}に中国語の字（{''.join(zh[:5])}）")
+    ko = _HANGUL_RE.findall(body)
+    if ko:
+        out.append(f"{field}に韓国語の文字（{''.join(ko)[:8]}）")
     if latexfix._META_RE.search(body):
         out.append(f"{field}が作成の指示に触れている")
     inside = internal_words(body)

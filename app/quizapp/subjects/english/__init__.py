@@ -261,6 +261,7 @@ class EnglishSubject(Subject):
         "en_text": "英文・選択肢・解説の点検で落ちた（根拠の文が本文にない・日本語の混入・選択肢の重複など）",
         "en_no_passage": "本文を読まなくても解けた（常識で答えられる設問）",
         "en_passage_review": "本文の見直しで誤りを指摘された（時系列・因果・矛盾・英文の誤り）",
+        "en_review_unread": "見直しの結果を読めなかった（やり直しても読めない確認があった）",
         "en_review": "見直しで誤りを指摘された（正解が 1 つに決まらない・英文の誤り・解説の誤り）",
     }
     test_format = "choice"  # 検証のテスト：正解の印を誤答に移した問題を流す
@@ -468,11 +469,15 @@ class EnglishSubject(Subject):
         model = ctx.model("blind")
         _set_label(ctx.llm, "本文なしの確認")
         user = prompts.solve_user(question, options)
-        try:
-            out = ctx.llm.chat_json(model, prompts.BLIND_SYSTEM, user, prompts.BLIND_SCHEMA, temperature=0.2)
-        except LLMError as exc:  # 確かめられないときは通す（検証役と見直しで拾う）
-            return True, {"step": "本文なしの確認", "ok": True, "summary": f"確かめられなかった（{exc}）",
-                          "model": model}
+        out: dict[str, Any] = {}
+        for attempt in range(2):  # 読めなかったら 1 回だけやり直す
+            try:
+                out = ctx.llm.chat_json(model, prompts.BLIND_SYSTEM, user, prompts.BLIND_SCHEMA, temperature=0.2)
+                break
+            except LLMError as exc:
+                if attempt == 1:  # 確かめられないときは通す（見直しの「正解が 1 つか」で拾う）
+                    return True, {"step": "本文なしの確認", "ok": True, "summary": f"確かめられなかった（{exc}）",
+                                  "model": model, "raw": getattr(exc, "raw", "")[:500]}
         raw = str(out.get("answer") or "")
         got = read_letter(raw, "", len(options))
         entry = {"step": "本文なしの確認", "model": model, "raw": raw[:500]}
@@ -515,6 +520,9 @@ class EnglishSubject(Subject):
         picked_ok = True
         for round_no in range(FIX_ROUNDS + 1):
             fields = {k: check.normalize(str(out.get(k) or "")) for k in schema["properties"]}
+            # 作成役が例文の語に付けた括弧（[leak]・【leak】）は外す（意味の問題で [[ leak ]] になった。A-3）
+            fields["sentence"] = re.sub(rf"[\[【［]\s*({re.escape(word.word)})\s*[\]】］]", r"\1",
+                                        fields["sentence"], flags=re.I)
             meaning = chosen_meaning(word, fields.get("meaning", ""))
             if choice:
                 others, picked_ok = chosen_others(fields.get("others", ""), candidates)
@@ -584,6 +592,8 @@ class EnglishSubject(Subject):
         out = check.english_issues(sentence, "例文")
         if "\n" in sentence.strip():
             out.append("例文が 1 文になっていない（改行がある）")
+        if re.search(r"[\[\]【】［］]", sentence):
+            out.append("例文に [ ] などの括弧がある（語を示す括弧はこちらで付ける）")
         n_words = check.word_count(sentence)
         if not 6 <= n_words <= 30:
             out.append(f"例文の長さが {n_words} 語（8〜20 語にする）")
@@ -624,7 +634,9 @@ class EnglishSubject(Subject):
         passage = problem.passage.body if problem.passage is not None else ""
         choices = list(problem.choices)
         random.shuffle(choices)  # 毎回並べ替える（記号の位置で当たらないように）
-        user = prompts.solve_user(problem.question, [c["text"] for c in choices], passage)
+        expected = str(problem.answer.get("word", ""))
+        pattern = f"答えは「{expected[:1]}」で始まる {len(expected)} 文字の語" if not choices and expected else ""
+        user = prompts.solve_user(problem.question, [c["text"] for c in choices], passage, pattern=pattern)
         out: dict[str, Any] = {}
         for attempt in range(2):  # 出力が読めなかったときは 1 回だけ解かせ直す
             try:
@@ -651,14 +663,43 @@ class EnglishSubject(Subject):
             right = next((c["text"] for c in choices if c.get("correct")), "")
             return VerifyResult(False, f"{model}: 「{picked['text'][:80]}」（正解「{right[:80]}」と不一致）", work,
                                 "solver_mismatch", raw=raw)
-        word = normalize_word(given.splitlines()[0] if given else "")
-        if not re.fullmatch(r"[a-z][a-z'-]*", word):
-            return VerifyResult(False, f"{model}: 答え「{given[:60] or '（空）'}」を英単語として読み取れません", work,
-                                "solver_unreadable", raw=raw)
-        expected = problem.answer.get("word", "")
-        if word == expected.lower():
-            return VerifyResult(True, f"{model}: {word}（一致）", work, raw=raw)
-        return VerifyResult(False, f"{model}: {word}（正解 {expected} と不一致）", work, "solver_mismatch", raw=raw)
+        return self._verify_spelling(llm, model, problem, user, given, work, raw)
+
+    def _verify_spelling(self, llm: LLM, model: str, problem: Any, user: str, given: str, work: str,
+                         raw: str) -> VerifyResult:
+        """スペル：問題文で示した最初の文字・文字数に合わない答えは、問題の誤りでなく検証役の誤りとして
+        聞き直す（2 回まで。第 5 回のレビュー A-5：shape と shave、recently と nowadays）。"""
+        from ...llm import LLMError
+
+        expected = problem.answer.get("word", "").lower()
+        pattern = f"答えは「{expected[:1]}」で始まる {len(expected)} 文字の語"
+        tried: list[str] = []
+        for attempt in range(3):
+            word = normalize_word(given.splitlines()[0] if given else "")
+            if not re.fullmatch(r"[a-z][a-z'-]*", word):
+                return VerifyResult(False, f"{model}: 答え「{given[:60] or '（空）'}」を英単語として読み取れません", work,
+                                    "solver_unreadable", raw=raw)
+            if word[:1] == expected[:1] and len(word) == len(expected):
+                if word == expected:
+                    note = f"（最初の文字・文字数に合わない答え「{'」「'.join(tried)}」は聞き直した）" if tried else ""
+                    return VerifyResult(True, f"{model}: {word}（一致）{note}", work, raw=raw)
+                return VerifyResult(False, f"{model}: {word}（正解 {expected} と不一致）", work, "solver_mismatch",
+                                    raw=raw)
+            tried.append(word)
+            if attempt == 2:
+                break
+            retry = prompts.solve_user(problem.question, [], pattern=pattern) + \
+                f"\n前の答え「{word}」は、最初の文字か文字数が合っていません。"
+            try:
+                out = llm.chat_json(model, prompts.SOLVE_SYSTEM, retry, prompts.SOLVE_SCHEMA, temperature=0.6)
+            except LLMError as exc:
+                return VerifyResult(False, f"{model}: 出力を読めません（{exc}）", "", "llm_output",
+                                    raw=getattr(exc, "raw", ""))
+            raw = json.dumps(out, ensure_ascii=False)
+            work = str(out.get("work") or "").strip()
+            given = str(out.get("answer") or "").strip()
+        return VerifyResult(False, f"{model}: 最初の文字・文字数に合わない答えが続いた（{'」「'.join(tried)}）", work,
+                            "solver_unreadable", raw=raw)
 
     def review(self, llm: LLM, model: str, problem: Any) -> VerifyResult | None:
         """見直し：確かめることを絞って 1 つずつ聞く（第 4 回のレビュー C。小さいモデルでも拾いやすいように）。
@@ -697,9 +738,12 @@ class EnglishSubject(Subject):
             summary = "／".join(f"{name}（{text[:150]}）" for name, text in failed)
             return VerifyResult(False, f"{model}: 誤りを指摘：{summary[:400]}", detail, "en_review", raw=raw)
         unread = [name for name, ok, _t in checks if ok is None]
-        note = f"（読めなかった確認：{'・'.join(unread)}）" if unread else ""
+        if unread:
+            # 読めなかった確認を合格扱いにしない（第 5 回のレビュー A-2。やり直しても読めなかったもの）
+            return VerifyResult(False, f"{model}: 見直しの結果を読めなかった（{'・'.join(unread)}）", detail,
+                                "en_review_unread", raw=raw)
         relabel = "。誤答の種類を付け直した" if updates else ""
-        return VerifyResult(True, f"{model}: {len(checks)} つの確認で誤りは見つからなかった{note}{relabel}", detail,
+        return VerifyResult(True, f"{model}: {len(checks)} つの確認で誤りは見つからなかった{relabel}", detail,
                             raw=raw, updates=updates)
 
     @staticmethod
@@ -738,11 +782,14 @@ class EnglishSubject(Subject):
     def _judge_choices(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
                        checks: list[tuple[str, bool | None, str]], raws: list[str], updates: dict[str, Any]) -> None:
         passage = problem.passage.body if problem.passage is not None else ""
-        out, raw = self._ask(llm, model, prompts.CHOICE_JUDGE_SYSTEM,
-                             prompts.choice_judge_user(passage, problem.question, [c["text"] for c in choices]),
-                             prompts.JUDGMENTS_SCHEMA)
-        raws.append("【選択肢の判定】\n" + raw)
-        got = self._judgments(str(out.get("judgments") or ""), prompts.CHOICE_LABELS, len(choices))
+        user = prompts.choice_judge_user(passage, problem.question, [c["text"] for c in choices])
+        got: dict[int, tuple[str, str]] = {}
+        for _ in range(2):  # 判定が読めなかったら 1 回だけやり直す（A-2）
+            out, raw = self._ask(llm, model, prompts.CHOICE_JUDGE_SYSTEM, user, prompts.JUDGMENTS_SCHEMA)
+            raws.append("【選択肢の判定】\n" + raw)
+            got = self._judgments(str(out.get("judgments") or ""), prompts.CHOICE_LABELS, len(choices))
+            if len(got) >= len(choices):
+                break
         if len(got) < len(choices):
             checks.append(("選択肢の判定", None, "判定を読めなかった"))
             return
@@ -769,9 +816,13 @@ class EnglishSubject(Subject):
 
     def _judge_fit(self, llm: LLM, model: str, system: str, user: str, choices: list[dict[str, Any]], what: str,
                    checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:
-        out, raw = self._ask(llm, model, system, user, prompts.JUDGMENTS_SCHEMA)
-        raws.append(f"【{what}の判定】\n" + raw)
-        got = self._judgments(str(out.get("judgments") or ""), prompts.FIT_LABELS, len(choices))
+        got: dict[int, tuple[str, str]] = {}
+        for _ in range(2):  # 判定が読めなかったら 1 回だけやり直す（A-2）
+            out, raw = self._ask(llm, model, system, user, prompts.JUDGMENTS_SCHEMA)
+            raws.append(f"【{what}の判定】\n" + raw)
+            got = self._judgments(str(out.get("judgments") or ""), prompts.FIT_LABELS, len(choices))
+            if len(got) >= len(choices):
+                break
         if len(got) < len(choices):
             checks.append((f"{what}の判定", None, "判定を読めなかった"))
             return
@@ -788,9 +839,13 @@ class EnglishSubject(Subject):
         passage = problem.passage.body if problem.passage is not None else ""
         user = prompts.review_user(problem.question, [(c["text"], bool(c.get("correct"))) for c in problem.choices],
                                    problem.answer_display, problem.explanation, problem.hint, passage)
-        out, raw = self._ask(llm, model, prompts.REVIEW_SYSTEM, user, prompts.REVIEW_SCHEMA)
-        raws.append("【解説の点検】\n" + raw)
-        verdict, issues = _verdict(out)
+        verdict, issues = "", ""
+        for _ in range(2):  # 結果が読めなかったら 1 回だけやり直す（A-2）
+            out, raw = self._ask(llm, model, prompts.REVIEW_SYSTEM, user, prompts.REVIEW_SCHEMA)
+            raws.append("【解説の点検】\n" + raw)
+            verdict, issues = _verdict(out)
+            if verdict.startswith(("問題あり", "問題なし")):
+                break
         if verdict.startswith("問題あり"):
             checks.append(("解説・例文", False, issues[:300] or "理由なし"))
         elif verdict.startswith("問題なし"):

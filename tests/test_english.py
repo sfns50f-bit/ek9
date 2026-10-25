@@ -251,7 +251,7 @@ def test_text_checks():
     assert check.choice_issues(["a", "b", "b", "c"], 0) == ["選択肢に同じものがある"]
     assert any("長い" in x for x in check.choice_issues(
         ["It was because the weather was very bad and the trains were all stopped", "Rain", "Snow", "Wind"], 0))
-    assert check.english_issues("これは日本語", "本文") == ["本文に日本語・全角の文字が入っている"]
+    assert check.english_issues("これは日本語", "本文") == ["本文に日本語・全角・韓国語の文字が入っている"]
     assert check.japanese_issues("This is English.", "解説") == ["解説が日本語で書かれていない"]
     assert spelling_pattern("decide") == "d _ _ _ _ _"
 
@@ -639,12 +639,15 @@ def test_review_relabels_wrong_mistake_types(settings, sessions, sandbox):
         assert any("誤答の種類を付け直した" in e["summary"] for e in p.verification)
 
 
-def test_unreadable_judgments_do_not_reject(settings, sessions, sandbox):
+def test_unreadable_judgments_are_retried_then_rejected(settings, sessions, sandbox):
+    """読めなかった見直しの確認は 1 回やり直し、それでも読めなければ合格にしない（第 5 回のレビュー A-2）。"""
     llm = EnglishOracle(sessions, judge="garbled")
-    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2)
-    ready = problems(sessions, status="ready")
-    assert len(ready) == 2
-    assert any("読めなかった確認" in e["summary"] for e in ready[0].verification if e["step"] == "解説の見直し")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
+    assert problems(sessions, status="ready") == []
+    rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "en_review_unread"]
+    assert rejected and "見直しの結果を読めなかった" in rejected[0].reject_reason
+    entry = next(e for e in rejected[0].verification if e["step"] == "解説の見直し")
+    assert entry["raw"].count("【選択肢の判定】") == 2  # 1 回やり直した
 
 
 # --- 第 4 回のレビューの D（語彙・スペル） ----------------------------------------------
@@ -743,3 +746,48 @@ def test_export_shows_unreadable_output_and_passage_think(settings, sessions, sa
         p = s.scalars(select(Problem).where(Problem.status == "ready")).first()
         _ = p.passage, p.job
         assert review.think_text(p).startswith("本文作成 記録なし／作成 なし")
+
+
+# --- 第 5 回のレビューの A ------------------------------------------------------------
+
+def test_review05_brackets_hangul_and_spelling_verifier():
+    from quizapp.subjects.english import EnglishSubject as E
+
+    # A-3：二重の括弧を直す（既存の問題は「表記をまとめて直す」で）。例文に括弧が残っていたら弾く
+    assert check.normalize("次の英文の [[ leak ]] で示した語") == "次の英文の [ leak ] で示した語"
+    word = next(w for w in WORDS if w.word == "decide")
+    fields = {"sentence": "We must [decide] before the long summer vacation starts next week.",
+              "translation": "来週夏休みが始まる前に決めなければならない。", "hint": "後半に注目しよう。",
+              "explanation": "夏休み前に「決める」と考えると意味が通る。"}
+    assert any("括弧" in x for x in E._vocab_issues(word, [], fields, "en-vocab-meaning"))
+    # A-4：韓国語の文字
+    assert check.japanese_issues("到着하자 すぐに出発した。", "解説") == ["解説に韓国語の文字（하자）"]
+
+
+class _Spell:
+    format = "input"
+    question = "日本語の意味に合う英単語を書け。\n\n意味: 形\n\nWhat ( s _ _ _ _ ) is it?"
+    answer = {"kind": "word", "word": "shape"}
+    choices = []
+    passage = None
+
+
+def test_spelling_verifier_is_reasked_when_it_ignores_the_pattern():
+    """検証役の答えが最初の文字・文字数に合わないときは、問題の不合格にせず聞き直す（A-5）。"""
+    class Solver:
+        def __init__(self, answers):
+            self.answers, self.users = list(answers), []
+
+        def chat_json(self, model, system, user, schema, **kw):
+            self.users.append(user)
+            return {"work": "", "answer": self.answers.pop(0)}
+
+    sub = EnglishSubject()
+    llm = Solver(["form", "shape"])
+    res = sub.verify(llm, None, "m", _Spell())
+    assert res.ok and "聞き直した" in res.summary
+    assert "「s」で始まる 5 文字" in llm.users[0] and "前の答え「form」" in llm.users[1]
+    res = sub.verify(Solver(["shave"]), None, "m", _Spell())
+    assert not res.ok and res.code == "solver_mismatch"  # 指定に合う別の語は、本当の不一致
+    res = sub.verify(Solver(["form", "figure", "outline"]), None, "m", _Spell())
+    assert not res.ok and res.code == "solver_unreadable" and "合わない答えが続いた" in res.summary

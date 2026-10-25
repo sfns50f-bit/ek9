@@ -227,7 +227,7 @@ SOLVE_SCHEMA: dict[str, Any] = {
 }
 
 
-def solve_user(question: str, choices: list[str], passage: str = "", title: str = "") -> str:
+def solve_user(question: str, choices: list[str], passage: str = "", title: str = "", pattern: str = "") -> str:
     parts = []
     if passage:
         parts += ["本文:", (title + "\n\n" if title else "") + passage, ""]
@@ -236,7 +236,7 @@ def solve_user(question: str, choices: list[str], passage: str = "", title: str 
         parts += ["選択肢:", *[f"{'ABCDEFGH'[i]}: {c}" for i, c in enumerate(choices)], "",
                   "答え方: 最も適切な選択肢の記号を 1 文字だけ answer に書く"]
     else:
-        parts += ["答え方: 空所に入る英単語を 1 語だけ、小文字で answer に書く"]
+        parts += ["答え方: 空所に入る英単語を 1 語だけ、小文字で answer に書く" + (f"（{pattern}）" if pattern else "")]
     return "\n".join(parts)
 
 

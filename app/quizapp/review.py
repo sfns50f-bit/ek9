@@ -77,7 +77,8 @@ def rereviews(problem: Problem) -> list[dict[str, Any]]:
 
 def reflagged(problem: Problem) -> bool:
     """見直しのやり直しのどれかで誤りを指摘された（出力が読めなかっただけのものは除く）。"""
-    return any(not e.get("ok") and e.get("code") != "llm_output" for e in rereviews(problem))
+    return any(not e.get("ok") and e.get("code") not in ("llm_output", "en_review_unread")
+               for e in rereviews(problem))
 
 
 def text_issues(problem: Problem) -> list[str]:
