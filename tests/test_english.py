@@ -40,7 +40,8 @@ class EnglishOracle:
     """
 
     def __init__(self, sessions, *, bad_evidence_once=False, bad_passage_once=False, blind_correct=(),
-                 review_verdict="問題なし", passage_verdict="問題なし", bad_questions=(), judge="right"):
+                 review_verdict="問題なし", passage_verdict="問題なし", bad_questions=(), judge="right",
+                 multiple_calls=None):
         self.sessions = sessions
         self.bad_evidence_once = bad_evidence_once
         self.bad_passage_once = bad_passage_once
@@ -51,6 +52,8 @@ class EnglishOracle:
         # 見直しの判定："right"（正しく判定）、"multiple"（誤答も裏付けあり・意味が通る）、"relabel"（誤答の種類を変える）、
         # "garbled"（読めない判定）
         self.judge = judge
+        self.multiple_calls = multiple_calls  # judge="multiple" を最初の何回の判定だけにするか（None はいつも）
+        self.n_judgments = 0
         self.n_sentences = 0
         self.calls = []
         self.label = ""
@@ -59,6 +62,7 @@ class EnglishOracle:
         props = schema["properties"]
         if "judgments" in props:
             self.calls.append(("judge", model))
+            self.n_judgments += 1
             return {"judgments": self._judgments(system, user)}
         if "verdict" in props:
             if "本文を点検" in system:
@@ -86,6 +90,18 @@ class EnglishOracle:
                     "translation": "学校の生徒はみな、長い夏の間に友だちと〜したいと思っている。",
                     "hint": "文の後半の with friends に注目しよう。",
                     "explanation": "夏の間に友だちと一緒にすることなので、この語の意味が文に合う。"}
+        if "words" in props:  # 検証（スペル）：条件に合う語をすべて
+            self.calls.append(("solve", model))
+            with self.sessions() as s:
+                p = next(p for p in s.execute(select(Problem).where(Problem.status == "draft")).scalars()
+                         if p.question in user)
+            return {"work": "意味から考えた", "words": p.answer["word"]}
+        if "reason" in props and "answer" in props:  # 検証（語彙）：正解を抜いた選択肢と「どれも合わない」
+            self.calls.append(("solve", model))
+            items = re.findall(r"^(\d+): (.*)$", user, re.M)
+            multiple = self._multiple()
+            pick = items[0][0] if multiple else next(n for n, t in items if t == "どれも合わない")
+            return {"answer": pick, "reason": "文に合う" if multiple else "どれも合わない"}
         if set(props) == {"answer"}:  # 本文なしの確認
             self.calls.append(("blind", model))
             m = re.search(r"\(part (\d+)\)", user)
@@ -96,21 +112,28 @@ class EnglishOracle:
         self.calls.append(("solve", model))
         return self._solve(user)
 
+    def _multiple(self):
+        return self.judge == "multiple" and (self.multiple_calls is None or self.n_judgments <= self.multiple_calls)
+
     def _judgments(self, system, user):
         if self.judge == "garbled":
             return "よく分かりません"
         items = re.findall(r"^(\d+): (.*)$", user, re.M)
         lines = []
-        if "本文と照らして" in system:  # 読解の選択肢
+        if "本文と照らして" in system:  # 読解の選択肢（検証は本文の文を引用する）
             for n, text in items:
                 label = ("裏付けあり" if text.startswith("Right") else
                          "本文に書かれていない" if "museum" in text else
                          "本文と食い違う" if "park" in text else "細部の取り違え")
-                if self.judge == "multiple" and "museum" in text:
+                if self._multiple() and "museum" in text:
                     label = "裏付けあり"
                 if self.judge == "relabel" and "park" in text:
                     label = "本文に書かれていない"
-                lines.append(f"{n}: {label} — 本文の第1段落")
+                part = int(re.search(r"answer (\d+)", text).group(1))
+                quote = f' — 引用: "{SENTENCES[(part - 1) % len(SENTENCES)]}"' if label != "本文に書かれていない" else ""
+                if self.judge == "bad_quote" and label == "裏付けあり":
+                    quote = ' — 引用: "This sentence is not in the passage."'
+                lines.append(f"{n}: {label}{quote} — 本文の第1段落")
             return "\n".join(lines)
         with self.sessions() as s:  # 語彙：データベースの下書きから正解を探す
             drafts = list(s.execute(select(Problem).where(Problem.status == "draft")).scalars())
@@ -119,7 +142,7 @@ class EnglishOracle:
             right = {m for w in WORDS if w.word == word for m in w.meanings}
             wrong_one = next((n for n, text in items if text not in right), None)
             for n, text in items:
-                fit = text in right or (self.judge == "multiple" and n == wrong_one)
+                fit = text in right or (self._multiple() and n == wrong_one)
                 lines.append(f"{n}: {'通る' if fit else '通らない'}")
             return "\n".join(lines)
         right = {n for n, text in items if any(p.template == "en-vocab-blank" and text == p.question.split(
@@ -127,7 +150,7 @@ class EnglishOracle:
         wrong_one = next((n for n, _t in items if n not in right), None)
         for n, text in items:
             ok = n in right
-            fit = ok or (self.judge == "multiple" and n == wrong_one)
+            fit = ok or (self._multiple() and n == wrong_one)
             lines.append(f"{n}: {'通る' if fit else '通らない'} — 理由")
         return "\n".join(lines)
 
@@ -268,8 +291,8 @@ def test_reading_makes_one_passage_with_shared_questions(settings, sessions, san
     assert len(ready) == 3 and len({p.passage_id for p in ready}) == 1 and ready[0].passage_id is not None
     # 本文作成 → 本文の見直し → 設問の作成 → 本文なしの確認 3 問分 → 検証 2 回 × 3 問 → 見直し 3 問
     # （見直しは 1 問につき、選択肢の判定と解説の点検の 2 回）
-    assert llm.roles() == (["passage", "passage_review", "gen"] + ["blind"] * 3 + ["solve"] * 6
-                           + ["judge", "review"] * 3)
+    assert llm.roles() == (["passage", "passage_review", "gen"] + ["blind"] * 3 + ["judge"] * 6
+                           + ["review"] * 3)  # 検証は選択肢ごとの判定（2 回）、見直しは解説の点検だけ
     assert {m for r, m in llm.calls if r == "blind"} == {"gemma4:12b-it-qat"}  # 作成役のモデル（入れ替えなし）
     with sessions() as s:
         p = s.get(Problem, ready[0].id)
@@ -615,22 +638,58 @@ def test_blind_check_can_use_another_model(settings, sessions, sandbox):
 # --- 第 4 回のレビューの C（問いを絞った見直し） ----------------------------------------
 
 @pytest.mark.parametrize("template", ["en-expository", "en-vocab-blank", "en-vocab-meaning"])
-def test_review_rejects_a_second_correct_answer(settings, sessions, sandbox, template):
-    """見直しで、誤答も本文で裏付けられる・空所に入る・意味が合う（正解が複数）と判定されたら不合格（C-1・C-2）。"""
+def test_verify_rejects_a_second_correct_answer(settings, sessions, sandbox, template):
+    """検証で、誤答も本文で裏付けられる・空所に入る・意味が合う（正解が複数）と 2 回とも判定されたら不合格
+    （第 6 回のレビュー 2-1・2-2）。"""
     llm = EnglishOracle(sessions, judge="multiple")
     run_job(settings, sessions, sandbox, llm, scope=f"tmpl:{template}", count=1)
-    rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "en_review"]
-    assert rejected and all("正解が複数" in p.reject_reason for p in rejected)
-    entry = next(e for e in rejected[0].verification if e["step"] == "解説の見直し")
-    assert "× 正解が 1 つか" in entry["detail"] and "【" in entry["raw"]
+    rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "en_verify_multiple"]
+    assert rejected and all("正解が複数" in p.reject_reason or "正解が 2 つ" in p.reject_reason for p in rejected)
+    entries = [e for e in rejected[0].verification if e["step"] == "検証"]
+    assert len(entries) == 2 and "× 正解が 1 つか" in entries[0]["detail"] and "【" in entries[0]["raw"]
+    if template != "en-expository":
+        assert "× 正解を抜いた判定" in entries[0]["detail"]
+    assert not any(e["step"] == "解説の見直し" for e in rejected[0].verification)
 
 
-def test_review_passes_and_records_each_check(settings, sessions, sandbox):
+def test_verify_split_goes_to_needs_check(settings, sessions, sandbox):
+    """2 回の判定が割れたら、すぐ捨てずに要確認にする。問題検証モードで確かめてストックに入れられる（2-4）。"""
+    llm = EnglishOracle(sessions, judge="multiple", multiple_calls=1)  # 1 回目の判定だけ正解が複数
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
+    p = next(p for p in problems(sessions, status="rejected"))
+    assert p.reject_code == "needs_check" and "1/2 回合格" in p.reject_reason
+    assert [e["ok"] for e in p.verification if e["step"] == "検証"] == [False, True]
+    md = TestClient(create_app(settings, sessions, sandbox)).get(
+        "/review/export.md?subject=english&status=needs_check").text
+    assert "× 正解が 1 つか" in md and "○ 正解を抜いた判定" in md  # 判定の結果を書き出す（2-1）
+    client = TestClient(create_app(settings, sessions, sandbox))
+    page = client.get("/review?status=needs_check").text
+    assert f"#{p.id}" in page and "確かめたのでストックに入れる" in page
+    client.post(f"/review/{p.id}/restore", data={"back": "/review"})
+    with sessions() as s:
+        row = s.get(Problem, p.id)
+        assert row.status == "ready" and row.reject_code == "" and row.verification[-1]["step"] == "要確認からストックへ"
+
+
+def test_verify_passes_and_records_each_check(settings, sessions, sandbox):
     llm = EnglishOracle(sessions)
     run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
     p = problems(sessions, status="ready")[0]
-    entry = next(e for e in p.verification if e["step"] == "解説の見直し")
-    assert entry["ok"] and "○ 正解が合うか" in entry["detail"] and "○ 解説・例文" in entry["detail"]
+    verify = next(e for e in p.verification if e["step"] == "検証")
+    assert verify["ok"] and "○ 正解が合うか" in verify["detail"] and "○ 正解を抜いた判定" in verify["detail"]
+    review = next(e for e in p.verification if e["step"] == "解説の見直し")
+    assert review["ok"] and "○ 解説・例文" in review["detail"] and "正解が合うか" not in review["detail"]
+
+
+def test_verify_rejects_a_quote_not_in_the_passage(settings, sessions, sandbox):
+    """読解の判定の引用は本文と照らし、本文にない引用の判定はやり直させる。直らなければ合格にしない（2-1）。"""
+    llm = EnglishOracle(sessions, judge="bad_quote")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
+    assert problems(sessions, status="ready") == []
+    p = problems(sessions, status="rejected")[0]
+    assert p.reject_code == "solver_unreadable" and "本文にない文を引用" in p.reject_reason
+    entry = next(e for e in p.verification if e["step"] == "検証")
+    assert entry["raw"].count("【選択肢の判定】") == 3  # 2 回やり直した
 
 
 def test_review_keeps_label_when_judgments_disagree(settings, sessions, sandbox):
@@ -662,14 +721,21 @@ def test_not_stated_label_is_checked_mechanically():
 
 
 def test_unreadable_judgments_are_retried_then_rejected(settings, sessions, sandbox):
-    """読めなかった見直しの確認は 1 回やり直し、それでも読めなければ合格にしない（第 5 回のレビュー A-2）。"""
+    """読めなかった判定は 1 回やり直し、それでも読めなければ合格にしない（第 5 回のレビュー A-2）。
+    検証の判定は「答えが読み取れなかった」、見直しは「見直しの結果を読めなかった」。"""
     llm = EnglishOracle(sessions, judge="garbled")
     run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
     assert problems(sessions, status="ready") == []
+    rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "solver_unreadable"]
+    assert rejected and "判定を読めなかった" in rejected[0].reject_reason
+    entry = next(e for e in rejected[0].verification if e["step"] == "検証")
+    assert entry["raw"].count("【選択肢の判定】") == 3
+    llm = EnglishOracle(sessions, review_verdict="よく分からない")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
     rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "en_review_unread"]
     assert rejected and "見直しの結果を読めなかった" in rejected[0].reject_reason
     entry = next(e for e in rejected[0].verification if e["step"] == "解説の見直し")
-    assert entry["raw"].count("【選択肢の判定】") == 2  # 1 回やり直した
+    assert entry["raw"].count("【解説の点検】") == 2  # 1 回やり直した
 
 
 # --- 第 4 回のレビューの D（語彙・スペル） ----------------------------------------------
@@ -794,26 +860,36 @@ class _Spell:
     passage = None
 
 
-def test_spelling_verifier_is_reasked_when_it_ignores_the_pattern():
-    """検証役の答えが最初の文字・文字数に合わないときは、問題の不合格にせず聞き直す（A-5）。"""
-    class Solver:
-        def __init__(self, answers):
-            self.answers, self.users = list(answers), []
+def test_spelling_verifier_lists_every_word_that_fits():
+    """スペルの検証：条件に合う語をすべて挙げさせ、正解のほかに例文に入る語があれば不合格（第 6 回のレビュー 2-3）。
+    最初の文字・文字数に合わない語や語形違いだけのときは、問題の不合格にせず聞き直す（05 A-5）。"""
+    class Lister:
+        def __init__(self, words, fits=""):
+            self.words, self.fits, self.users = list(words), fits, []
 
         def chat_json(self, model, system, user, schema, **kw):
             self.users.append(user)
-            return {"work": "", "answer": self.answers.pop(0)}
+            if "judgments" in schema["properties"]:
+                return {"judgments": self.fits}
+            return {"work": "", "words": self.words.pop(0)}
 
     sub = EnglishSubject()
-    llm = Solver(["form", "shape"])
+    llm = Lister(["form", "shape"])
     res = sub.verify(llm, None, "m", _Spell())
-    assert res.ok and "聞き直した" in res.summary
-    assert "「s」で始まる 5 文字" in llm.users[0] and "前の答え「form」" in llm.users[1]
-    res = sub.verify(Solver(["shave"]), None, "m", _Spell())
-    assert not res.ok and res.code == "solver_mismatch"  # 指定に合う別の語は、本当の不一致
-    res = sub.verify(Solver(["form", "figure", "outline"]), None, "m", _Spell())
+    assert res.ok and "聞き直した" in res.summary and "shape だけ" in res.summary
+    assert "「s」で始まる 5 文字" in llm.users[0] and "前に挙げた「form」" in llm.users[1]
+    res = sub.verify(Lister(["shave"]), None, "m", _Spell())
+    assert not res.ok and res.code == "solver_mismatch"  # 指定に合う別の語だけで、正解が挙がらない
+    res = sub.verify(Lister(["form", "figure", "outline"]), None, "m", _Spell())
     assert not res.ok and res.code == "solver_unreadable" and "合わない答えが続いた" in res.summary
-
+    res = sub.verify(Lister(["shapes", "shape"]), None, "m", _Spell())  # 語形違いは聞き直す
+    assert res.ok
+    # 正解のほかに条件に合う語が挙がった：例文に入るかを判定させる
+    llm = Lister(["shape, sharp"], fits="1: 通らない — 意味が合わない")
+    res = sub.verify(llm, None, "m", _Spell())
+    assert res.ok and "sharp は例文に入らない" in res.summary and "What sharp is it?" in llm.users[-1]
+    res = sub.verify(Lister(["shape, style"], fits="1: 通る — 自然"), None, "m", _Spell())
+    assert not res.ok and res.code == "en_verify_multiple" and "style" in res.summary
 
 
 # --- 第 5 回のレビューの B（本文の在庫） ------------------------------------------------

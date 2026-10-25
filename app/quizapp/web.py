@@ -910,6 +910,12 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             problem = problem_or_404(s, pid)
             if problem.status == "deleted":
                 problem.status = "ready"
+            elif problem.status == "rejected" and problem.reject_code == "needs_check":
+                # 要確認（検証の判定が割れた）を開発者が確かめてストックに入れる。記録に残す
+                problem.status, problem.reject_code = "ready", ""
+                problem.verification_json = dumps(problem.verification + [
+                    {"step": "要確認からストックへ", "ok": True, "summary": "問題検証モードで確かめてストックに入れた",
+                     "at": utcnow().isoformat()}])
         target = back if back.startswith("/review") else "/review"
         return redirect(target + ("&" if "?" in target else "?") + "msg=restored")
 

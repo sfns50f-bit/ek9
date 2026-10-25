@@ -22,6 +22,7 @@ COOKIE = "review"
 EXPORT_REQUEST = "高校生向けの問題として、正確さ・分かりやすさ・難易度の適切さを評価してください。"
 STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストックのうち表記の点検で引っかかる問題",
             "reflagged": "ストックのうち見直しのやり直しで誤りを指摘された問題",
+            "needs_check": "要確認（検証の判定が割れた問題。確かめてストックに入れるか決める）",
             "deleted": "削除した問題", "rejected": "検証で不合格"}
 REREVIEW_STEP = "見直しのやり直し"  # worker.REREVIEW_STEP と同じ（web は worker を読み込まない）
 PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
@@ -46,7 +47,10 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
           id_from: int = 0, id_to: int = 0, limit: int = 200, offset: int = 0) -> list[Problem]:
     """絞り込み。since / until は作った日時（UTC。until は含まない）、id_from / id_to は管理番号（両端を含む）。"""
     status = status if status in STATUSES else "ready"
-    q = select(Problem).where(Problem.status == ("ready" if status in ("issues", "reflagged") else status))
+    if status == "needs_check":
+        q = select(Problem).where(Problem.status == "rejected", Problem.reject_code == "needs_check")
+    else:
+        q = select(Problem).where(Problem.status == ("ready" if status in ("issues", "reflagged") else status))
     if since is not None:
         q = q.where(Problem.created_at >= since)
     if until is not None:
@@ -80,7 +84,7 @@ def rereviews(problem: Problem) -> list[dict[str, Any]]:
 
 def reflagged(problem: Problem) -> bool:
     """見直しのやり直しのどれかで誤りを指摘された（出力が読めなかっただけのものは除く）。"""
-    return any(not e.get("ok") and e.get("code") not in ("llm_output", "en_review_unread")
+    return any(not e.get("ok") and e.get("code") not in ("llm_output", "en_review_unread", "solver_unreadable")
                for e in rereviews(problem))
 
 
@@ -166,7 +170,7 @@ def think_text(problem: Problem) -> str:
 
 # 書き出しに出す記録の段階（作成の途中の細かい記録は出さない）
 _EXPORT_STEPS = ("文章", "使い回す前の本文の見直し", PASSAGE_REREVIEW_STEP, "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
-                 "検証", "解説の見直し", REREVIEW_STEP, "設問")
+                 "検証", "解説の見直し", REREVIEW_STEP, "設問", "要確認からストックへ")
 
 
 def verification_lines(problem: Problem) -> list[str]:
@@ -199,6 +203,10 @@ def verification_lines(problem: Problem) -> list[str]:
         out.append(f"- {mark} {e.get('step')}{model}：{str(e.get('summary', '')).strip()[:300]}")
         if e.get("step") in ("解説の見直し", REREVIEW_STEP) and e.get("detail"):
             out += [f"  - {ln.strip()[:300]}" for ln in str(e["detail"]).splitlines() if ln.strip()][:8]
+        elif e.get("step") == "検証" and e.get("detail"):
+            # 英語の検証は選択肢ごとの判定の結果（第 6 回のレビュー 2-1。見本集と照らすため）。数学の考え方は出さない
+            out += [f"  - {ln.strip()[:300]}" for ln in str(e["detail"]).splitlines()
+                    if ln.strip()[:1] in ("○", "×", "？")][:8]
         if not e.get("ok") and e.get("raw") and (e.get("step") == "文章" or e.get("code") == "llm_output"):
             # 読めなかった出力そのもの（E-4。思考の部分が混ざっていないかなどを見る）
             out += ["", "  ```", *[f"  {ln}" for ln in str(e["raw"])[:800].splitlines()], "  ```", ""]
@@ -296,7 +304,7 @@ def rereview_table(problems: list[Problem]) -> str:
         for e in rereviews(p):
             key = (int(e.get("job") or 0), str(e.get("model") or ""))
             cols.setdefault(key, None)
-            unread = e.get("code") in ("llm_output", "en_review_unread")
+            unread = e.get("code") in ("llm_output", "en_review_unread", "solver_unreadable")
             mark = "？" if unread else ("○" if e.get("ok") else "×")
             tag = "本文" if e.get("step") == PASSAGE_REREVIEW_STEP else "設問"
             cells[(p.id, key[0], tag)] = mark

@@ -454,7 +454,7 @@ class Worker:
         with self.sessions() as s:
             return s.execute(select(func.count()).select_from(Problem).where(
                 Problem.job_id == job_id, Problem.status == "rejected",
-                Problem.reject_code.in_(("solver_mismatch", "solver_unreadable")))).scalar_one() > 0
+                Problem.reject_code.in_(("solver_mismatch", "solver_unreadable", "needs_check")))).scalar_one() > 0
 
     def _rereview(self, job_id: int, model: str) -> None:
         """見直しだけをやり直す依頼：選んだ問題を指定のモデルで見直し、結果を各問題の記録に足す。
@@ -482,7 +482,7 @@ class Worker:
             self.set_status(f"依頼 #{job_id} — {text}", job_id)
             self._label("見直し")
             try:
-                res = subject.review(self.llm, model, problem) or VerifyResult(True, "この科目は見直しに対応していません")
+                res = subject.rereview(self.llm, model, problem) or VerifyResult(True, "この科目は見直しに対応していません")
             except LLMError as exc:
                 res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
                                    raw=getattr(exc, "raw", ""))
@@ -655,6 +655,10 @@ class Worker:
         if plan.review and not job.is_test:
             steps.append((plan.reviewer, REVIEW_STEP))
         done = {d.id: 0 for d in drafts}  # 終わった段階の数
+        # 判定が割れたら要確認にする科目は、検証の不合格が出ても検証の回数を最後までかける（2-4）
+        split = subject.verify_split_check
+        n_verify = len(plan.verify_runs)
+        vfail: dict[int, tuple[str, str]] = {}
         try:
             for r, (model, step) in enumerate(steps, 1):
                 for k, (pid, problem) in enumerate(list(alive.items()), 1):
@@ -680,8 +684,18 @@ class Worker:
                     logs[pid].append({"step": step, "ok": ok, "summary": summary, "detail": detail,
                                       "model": model, "run": r, "code": "" if ok else code, "raw": raw[:4000]})
                     done[pid] += 1
-                    if not ok:
+                    if not ok and split and step == VERIFY_STEP:
+                        vfail.setdefault(pid, (code, summary))
+                    elif not ok:
                         failed[pid] = (code, summary)
+                        del alive[pid]
+                if split and r == n_verify:  # 検証の回数が終わったら、割れたものは要確認、全回不合格は不合格
+                    for pid, (code, summary) in vfail.items():
+                        if pid not in alive:
+                            continue
+                        oks = sum(1 for e in logs[pid] if e.get("step") == VERIFY_STEP and e.get("ok"))
+                        failed[pid] = (("needs_check", f"検証の判定が割れた（{oks}/{n_verify} 回合格）：{summary}")
+                                       if oks else (code, summary))
                         del alive[pid]
         finally:
             self._finalize_verified(job, drafts, logs, failed, done, len(steps), plan, updates)

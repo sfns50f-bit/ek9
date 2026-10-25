@@ -137,6 +137,10 @@
     <form method="post" action="/review/{{ p.id }}/restore" class="inline">
       <input type="hidden" name="back" value="/review?{{ qs }}&page={{ page_no }}">
       <button type="submit" class="secondary small">ストックに戻す</button></form>
+    {% elif p.status == "rejected" and p.reject_code == "needs_check" %}
+    <form method="post" action="/review/{{ p.id }}/restore" class="inline" onsubmit="return confirm('検証の記録を確かめて、正解が 1 つに決まる問題ならストックに入れます。よいですか？')">
+      <input type="hidden" name="back" value="/review?{{ qs }}&page={{ page_no }}">
+      <button type="submit" class="secondary small">確かめたのでストックに入れる</button></form>
     {% endif %}
   </div>
 </section>

@@ -239,10 +239,18 @@ def export_json(gs: GoldenSet) -> str:
 # --- 結果の集計（web の書き出し） -------------------------------------------
 
 def outcome_of(steps: list[dict[str, Any]]) -> str:
-    """段階ごとの結果から、弾いた（reject）／通した（pass）／要確認（unsure）。"""
-    if any(not st.get("ok") and st.get("code") not in UNSURE_CODES for st in steps):
+    """段階ごとの結果から、弾いた（reject）／通した（pass）／要確認（unsure）。
+
+    検証は回数分の判定がすべて不合格なら弾いた、一部だけ不合格（判定が割れた）なら要確認（第 6 回のレビュー 2-4）。
+    読めなかっただけの不合格も要確認。"""
+    verify = [st for st in steps if st.get("step") == "検証"]
+    others = [st for st in steps if st.get("step") != "検証"]
+    if any(not st.get("ok") and st.get("code") not in UNSURE_CODES for st in others):
         return "reject"
-    if any(not st.get("ok") for st in steps):
+    vfail = [st for st in verify if not st.get("ok")]
+    if vfail and len(vfail) == len(verify) and any(st.get("code") not in UNSURE_CODES for st in vfail):
+        return "reject"
+    if vfail or any(not st.get("ok") for st in others):
         return "unsure"
     return "pass"
 

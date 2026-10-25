@@ -115,8 +115,8 @@ def test_role_models_are_used_for_each_step(settings, sessions, sandbox):
     for role, model in llm.calls:
         used.setdefault(role, set()).add(model)
     assert used == {"passage": {"passage-model"}, "passage_review": {"review-model"}, "gen": {"gemma4:12b-it-qat"},
-                    "blind": {"gemma4:12b-it-qat"}, "solve": {"gemma4:e4b"}, "review": {"review-model"},
-                    "judge": {"review-model"}}
+                    "blind": {"gemma4:12b-it-qat"}, "review": {"review-model"},
+                    "judge": {"gemma4:e4b"}}  # 選択肢ごとの判定は検証役（第 6 回のレビュー 2 章）
     j = jobs(sessions)[-1]
     assert j.extra_models["passage"] == "passage-model" and j.review_model == "review-model"
     ready = problems(sessions, status="ready")
@@ -364,8 +364,9 @@ def test_the_golden_set_file_is_read_whole():
 
 
 class GoldenLLM:
-    """見本集の測定のテスト用の LLM。検証役は正解の記号を答える。見直しの判定は、正解と also_fit の選択肢を
-    「裏付けあり・通る」にする（also_fit に入れた誤答があれば、その問題は「正解が複数」で弾かれる）。"""
+    """見本集の測定のテスト用の LLM。検証の判定は、正解と also_fit の選択肢を「裏付けあり・通る」にする
+    （also_fit に入れた誤答があれば、その問題は「正解が複数」で弾かれる）。引用は本文の最初の文。
+    スペルは正解の語だけを挙げる。見直しは「問題なし」。"""
 
     def __init__(self, samples, also_fit=()):
         self.right = {c["text"] for x in samples for c in x.choices if c["correct"]}
@@ -375,27 +376,35 @@ class GoldenLLM:
         self.calls = []
         self.label = ""
 
+    def _fits(self, text, good):
+        return text in good or any(_re.search(rf"\b{_re.escape(w)}\b", text) for w in good if w.isascii())
+
     def chat_json(self, model, system, user, schema, *, temperature=0.7):
         props = schema["properties"]
         self.calls.append(model)
         if "judgments" in props:
             items = _re.findall(r"^(\d+): (.*)$", user, _re.M)
             good = self.right | self.also_fit
+            passage = user.split("本文:\n", 1)[1].split("\n\n設問:", 1)[0] if "本文:\n" in user else ""
+            first = _re.split(r"(?<=[.!?])\s+", passage.split("\n\n")[-1].strip())[0] if passage else ""
             lines = []
             for n, text in items:
-                fit = text in good or any(_re.search(rf"\b{_re.escape(w)}\b", text) for w in good if w.isascii())
+                fit = self._fits(text, good)
                 if "本文と照らして" in system:
-                    lines.append(f"{n}: {'裏付けあり' if fit else '本文と食い違う'} — 本文")
+                    lines.append(f"{n}: 裏付けあり — 引用: \"{first}\" — 本文" if fit else f"{n}: 本文に書かれていない — なし")
                 else:
                     lines.append(f"{n}: {'通る' if fit else '通らない'} — 理由")
             return {"judgments": "\n".join(lines)}
+        if "words" in props:
+            meaning = _re.search(r"意味: .*", user)
+            return {"work": "考えた", "words": self.words.get(meaning.group() if meaning else "", "")}
+        if "reason" in props:  # 正解を抜いた判定
+            items = _re.findall(r"^(\d+): (.*)$", user, _re.M)
+            pick = next((n for n, t in items if t in self.also_fit), None) or items[-1][0]
+            return {"answer": pick, "reason": "理由"}
         if "verdict" in props:
             return {"verdict": "問題なし", "issues": "なし"}
-        letters = _re.findall(r"^([A-D]): (.*)$", user, _re.M)
-        if letters:
-            return {"work": "読んだ", "answer": next(c for c, t in letters if t in self.right)}
-        meaning = _re.search(r"意味: .*", user)
-        return {"work": "考えた", "answer": self.words.get(meaning.group() if meaning else "", "")}
+        raise AssertionError(f"想定していない呼び出し: {list(props)}")
 
     def list_models(self):
         return [{"name": "gemma4:12b-it-qat", "size_gb": 8.1, "parameter_size": "12B", "quantization": "Q4"}]
@@ -453,7 +462,7 @@ def test_golden_measurement(settings, sessions, sandbox, client, tmp_path, monke
     assert "| #911 | 弾くべき | 正解のほかにも正しい選択肢がある | ○ 弾いた |" in md
     assert "| #990（DB） | 弾くべき |" in md and "× 通した" in md
     assert "記録：anthropic/claude-haiku-5-5" in md and "誤りあり" in md
-    assert "解説の見直し（gemma4:e4b）" in md
+    assert "検証（gemma4:12b-it-qat）：" in md and "正解を抜くと「探す」を選んだ" in md
     # データベースから加えた問題も入れた見本集（ファイルの差し替え用）
     exported = _json.loads(client.get("/review/golden.json?subject=english").text)
     assert [it["id"] for it in exported["items"]] == [911, blank["id"], 990]
@@ -481,7 +490,7 @@ def test_golden_measurement_resumes(settings, sessions, sandbox, client, tmp_pat
     make_worker(settings, sessions, sandbox, llm).run_once()
     jb = jobs(sessions)[-1]
     assert jb.status == "done" and [r["id"] for r in jb.results] == [911, gs.samples[1].id]
-    assert len(llm.calls) == 1  # 測っていない 1 問の検証だけ（見直しなし）
+    assert len(llm.calls) == 2  # 測っていない 1 問の検証だけ（選択肢ごとの判定と正解を抜いた判定。見直しなし）
 
 
 def test_golden_measurement_runs_over_the_whole_file(settings, sessions, sandbox, client):
@@ -498,3 +507,14 @@ def test_golden_measurement_runs_over_the_whole_file(settings, sessions, sandbox
     assert {st["step"] for st in steps} == {"機械的な点検", "検証", "解説の見直し", "本文の見直し"}
     assert not [st for st in steps if st["code"] in golden.UNSURE_CODES], \
         [(r["id"], st["summary"]) for r in jb.results for st in r["steps"] if st["code"] in golden.UNSURE_CODES]
+
+
+def test_golden_outcome_counts_a_split_as_needs_check():
+    """見本集の測定：検証の判定が割れたら要確認、全回不合格なら弾いた、読めないだけなら要確認（2-4）。"""
+    v = lambda ok, code="": {"step": "検証", "ok": ok, "code": code}  # noqa: E731
+    review_ng = {"step": "解説の見直し", "ok": False, "code": "en_review"}
+    assert golden.outcome_of([v(True), v(True)]) == "pass"
+    assert golden.outcome_of([v(False, "en_verify_multiple"), v(True)]) == "unsure"
+    assert golden.outcome_of([v(False, "en_verify_multiple"), v(False, "solver_mismatch")]) == "reject"
+    assert golden.outcome_of([v(False, "solver_unreadable"), v(False, "solver_unreadable")]) == "unsure"
+    assert golden.outcome_of([v(True), v(False, "en_verify_multiple"), review_ng]) == "reject"
