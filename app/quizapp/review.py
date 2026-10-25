@@ -24,6 +24,9 @@ STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストッ�
             "reflagged": "ストックのうち見直しのやり直しで誤りを指摘された問題",
             "deleted": "削除した問題", "rejected": "検証で不合格"}
 REREVIEW_STEP = "見直しのやり直し"  # worker.REREVIEW_STEP と同じ（web は worker を読み込まない）
+PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
+# 本文の記録（passages.log）から書き出しに出す段階（B-3）
+_PASSAGE_STEPS = ("本文の点検", "本文の見直し", "使い回す前の本文の見直し", PASSAGE_REREVIEW_STEP)
 MAX_REREVIEW = 200  # 1 回の見直しのやり直しで見る問題の数の上限
 TEXT_FIELDS = ("question", "hint", "explanation")
 
@@ -72,7 +75,7 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
 
 def rereviews(problem: Problem) -> list[dict[str, Any]]:
     """見直しのやり直しの記録（古い順）。"""
-    return [e for e in problem.verification if e.get("step") == REREVIEW_STEP]
+    return [e for e in problem.verification if e.get("step") in (REREVIEW_STEP, PASSAGE_REREVIEW_STEP)]
 
 
 def reflagged(problem: Problem) -> bool:
@@ -162,7 +165,7 @@ def think_text(problem: Problem) -> str:
 
 
 # 書き出しに出す記録の段階（作成の途中の細かい記録は出さない）
-_EXPORT_STEPS = ("文章", "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
+_EXPORT_STEPS = ("文章", "使い回す前の本文の見直し", PASSAGE_REREVIEW_STEP, "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
                  "検証", "解説の見直し", REREVIEW_STEP, "設問")
 
 
@@ -178,6 +181,16 @@ def verification_lines(problem: Problem) -> list[str]:
         label = codes.get(problem.reject_code or "", problem.reject_code or "—")
         out.append(f"- **不合格**：{label}（{(problem.reject_reason or '').strip()[:300]}）")
     shown = 0
+    # 本文の記録（本文を作ったとき・使い回す前・やり直しの見直し）。設問の記録と同じものは出さない（B-3）
+    passage = problem.passage
+    if passage is not None:
+        mine = {(e.get("step"), e.get("summary")) for e in problem.verification}
+        for e in passage.log:
+            if e.get("step") in _PASSAGE_STEPS and (e.get("step"), e.get("summary")) not in mine:
+                model = f"（{e['model']}）" if e.get("model") else ""
+                out.append(f"- {'○' if e.get('ok') else '×'} 本文：{e.get('step')}{model}："
+                           f"{str(e.get('summary', '')).strip()[:300]}")
+                shown += 1
     for e in problem.verification:
         if e.get("step") not in _EXPORT_STEPS:
             continue

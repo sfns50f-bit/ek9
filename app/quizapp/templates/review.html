@@ -50,6 +50,8 @@
       </select></label>
     <label>一覧にないモデル（書けばこちらを使う。API は「anthropic/モデル名」）
       <input type="text" name="model_text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label class="check"><input type="checkbox" name="with_passage" value="on">
+      <span>本文の見直しもする（英語の読解など。同じ本文は 1 回だけ。結果は本文の記録にも残す）</span></label>
     <label>見直す問題の数（新しい順に。最大 {{ max_rereview }} 問）
       <input type="number" name="limit" value="20" min="1" max="{{ max_rereview }}" inputmode="numeric"></label>
     <button type="submit" class="secondary">見直しのやり直しを頼む</button>
@@ -94,7 +96,7 @@
   <details><summary>ヒント</summary>{{ math(p.hint) }}</details>
   <details><summary>解説</summary>{{ math(p.explanation, "explanation") }}</details>
   <p class="small muted">{% if p.passage %}本文作成役: {{ p.passage.gen_model or "—" }}／{% endif %}作成役: {{ p.gen_model or "—" }}／検証役: {{ p.verify_models or "—" }}<br>思考モード: {{ think(p) }}
-    {% for e in rereviews(p) %}<br>見直しのやり直し（{{ e.model }}）: {{ "誤りなし" if e.ok else "誤りあり" }} — <span class="mathtext">{{ e.summary }}</span>{% endfor %}
+    {% for e in rereviews(p) %}<br>{{ e.step }}（{{ e.model }}）: {{ "誤りなし" if e.ok else "誤りあり" }} — <span class="mathtext">{{ e.summary }}</span>{% endfor %}
     {% if p.reject_reason %}<br>不合格の理由: <span class="mathtext">{{ p.reject_reason }}</span>{% endif %}</p>
   <div class="actions">
     <a class="button secondary small" href="/problems/{{ p.id }}?review=1">検証の記録</a>

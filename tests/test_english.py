@@ -63,8 +63,10 @@ class EnglishOracle:
         if "verdict" in props:
             if "本文を点検" in system:
                 self.calls.append(("passage_review", model))
-                return {"verdict": self.passage_verdict, "issues": "時系列が食い違う" if "あり" in self.passage_verdict
-                        else "なし"}
+                # passage_verdict はリストにすると、呼ぶたびに前から使う（最後のものは使い続ける）
+                v = self.passage_verdict
+                verdict = (v.pop(0) if len(v) > 1 else v[0]) if isinstance(v, list) else v
+                return {"verdict": verdict, "issues": "時系列が食い違う" if "あり" in verdict else "なし"}
             self.calls.append(("review", model))
             return {"verdict": self.review_verdict, "issues": "なし"}
         if "passage" in props:
@@ -327,13 +329,17 @@ def test_passage_review_rejects_the_whole_passage(settings, sessions, sandbox):
     with sessions() as s:
         from quizapp.db import Passage
 
-        assert s.execute(select(Passage)).first() is None  # 落ちた本文は残さない（題材はまた使える）
+        # 落ちた本文は状態 rejected で残し（書き出しで見られる）、使い回さない。題材はまた使える
+        rows = list(s.execute(select(Passage)).scalars())
+        assert rows and {r.status for r in rows} == {"rejected"}
+        assert all(p.passage_id for p in rejected) and "本文の段階で不合格" in rejected[0].question
 
 
 def test_passage_is_fixed_and_review_can_be_off(settings, sessions, sandbox):
     llm = EnglishOracle(sessions, bad_passage_once=True)
     run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2, explanation_review=False,
-            gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b", verify_count=2)
+            review_model="anthropic/claude-haiku-5-5", gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b",
+            verify_count=2)
     assert llm.roles()[:2] == ["passage", "passage"]  # 本文の点検で落ちたので本文作成役に直させた
     assert "passage_review" not in llm.roles() and "review" not in llm.roles()  # 見直しを切った依頼
     ready = problems(sessions, status="ready")
@@ -791,3 +797,93 @@ def test_spelling_verifier_is_reasked_when_it_ignores_the_pattern():
     assert not res.ok and res.code == "solver_mismatch"  # 指定に合う別の語は、本当の不一致
     res = sub.verify(Solver(["form", "figure", "outline"]), None, "m", _Spell())
     assert not res.ok and res.code == "solver_unreadable" and "合わない答えが続いた" in res.summary
+
+
+
+# --- 第 5 回のレビューの B（本文の在庫） ------------------------------------------------
+
+def _old_passage(settings, sessions, sandbox):
+    """ほかのモデル（old-model）が書き、設問がすべて落ちた本文を 1 つ作る。"""
+    from quizapp.db import Passage
+
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions, bad_questions={1, 2}), scope="tmpl:en-notice",
+            count=1, gen_model="old-model", verify_model="gemma4:e4b", verify_count=2,
+            extra_models_json='{"passage": "old-model"}')
+    with sessions() as s:
+        return s.execute(select(Passage).order_by(Passage.id)).scalars().first().id
+
+
+@pytest.mark.parametrize("verdict,reused", [("問題なし", True), ("問題あり", False)])
+def test_other_models_passage_is_reviewed_before_reuse(settings, sessions, sandbox, verdict, reused):
+    """今の本文作成役以外が書いた本文は、使い回す前に今の見直し役で見直す。誤りがあれば使えない印を付ける（B-1）。"""
+    from quizapp.db import Passage
+
+    old = _old_passage(settings, sessions, sandbox)
+    llm = EnglishOracle(sessions, passage_verdict=[verdict, "問題なし"])
+    # 古い本文は作ったときに e4b の見直しを通っている。今の見直し役（Haiku）ではまだ見ていない
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2, review_model="anthropic/claude-haiku-5-5",
+            gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b", verify_count=2)
+    with sessions() as s:
+        row = s.get(Passage, old)
+        steps = [e["step"] for e in row.log]
+        assert steps[-1] == "使い回す前の本文の見直し" and "設問の点検" not in steps  # 本文の記録だけ
+        assert row.status == ("ok" if reused else "rejected")
+    ready = problems(sessions, status="ready")
+    assert ready and all((p.passage_id == old) == reused for p in ready)
+    if reused:
+        assert "passage" not in llm.roles()  # 新しい本文は作らない
+    # 誤りがあった本文は使わず、ほかの本文（見直しを通ったもの）か新しい本文に設問を付ける
+    if reused:
+        client = TestClient(create_app(settings, sessions, sandbox))
+        md = client.get("/review/export.md?subject=english").text
+        assert "使い回す前の本文の見直し" in md
+
+
+def test_other_models_passage_is_not_reused_without_review(settings, sessions, sandbox):
+    old = _old_passage(settings, sessions, sandbox)
+    llm = EnglishOracle(sessions)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=2, explanation_review=False,
+            review_model="anthropic/claude-haiku-5-5", gen_model="gemma4:12b-it-qat", verify_model="gemma4:e4b",
+            verify_count=2)
+    assert all(p.passage_id != old for p in problems(sessions, status="ready")) and "passage" in llm.roles()
+
+
+def test_rereview_can_review_passages_once(settings, sessions, sandbox):
+    """見直しだけをやり直す依頼で、本文の見直しもできる（同じ本文は 1 回だけ。B-2）。書き出しに本文の記録も出る（B-3）。"""
+    from quizapp.db import Job, Passage
+
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-expository", count=3)
+    client = TestClient(create_app(settings, sessions, sandbox))
+    client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "",
+                                          "model_text": "anthropic/claude-haiku-5-5", "limit": "3",
+                                          "with_passage": "on"})
+    with sessions() as s:
+        jobrow = s.execute(select(Job).order_by(Job.id.desc())).scalars().first()
+        assert jobrow.kind == "review" and jobrow.review_passage
+    llm = EnglishOracle(sessions, passage_verdict="問題あり")
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    assert llm.roles().count("passage_review") == 1  # 3 問とも同じ本文
+    ready = problems(sessions, status="ready")
+    assert len(ready) == 3 and all(any(e["step"] == "本文の見直しのやり直し" and not e["ok"] for e in p.verification)
+                                   for p in ready)
+    with sessions() as s:
+        assert s.get(Passage, ready[0].passage_id).log[-1]["step"] == "本文の見直しのやり直し"
+    assert "本文の見直しのやり直し（anthropic/claude-haiku-5-5）: 誤りあり" in client.get(
+        "/review?subject=english&status=reflagged").text
+    assert "本文の見直しのやり直し" in client.get("/generate").text or "（本文も）" in client.get("/generate").text
+
+
+def test_rereview_reapplies_mechanical_checks(settings, sessions, sandbox):
+    """見直しのやり直しのときに、今の機械的な点検もかけ直す（第 5 回のレビュー D-2）。"""
+    from quizapp.db import Problem
+
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-vocab-blank", count=1)
+    p = problems(sessions, status="ready")[0]
+    with sessions.begin() as s:
+        s.get(Problem, p.id).explanation += "\n入らない語の banana は合わない。"
+    client = TestClient(create_app(settings, sessions, sandbox))
+    client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "x", "limit": "1"})
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    with sessions() as s:
+        e = [e for e in s.get(Problem, p.id).verification if e["step"] == "見直しのやり直し"][-1]
+    assert not e["ok"] and "機械的な点検" in e["summary"] and "内部の言葉" in e["summary"]

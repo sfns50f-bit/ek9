@@ -79,7 +79,7 @@
     {% set sub = get_subject(j.subject) %}
     <li class="job {{ j.status }}">
       {% if j.kind == "review" %}
-      <div><strong>#{{ j.id }}</strong> 見直しのやり直し・{{ j.count }}問・{{ j.review_model or j.verify_model }}</div>
+      <div><strong>#{{ j.id }}</strong> 見直しのやり直し{% if j.review_passage %}（本文も）{% endif %}・{{ j.count }}問・{{ j.review_model or j.verify_model }}</div>
       <div class="small">{{ JOB_STATUS.get(j.status, j.status) }}・見直し {{ j.made }} / {{ j.count }}・{{ j.created_at | localtime }}</div>
       {% else %}
       <div><strong>#{{ j.id }}</strong> {{ sub.scope_label(j.scope) if sub else j.subject }}・{{ FORMATS.get(j.format, j.format) }}・{{ j.count }}問

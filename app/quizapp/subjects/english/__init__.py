@@ -291,8 +291,8 @@ class EnglishSubject(Subject):
         # （弱い作成役で設問が落ち続けた本文にも、別の作成役なら設問を足せる。第 4 回のレビュー E-5）
         reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic") and len(p["questions"]) < n
                     and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * n]
-        if reusable:
-            src = reusable[0]
+        src = self._reusable_passage(ctx, reusable) if reusable else None
+        if src is not None:
             topic, body, have = src["topic"], src["body"], list(src["questions"])
             source: dict[str, Any] = {"id": src["id"]}
             log: list[dict[str, Any]] = [{
@@ -300,8 +300,11 @@ class EnglishSubject(Subject):
                 "summary": f"前に作った本文 #{src['id']}（題材「{topic}」、{src.get('gen_model') or '—'} が作成）に設問を足す"
                            f"（今 {len(have)} 問）"}]
             passage_model = src.get("gen_model", "")
+            pre = [e for e in src.get("log", []) if e.get("step") == "使い回す前の本文の見直し"]
+            if pre:
+                log.append({**pre[-1]})
         else:
-            used = {p.get("topic") for p in stored}
+            used = {p.get("topic") for p in stored if p.get("status") != "rejected"}  # 落ちた本文の題材はまた使える
             topics = [t for t in TOPICS[template] if t not in used and key(t, 1) not in existing]
             if not topics:
                 raise Rejected("duplicate", "この小単元の題材をすべて使いました（catalog.TOPICS に題材を足すと作れます）")
@@ -310,7 +313,8 @@ class EnglishSubject(Subject):
             body = f"{title}\n\n{passage}" if title else passage
             passage_model = ctx.model("passage")
             source = {"title": title, "body": body, "source_title": f"{passage_model} が書いた英文", "source_url": "",
-                      "template": template, "topic": topic, "status": "ok", "gen_model": passage_model, "log": log}
+                      "template": template, "topic": topic, "status": "ok", "gen_model": passage_model,
+                      "log": list(log)}  # 本文の記録だけ（このあと設問の記録が log に足されるので、ここで写す）
             have = []
         # 設問の番号（重複の判定に使う）。不合格になった設問の番号とも重ならないよう、不合格の数も足す
         start = len(have) + (src.get("rejected", 0) if reusable else 0) + 1
@@ -365,12 +369,15 @@ class EnglishSubject(Subject):
         }]
         partial: dict[str, Any] = {"unit": "en-reading", "template": template, "format": "choice",
                                    "params": {"topic": topic, "passage_model": model}}
+        rejected_passage: dict[str, Any] = {"template": template, "topic": topic, "status": "rejected",
+                                            "gen_model": model, "source_title": f"{model} が書いた英文"}
         _set_label(ctx.llm, "本文作成")
         out = _chat(ctx, prompts.PASSAGE_SYSTEM, user, prompts.PASSAGE_SCHEMA, model)
         for round_no in range(FIX_ROUNDS + 1):
             title = check.normalize(str(out.get("title") or ""))
             passage = check.normalize(str(out.get("passage") or ""))
-            partial.update(question=title, explanation=passage)
+            partial.update(question=f"（本文の段階で不合格）{title}", explanation="",
+                           passage={**rejected_passage, "title": title, "body": f"{title}\n\n{passage}" if title else passage})
             issues = self._passage_issues(spec, title, passage)
             if not issues:
                 break
@@ -390,27 +397,72 @@ class EnglishSubject(Subject):
             log.append(self._review_passage(ctx, body, log, partial))
         return title, passage, log
 
-    def _review_passage(self, ctx: GenContext, body: str, log: list[dict[str, Any]],
-                        partial: dict[str, Any]) -> dict[str, Any]:
-        """本文の見直し（見直し役）：時系列・因果・矛盾・言葉と内容の食い違い・英文の誤り。問題ありなら本文ごと不合格。"""
+    @staticmethod
+    def _passage_check(llm: LLM, model: str, body: str) -> VerifyResult:
+        """本文の見直し（時系列・因果・矛盾・言葉と内容の食い違い・架空のものを本物扱い・英文の誤り）。
+        読めなければ 1 回だけやり直し、それでも読めなければ ok=False・code="en_review_unread"（A-2）。"""
         from ...llm import LLMError
 
+        verdict, issues, raw = "", "", ""
+        for _ in range(2):
+            try:
+                out = llm.chat_json(model, prompts.PASSAGE_REVIEW_SYSTEM, prompts.passage_review_user(body),
+                                    prompts.REVIEW_SCHEMA, temperature=0.2)
+            except LLMError as exc:
+                raw = f"読めない出力（{exc}）\n{getattr(exc, 'raw', '')}"
+                continue
+            verdict, issues = _verdict(out)
+            raw = f"[[verdict]]\n{verdict}\n[[issues]]\n{issues}"
+            if verdict.startswith(("問題あり", "問題なし")):
+                break
+        if verdict.startswith("問題あり"):
+            return VerifyResult(False, f"{model}: 本文の見直しで誤りを指摘された（{issues[:300] or '理由なし'}）", issues,
+                                "en_passage_review", raw=raw[:4000])
+        if verdict.startswith("問題なし"):
+            return VerifyResult(True, f"{model}: 本文に誤りは見つからなかった", issues, raw=raw[:4000])
+        return VerifyResult(False, f"{model}: 本文の見直しの結果を読めなかった", "", "en_review_unread", raw=raw[:4000])
+
+    def review_passage(self, llm: LLM, model: str, passage: Any) -> VerifyResult | None:
+        """見直しだけをやり直す依頼で「本文の見直しもする」を選んだとき（第 5 回のレビュー B-2）。"""
+        return self._passage_check(llm, model, passage.body)
+
+    def _review_passage(self, ctx: GenContext, body: str, log: list[dict[str, Any]],
+                        partial: dict[str, Any]) -> dict[str, Any]:
+        """作成のときの本文の見直し（見直し役）。誤りの指摘・読めないときは本文ごと不合格（本文は状態 rejected で残す）。"""
         model = ctx.model("review")
         _set_label(ctx.llm, "本文の見直し")
-        try:
-            out = ctx.llm.chat_json(model, prompts.PASSAGE_REVIEW_SYSTEM, prompts.passage_review_user(body),
-                                    prompts.REVIEW_SCHEMA, temperature=0.2)
-        except LLMError as exc:  # 読めないときは、それだけで不合格にしない（設問の見直しで拾う）
-            return {"step": "本文の見直し", "ok": True, "model": model, "summary": f"見直しの結果を読めなかった（{exc}）",
-                    "raw": getattr(exc, "raw", "")[:4000]}
-        verdict, issues = _verdict(out)
-        entry = {"step": "本文の見直し", "model": model, "raw": f"[[verdict]]\n{verdict}\n[[issues]]\n{issues}"[:4000]}
-        if verdict.startswith("問題あり"):
-            summary = f"本文の見直しで誤りを指摘された（{issues[:300] or '理由なし'}）"
-            raise Rejected("en_passage_review", summary, log + [{**entry, "ok": False, "summary": summary}], partial)
-        if verdict.startswith("問題なし"):
-            return {**entry, "ok": True, "summary": "本文に誤りは見つからなかった"}
-        return {**entry, "ok": True, "summary": f"見直しの結果を読めなかった（{verdict[:60]}）"}
+        res = self._passage_check(ctx.llm, model, body)
+        entry = {"step": "本文の見直し", "model": model, "ok": res.ok, "summary": res.summary, "raw": res.raw}
+        if not res.ok:
+            raise Rejected(res.code, res.summary, log + [entry], partial)
+        return entry
+
+    def _reusable_passage(self, ctx: GenContext, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """使い回す本文を選ぶ。今の本文作成役以外が書いた本文は、今の見直し役の見直しを通ったものだけ
+        （まだなら今見直して、結果を本文に残す。誤りがあれば使えない印を付ける。第 5 回のレビュー B-1：
+        bonsai・qwen の古い本文が使い回されていた）。見直しをしない依頼では、ほかのモデルの本文は使わない。"""
+        writer, reviewer = ctx.model("passage"), ctx.model("review")
+        for src in candidates:
+            if src.get("gen_model") == writer:
+                return src
+            checked = [e for e in src.get("log", []) if e.get("step") in ("本文の見直し", "使い回す前の本文の見直し",
+                                                                           "本文の見直しのやり直し")
+                       and e.get("model") == reviewer]
+            if checked:
+                if checked[-1].get("ok"):
+                    return src
+                continue
+            if not ctx.review:
+                continue
+            _set_label(ctx.llm, "本文の見直し")
+            res = self._passage_check(ctx.llm, reviewer, src["body"])
+            entry = {"step": "使い回す前の本文の見直し", "model": reviewer, "ok": res.ok, "summary": res.summary,
+                     "raw": res.raw}
+            ctx.update_passage(src["id"], {"log_add": [entry], **({} if res.ok else {"status": "rejected"})})
+            src["log"] = src.get("log", []) + [entry]
+            if res.ok:
+                return src
+        return None
 
     def _write_questions(self, ctx: GenContext, spec: Any, body: str, have: list[str], n: int,
                          log: list[dict[str, Any]], partial: dict[str, Any]) -> tuple[list[dict[str, Any]], list[list[str]]]:

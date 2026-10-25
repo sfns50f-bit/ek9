@@ -148,6 +148,8 @@ class GenContext:
     # (小単元ID) -> その小単元の本文 [{"id", "title", "body", "topic", "status", "questions": [設問の文]}]
     # （設問を後から足すため。不合格になった設問は questions に入れない）
     passages: Callable[[str], list[dict[str, Any]]] = lambda _template: []
+    # (本文の ID, {"status": …, "log_add": [記録]}) -> 本文を書き換える（使い回す前の見直しの結果を残す・使えない印を付ける）
+    update_passage: Callable[[int, dict[str, Any]], None] = lambda _id, _changes: None
 
     def model(self, role: str) -> str:
         """役割のモデル。設定がなければ作成役のモデル。"""
@@ -193,6 +195,11 @@ class Subject:
 
         対応しない科目は None を返す（見直しをしない）。
         """
+        return None
+
+    def review_passage(self, llm: LLM, model: str, passage: Any) -> VerifyResult | None:
+        """本文だけの見直し（任意）。見直しだけをやり直す依頼で「本文の見直しもする」を選んだときに呼ぶ。
+        対応しない科目は None。"""
         return None
 
     def grade(self, sandbox: Sandbox | None, problem: Any, response: str) -> Grade:

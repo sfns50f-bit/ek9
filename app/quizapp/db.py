@@ -124,6 +124,7 @@ class Job(Base):
     # 結果を記録に足すだけ。合否は変えない。見直し役のモデルを比べる・前に作った問題を点検し直すため）
     kind: Mapped[str] = mapped_column(String(16), default="generate")
     target_ids_json: Mapped[str] = mapped_column("target_ids", Text, default="[]")
+    review_passage: Mapped[bool] = mapped_column(Boolean, default=False)  # 見直しのやり直しで本文も見直すか
     # 科目だけの役割のモデル（英語の本文作成 {"passage": "anthropic/…"} など）
     extra_models_json: Mapped[str] = mapped_column("extra_models", Text, default="{}")
     # 処理したときの思考モード {モデル: "on" / "off" / "default" / "api"}（runtime.THINK_RECORD。前の版の依頼は空）

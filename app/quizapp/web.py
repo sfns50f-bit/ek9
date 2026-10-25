@@ -725,7 +725,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     def review_rereview(request: Request, subject: str = Form(""), unit: str = Form(""), level: str = Form(""),
                         gen_model: str = Form(""), status: str = Form("ready"), date_from: str = Form(""),
                         date_to: str = Form(""), id_from: str = Form(""), id_to: str = Form(""),
-                        model: str = Form(""), model_text: str = Form(""), limit: str = Form("20")) -> Response:
+                        model: str = Form(""), model_text: str = Form(""), limit: str = Form("20"),
+                        with_passage: str = Form("")) -> Response:
         """見直しだけをやり直す依頼：絞り込んだ問題（新しい順に limit 問まで）を、選んだモデルで見直す。
 
         結果は各問題の記録に足すだけで、合否は変えない（見直し役のモデルを比べる・前に作った問題を点検し直すため）。
@@ -746,7 +747,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             plan = runtime.ModelPlan(gen_model=chosen, verify_model=chosen, verify_count=1, verify_model_2="",
                                      review=True, review_model="")
             job = Job(subject=main, scope="", format="", count=len(rows), kind="review",
-                      target_ids_json=json.dumps([p.id for p in rows]))
+                      target_ids_json=json.dumps([p.id for p in rows]), review_passage=with_passage == "on")
             runtime.apply_plan(job, plan)
             runtime.record_think(settings, s, job, plan)
             s.add(job)
