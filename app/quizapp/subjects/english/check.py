@@ -153,10 +153,12 @@ has her him his its our out own she who why how all any few nor off too yet one 
 
 
 def _stem(w: str) -> str:
+    """語形の違いをそろえる（decide・decided・decides・deciding → decid）。"""
     for suf in ("ing", "ed", "es", "s"):
         if len(w) > len(suf) + 3 and w.endswith(suf):
-            return w[: -len(suf)]
-    return w
+            w = w[: -len(suf)]
+            break
+    return w[:-1] if len(w) > 4 and w.endswith("e") else w
 
 
 def content_coverage(option: str, passage: str) -> tuple[float, list[str]]:
@@ -177,6 +179,34 @@ def stated_in_passage(option: str, passage: str) -> bool:
     """選択肢の中心の語のほとんど（6 割以上・2 語以上）が本文にある（＝「本文に書かれていない」ではない）。"""
     share, found = content_coverage(option, passage)
     return share >= 0.6 and len(found) >= 2
+
+
+def stray_english(explanation: str, allowed_texts: list[str]) -> list[str]:
+    """語彙の問題の解説に出てくる英単語のうち、例文にも選択肢にもないもの（第 5 回のレビュー D-1：
+    選択肢にない語の説明をしていた）。語形の違い（-s・-ed・-ing）と、ありふれた語は見ない。"""
+    have = {_stem(w.lower()) for t in allowed_texts for w in words(t)}
+    out = []
+    for w in words(explanation):
+        lw = w.lower()
+        if len(lw) < 3 or lw in _STOP or _stem(lw) in have:
+            continue
+        out.append(w)
+    return list(dict.fromkeys(out))
+
+
+_ARTICLE_RE = re.compile(r"第\s*[0-9０-９一二三四五六七八九十]+\s*条")
+_MAIN_Q_RE = re.compile(r"\b(main|most important|biggest|primary)\s+(reason|idea|purpose|point|cause)\b", re.I)
+_ONE_OF_RE = re.compile(r"\b(one|another|a|second|third)\s+(reason|idea|purpose|point|cause)\b|\bone of the\b", re.I)
+
+
+def article_typo(text: str) -> bool:
+    """段落を「第N条」と書いている（第 5 回のレビュー D-3）。"""
+    return bool(_ARTICLE_RE.search(text or ""))
+
+
+def main_vs_one(question: str, evidence: str) -> bool:
+    """「main reason」などを問うのに、根拠の文が「One reason」など 1 つの理由にすぎない（D-4）。"""
+    return bool(_MAIN_Q_RE.search(question or "")) and bool(_ONE_OF_RE.search(evidence or ""))
 
 
 def first_sentence(text: str) -> str:

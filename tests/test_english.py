@@ -903,3 +903,29 @@ def test_rereview_reapplies_mechanical_checks(settings, sessions, sandbox):
     with sessions() as s:
         e = [e for e in s.get(Problem, p.id).verification if e["step"] == "見直しのやり直し"][-1]
     assert not e["ok"] and "機械的な点検" in e["summary"] and "内部の言葉" in e["summary"]
+
+
+# --- 第 5 回のレビューの D（機械的な点検の追加） -------------------------------------------
+
+def test_review05_more_checks():
+    from quizapp.subjects.english import _question_issues
+
+    # D-1：語彙の解説に、例文にも選択肢にもない英単語
+    assert check.stray_english("decide は「決める」。decided の形もある。recognize とは違う。",
+                               ["We must decide now.", "decide", "borrow"]) == ["recognize"]
+    sub = EnglishSubject()
+    word = next(w for w in WORDS if w.word == "decide")
+    fields = {"sentence": "We need to decide where to go before the summer vacation starts next week.",
+              "translation": "来週夏休みが始まる前に、どこへ行くか決める必要がある。",
+              "hint": "where to go と一緒に使われている動詞に注目しよう。",
+              "explanation": "どこへ行くかを決めるという意味なので decide が入る。choose でも近い意味になる。"}
+    assert any("choose" in x for x in sub._vocab_issues(word, [], fields, "en-vocab-blank"))
+    # D-3・D-4
+    body = "Why Bees Matter\n\nOne reason bees are important is that they help plants grow.\n\nThey also make honey."
+    q = {"question": "What is the main reason bees are important?", "options": ["They help plants grow", "They sing",
+                                                                                 "They sleep", "They swim"],
+         "answer": 0, "wrong": {"B": "contradicts", "C": "contradicts", "D": "contradicts"},
+         "evidence": "One reason bees are important is that they help plants grow.",
+         "hint": "第1条を読もう。", "explanation": "本文に植物が育つのを助けるとある。ほかの選択肢は本文と合わない内容である。"}
+    issues = _question_issues(q, body)
+    assert any("第N条" in x for x in issues) and any("One reason" in x for x in issues)

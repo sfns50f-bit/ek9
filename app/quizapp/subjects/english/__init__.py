@@ -134,6 +134,12 @@ def _question_issues(q: dict[str, Any], passage: str, *, check_paragraph: bool =
         out.append("ヒントが解説の 1 文目とほぼ同じ（ヒントは本文のどこを読むかだけを示す）")
     if q["evidence"] and check.word_count(q["evidence"]) >= 4 and check.contains(q["hint"], q["evidence"]):
         out.append("ヒントに根拠の文がそのまま書かれている")
+    for field, label in (("hint", "ヒント"), ("explanation", "解説")):
+        if check.article_typo(q[field]):
+            out.append(f"{label}で段落を「第N条」と書いている（「第N段落」）")
+    if check.main_vs_one(q["question"], q["evidence"]):
+        out.append("設問は main reason / main idea などを問うのに、根拠の文は「One reason」など理由の 1 つにすぎない"
+                   "（設問を「one reason」にするか、主な理由を述べた文を根拠にする）")
     # ヒントの「第N段落」が、根拠の文のある段落と合っているか（A-5）
     if check_paragraph and q["evidence"]:
         where = check.paragraph_of(passage, q["evidence"])
@@ -676,6 +682,9 @@ class EnglishSubject(Subject):
                     break
         if check.similar(fields["hint"], check.first_sentence(fields["explanation"])):
             out.append("ヒントが解説の 1 文目とほぼ同じ")
+        stray = check.stray_english(fields["explanation"], [sentence, word.word, *[w.word for w in others]])
+        if stray:
+            out.append(f"解説に、例文にも選択肢にもない英単語（{', '.join(stray[:4])}）がある（選択肢にない語の説明はしない）")
         # 意味の問題の例文には空所がない（A-7）
         if template == "en-vocab-meaning":
             for field, label in (("hint", "ヒント"), ("explanation", "解説")):
@@ -935,6 +944,18 @@ class EnglishSubject(Subject):
             out += check.choice_issues(texts, correct, english=problem.template != "en-vocab-meaning")
             if check.letter_reference(problem.explanation) or check.letter_reference(problem.hint):
                 out.append("解説・ヒントが選択肢を記号で呼んでいる")
+        if problem.template in VOCABS:
+            allowed = [problem.question, *[c.get("text", "") for c in problem.choices],
+                       str(problem.params.get("word", "")), *problem.params.get("others", [])]
+            body = problem.explanation.split("\n\n答え:")[0]
+            stray = check.stray_english(body, allowed)
+            if stray:
+                out.append(f"解説に、例文にも選択肢にもない英単語（{', '.join(stray[:4])}）がある")
+        if problem.template in READINGS:
+            if check.article_typo(problem.hint) or check.article_typo(problem.explanation):
+                out.append("ヒント・解説で段落を「第N条」と書いている")
+            if check.main_vs_one(problem.question, str(problem.params.get("evidence", ""))):
+                out.append("設問は main reason などを問うのに、根拠の文は理由の 1 つにすぎない")
         if problem.passage is not None:
             for c in problem.choices:
                 if not c.get("correct") and c.get("mistake") == "not_stated" and check.stated_in_passage(
