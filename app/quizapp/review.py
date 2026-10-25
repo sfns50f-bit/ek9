@@ -77,6 +77,33 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
     return list(s.execute(q.offset(offset).limit(limit)).scalars())
 
 
+def verify_runs(problem: Problem) -> list[dict[str, Any]]:
+    """検証の回ごとの記録と、判定の行（○ × ？）。要確認の一覧で、どの判定で割れたかを見せる（第 7 回のレビュー B）。"""
+    out = []
+    for e in problem.verification:
+        if e.get("step") == "検証":
+            lines = [ln.strip() for ln in str(e.get("detail") or "").splitlines() if ln.strip()[:1] in ("○", "×", "？")]
+            out.append({**e, "lines": lines})
+    return out
+
+
+def golden_candidates(s: Session, subject: str, have: set[int]) -> list[dict[str, Any]]:
+    """要確認を人が確かめた問題を、見本集の形にする（通した＝pass、捨てた＝reject。見本集にあるものは除く）。"""
+    from . import golden
+
+    out = []
+    q = select(Problem).where(Problem.subject == subject).order_by(Problem.id)
+    for p in s.execute(q).scalars():
+        steps = [e.get("step") for e in p.verification]
+        if p.id in have:
+            continue
+        if "要確認からストックへ" in steps:
+            out.append(golden.item_from_problem(p, "pass", "", "要確認を人が確かめて通した"))
+        elif p.reject_code == "checked_rejected":
+            out.append(golden.item_from_problem(p, "reject", "", f"要確認を人が確かめて捨てた（{p.reject_reason[:120]}）"))
+    return out
+
+
 def rereviews(problem: Problem) -> list[dict[str, Any]]:
     """見直しのやり直しの記録（古い順）。"""
     return [e for e in problem.verification if e.get("step") in (REREVIEW_STEP, PASSAGE_REREVIEW_STEP)]
@@ -170,7 +197,7 @@ def think_text(problem: Problem) -> str:
 
 # 書き出しに出す記録の段階（作成の途中の細かい記録は出さない）
 _EXPORT_STEPS = ("文章", "使い回す前の本文の見直し", PASSAGE_REREVIEW_STEP, "本文の点検", "本文の見直し", "英文の点検", "設問の点検", "例文の点検", "本文なしの確認",
-                 "検証", "解説の見直し", REREVIEW_STEP, "設問", "要確認からストックへ")
+                 "検証", "解説の見直し", REREVIEW_STEP, "設問", "要確認からストックへ", "要確認から不合格へ")
 
 
 def verification_lines(problem: Problem) -> list[str]:

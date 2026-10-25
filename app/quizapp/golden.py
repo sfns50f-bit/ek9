@@ -27,9 +27,10 @@ from .subjects import get_subject
 
 LETTERS = "ABCDEFGH"
 OUTCOMES = {"reject": "弾いた", "pass": "通した", "unsure": "要確認"}
-EXPECTED = {"reject": "弾くべき", "pass": "通すべき"}
+# borderline（微妙）は採点に含めないが、結果は表に出す（第 7 回のレビュー G）
+EXPECTED = {"reject": "弾くべき", "pass": "通すべき", "borderline": "微妙"}
 # 読めなかっただけの結果は「弾いた」に数えず「要確認」にする
-UNSURE_CODES = ("llm_output", "solver_unreadable", "en_review_unread")
+UNSURE_CODES = ("llm_output", "solver_unreadable", "en_review_unread", "needs_check")
 
 
 def golden_dirs() -> list[Path]:
@@ -260,13 +261,22 @@ def config_label(job: Any) -> str:
     parts.append(f"見直し {job.review_model or job.verify_model}" if job.explanation_review else "見直しなし")
     if job.review_passage:
         parts.append("本文も")
+    if getattr(job, "options", None):  # 検証のやり方（第 7 回のレビュー C・D・E。今の方式と新しい方式を並べて比べる）
+        from .runtime import option_label
+        from .subjects import get_subject
+
+        parts.append(option_label(get_subject(job.subject), job.options))
     return "／".join(parts)
 
 
-def score(results: list[dict[str, Any]]) -> dict[str, int]:
+def score(results: list[dict[str, Any]], expected: dict[int, str] | None = None) -> dict[str, int]:
+    """成績。expected（{番号: 期待}）を渡せば、測ったときの期待ではなく今の見本集の期待で数える
+    （見本集を直したあとも、前の測定を同じ物差しで比べられるように）。微妙は数えない。"""
     out = {"reject_total": 0, "reject_caught": 0, "reject_unsure": 0, "pass_total": 0, "pass_wrong": 0,
            "pass_unsure": 0}
     for r in results:
+        exp = (expected or {}).get(r.get("id"), r.get("expected"))
+        r = {**r, "expected": exp}
         if r.get("expected") == "reject":
             out["reject_total"] += 1
             out["reject_caught"] += r.get("outcome") == "reject"
@@ -279,9 +289,12 @@ def score(results: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def score_text(sc: dict[str, int]) -> str:
+    """成績の文。要確認は公開しない（出題の在庫に入れない）ので、「弾いた＋要確認」を「止めた」としても数える（G）。"""
     return (f"致命的な欠陥あり {sc['reject_caught']}／{sc['reject_total']} 問を弾いた"
             f"（要確認 {sc['reject_unsure']}）・問題なし {sc['pass_wrong']}／{sc['pass_total']} 問を誤って弾いた"
-            f"（要確認 {sc['pass_unsure']}）")
+            f"（要確認 {sc['pass_unsure']}）。要確認を公開しない扱いでは、弾くべき問題を "
+            f"{sc['reject_caught'] + sc['reject_unsure']}／{sc['reject_total']} 問止め、通すべき問題を "
+            f"{sc['pass_wrong'] + sc['pass_unsure']}／{sc['pass_total']} 問止めた")
 
 
 # これまでの記録から参考として並べる見直しの段階
@@ -300,22 +313,25 @@ def past_reviews(s: Session, ids: list[int]) -> dict[int, dict[str, bool]]:
 
 def to_markdown(gs: GoldenSet, jobs: list[Any], past: dict[int, dict[str, bool]]) -> str:
     """見本集の測定の比べる表（問題 × 構成 → 弾いた／通した／要確認）と、構成ごとの成績・理由。"""
+    expected = {x.id: x.expected for x in gs.samples}
     out = ["# 見本集での測定", "",
-           f"見本集：{gs.path}（{len(gs.samples)} 問：弾くべき {gs.counts['reject']}・通すべき {gs.counts['pass']}。"
+           f"見本集：{gs.path}（{len(gs.samples)} 問：弾くべき {gs.counts['reject']}・通すべき {gs.counts['pass']}・"
+           f"微妙（採点に含めない） {gs.counts['borderline']}。"
            f"データベースから加えた問題 {len(gs.db_found)}／{len(gs.db_wanted)}）", ""]
     if gs.db_missing:
         out += [f"データベースから加えられなかった問題：{'、'.join(gs.db_missing)}", ""]
-    out += ["目標：弾くべき問題はすべて弾く。通すべき問題を誤って弾くのは 20 問中 2〜3 問まで。", "",
+    out += [f"目標：要確認を公開しない扱いで、弾くべき問題をすべて止める。通すべき問題を誤って止めるのは "
+            f"{gs.counts['pass']} 問中 2〜3 問まで。", "",
             "## 構成ごとの成績", ""]
     if not jobs:
         out += ["（まだ測っていません）", ""]
     for j in jobs:
-        out.append(f"- 依頼 #{j.id}（{config_label(j)}）：{score_text(score(j.results))}"
+        out.append(f"- 依頼 #{j.id}（{config_label(j)}）：{score_text(score(j.results, expected))}"
                    f"{'' if j.status == 'done' else f'（{j.status}：途中まで）'}")
     out.append("")
     models = sorted({m for v in past.values() for m in v})
     head = ["問題", "期待", "欠陥の型"] + [f"#{j.id}" for j in jobs] + [f"記録：{m}" for m in models]
-    out += ["## 問題ごと", "", "○ 期待どおり／× 期待と違う。「記録」はデータベースにあるこれまでの見直しの結果（参考）", "",
+    out += ["## 問題ごと", "", "○ 期待どおり／× 期待と違う／・ 微妙（採点に含めない）。「記録」はデータベースにあるこれまでの見直しの結果（参考）", "",
             "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     types = gs.data.get("defect_types") or {}
     results = [{r["id"]: r for r in j.results} for j in jobs]
@@ -327,7 +343,8 @@ def to_markdown(gs: GoldenSet, jobs: list[Any], past: dict[int, dict[str, bool]]
             if r is None:
                 cells.append("—")
             else:
-                mark = "○" if r["outcome"] == x.expected else "×" if r["outcome"] != "unsure" else "？"
+                mark = ("・" if x.expected == "borderline" else "○" if r["outcome"] == x.expected
+                        else "×" if r["outcome"] != "unsure" else "？")
                 cells.append(f"{mark} {OUTCOMES[r['outcome']]}")
         for m in models:
             v = past.get(x.id, {}).get(m)
@@ -339,12 +356,15 @@ def to_markdown(gs: GoldenSet, jobs: list[Any], past: dict[int, dict[str, bool]]
         for r in j.results:
             x = gs.by_id().get(r["id"])
             bad = [st for st in r.get("steps", []) if not st.get("ok")]
-            mark = "○" if r["outcome"] == r.get("expected") else "×"
-            line = f"- {mark} #{r['id']}（{EXPECTED.get(r.get('expected', ''), '')}・{OUTCOMES[r['outcome']]}）"
+            exp = expected.get(r["id"], r.get("expected", ""))
+            mark = "・" if exp == "borderline" else "○" if r["outcome"] == exp else "×"
+            line = f"- {mark} #{r['id']}（{EXPECTED.get(exp, '')}・{OUTCOMES[r['outcome']]}）"
             if x is not None and x.note:
                 line += f" 見本集のメモ：{x.note[:120]}"
             out.append(line)
             for st in bad:
                 out.append(f"  - {st.get('step')}（{st.get('model') or '—'}）：{str(st.get('summary', ''))[:300]}")
+                if st.get("code") in UNSURE_CODES and st.get("raw"):  # 読めなかった出力そのもの（原因を確かめる）
+                    out += ["", "    ```", *[f"    {ln}" for ln in str(st["raw"])[:700].splitlines()], "    ```", ""]
         out.append("")
     return "\n".join(out)

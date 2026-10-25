@@ -498,7 +498,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                 extra=tuple(sorted((r, m) for r, m in extra.items() if m)),
             )
             job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=fmt,
-                      count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))))
+                      count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))),
+                      options_json=json.dumps(runtime.verify_options(s, sub)))  # 検証のやり方も依頼したときの設定で
             runtime.apply_plan(job, chosen)
             runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
             s.add(job)
@@ -676,7 +677,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         """科目ごとの上書き（役割ごとのモデルと API の 1 日の上限）。空の欄は全体の設定。「既定値に戻す」で全部消す。"""
         form = await request.form()
         sub = subject_or_404(str(form.get("subject", "")))
-        keys = [*runtime.ROLES, *sub.model_roles, *runtime.DAILY_KEYS]
+        keys = [*runtime.ROLES, *sub.model_roles, *runtime.DAILY_KEYS, *(f"opt_{k}" for k in sub.verify_options)]
         values = {} if form.get("action") == "reset" else {k: str(form.get(k, "")) for k in keys}
         with sessions.begin() as s:
             runtime.save_subject_settings(s, sub.id, values)
@@ -702,7 +703,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         if sub is None or not sub.test_format or not sub.scope_valid(scope):
             raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
-            job = Job(subject=sub.id, scope=scope, format=sub.test_format, count=1, is_test=True)
+            job = Job(subject=sub.id, scope=scope, format=sub.test_format, count=1, is_test=True,
+                      options_json=json.dumps(runtime.verify_options(s, sub)))
             plan = runtime.model_plan(settings, s, sub)
             runtime.apply_plan(job, plan)
             runtime.record_think(settings, s, job, plan)
@@ -748,17 +750,21 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             model_names = [m["name"] for m in ollama.get("models", [])] + api_info(s)["models"]
             reviewer = runtime.model_plan(settings, s, get_subject(subject)).reviewer
             goldens = [gs for gs in (golden.golden_set(s, sub.id) for sub in all_subjects()) if gs is not None]
-        return render(request, "review.html", goldens=goldens, subject_name=lambda k: getattr(get_subject(k), "name", k), page="/review", problems=rows[:per], more=len(rows) > per,
+            option_now = {sub.id: runtime.verify_options(s, sub) for sub in all_subjects()}
+        return render(request, "review.html", goldens=goldens, option_values=lambda k: option_now.get(k, {}),
+                      subject_options=lambda k: getattr(get_subject(k), "verify_options", {}), subject_name=lambda k: getattr(get_subject(k), "name", k), page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
                       issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
                       msg=msg, n=n, model_names=model_names, reviewer=reviewer, rereviews=review.rereviews,
+                      verify_runs=review.verify_runs,
                       max_rereview=review.MAX_REREVIEW)
 
     @app.post("/review/golden")
     def review_golden(request: Request, subject: str = Form(...), verify_model: str = Form(""),
                       verify_text: str = Form(""), verify_count: str = Form("2"), review_model: str = Form(""),
                       review_text: str = Form(""), with_review: str = Form(""),
-                      with_passage: str = Form("")) -> Response:
+                      with_passage: str = Form(""), opt_fit3: str = Form(None),
+                      opt_reading_strict: str = Form(None), opt_reading_think: str = Form(None)) -> Response:
         """見本集での測定（第 6 回のレビューの 5 章）：見本集の問題に、選んだ検証役・見直し役で検証・見直しをかける。
         結果は依頼に残すだけ（ストック・問題の記録は変えない）。"""
         if not review_ok(request):
@@ -776,6 +782,12 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                                      review=with_review == "on", review_model=reviewer_)
             job = Job(subject=subject, scope="", format="", count=len(gs.samples), kind="golden",
                       target_ids_json=json.dumps([x.id for x in gs.samples]), review_passage=with_passage == "on")
+            # 検証のやり方（C・D・E）：画面で選んだもの。選んでいないものは科目の設定
+            chosen = {"fit3": opt_fit3, "reading_strict": opt_reading_strict, "reading_think": opt_reading_think}
+            opts = runtime.verify_options(s, get_subject(subject))
+            specs = getattr(get_subject(subject), "verify_options", {})
+            opts.update({k: v for k, v in chosen.items() if v is not None and k in specs and v in specs[k]["choices"]})
+            job.options_json = json.dumps(opts)
             runtime.apply_plan(job, plan)
             runtime.record_think(settings, s, job, plan)
             s.add(job)
@@ -918,6 +930,36 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                      "at": utcnow().isoformat()}])
         target = back if back.startswith("/review") else "/review"
         return redirect(target + ("&" if "?" in target else "?") + "msg=restored")
+
+    @app.post("/review/{pid}/discard")
+    def review_discard(request: Request, pid: int, back: str = Form("/review"), note: str = Form("")) -> Response:
+        """要確認（検証の判定が割れた）を確かめて捨てる。不合格のまま、理由を「要確認を確かめて捨てた」にする。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions.begin() as s:
+            problem = problem_or_404(s, pid)
+            if problem.status == "rejected" and problem.reject_code == "needs_check":
+                problem.reject_code = "checked_rejected"
+                problem.reject_reason = (note.strip()[:300] or "問題検証モードで確かめて捨てた") + "（" + \
+                    problem.reject_reason[:200] + "）"
+                problem.verification_json = dumps(problem.verification + [
+                    {"step": "要確認から不合格へ", "ok": False, "summary": note.strip()[:300] or "問題検証モードで確かめて捨てた",
+                     "at": utcnow().isoformat()}])
+        target = back if back.startswith("/review") else "/review"
+        return redirect(target + ("&" if "?" in target else "?") + "msg=discarded")
+
+    @app.get("/review/golden-candidates.json")
+    def review_golden_candidates(request: Request, subject: str = "english") -> Response:
+        """要確認を人が確かめた問題を、見本集に足す形（JSON の items）で出す（第 7 回のレビュー B。任意）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        with sessions() as s:
+            gs = golden.golden_set(s, subject)
+            have = {x.id for x in gs.samples} if gs else set()
+            items = review.golden_candidates(s, subject, have)
+        return Response(json.dumps({"items": items}, ensure_ascii=False, indent=1) + "\n",
+                        media_type="application/json; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="golden_candidates_{subject}.json"'})
 
     @app.get("/review/login")
     def review_login_page(request: Request, msg: str = "") -> Response:

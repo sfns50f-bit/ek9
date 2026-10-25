@@ -128,6 +128,8 @@ class Job(Base):
     review_passage: Mapped[bool] = mapped_column(Boolean, default=False)  # 見直しのやり直しで本文も見直すか
     # "golden"（見本集での測定。golden.py）の結果 [{id, expected, defect_type, outcome, steps}]
     results_json: Mapped[str] = mapped_column("results", Text, default="[]")
+    # 検証のやり方（Subject.verify_options の値。依頼したときに記録し、最後までこの値で検証する）
+    options_json: Mapped[str] = mapped_column("options", Text, default="{}")
     # 科目だけの役割のモデル（英語の本文作成 {"passage": "anthropic/…"} など）
     extra_models_json: Mapped[str] = mapped_column("extra_models", Text, default="{}")
     # 処理したときの思考モード {モデル: "on" / "off" / "default" / "api"}（runtime.THINK_RECORD。前の版の依頼は空）
@@ -147,6 +149,10 @@ class Job(Base):
     @property
     def target_ids(self) -> list[int]:
         return [int(i) for i in (_loads(self.target_ids_json, []) or [])]
+
+    @property
+    def options(self) -> dict[str, str]:
+        return {str(k): str(v) for k, v in (_loads(self.options_json, {}) or {}).items()}
 
     @property
     def results(self) -> list[dict[str, Any]]:

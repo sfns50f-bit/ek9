@@ -15,20 +15,22 @@ function renderMath(root) {
   });
 }
 
-// 作成役と検証役が同じモデルなら注意を出す（作る画面のモデルの欄と、状態の科目ごとの設定）
+// 作成役と検証役・見直し役が同じモデルなら注意を出す（作る画面のモデルの欄と、状態の科目ごとの設定。
+// 見直し役は第 7 回のレビュー F で足した。見直し役の欄が空なら検証役と同じ）
 function setupSameModelWarning() {
   document.querySelectorAll(".models, .subject-models").forEach((box) => {
     const warn = box.querySelector(".same-model");
     const gen = box.querySelector("select[name$=gen_model], select[name=gen]");
     const verify = box.querySelector("select[name$=verify_model], select[name=verify]");
+    const review = box.querySelector("select[name$=review_model], select[name=review]");
     if (!warn || !gen || !verify) return;
     const check = () => {
       const g = gen.value || gen.dataset.inherit || "";
       const v = verify.value || verify.dataset.inherit || "";
-      warn.hidden = !g || g !== v;
+      const r = review ? (review.value || review.dataset.inherit || v) : v;
+      warn.hidden = !g || (g !== v && g !== r);
     };
-    gen.addEventListener("change", check);
-    verify.addEventListener("change", check);
+    [gen, verify, review].forEach((el) => el && el.addEventListener("change", check));
   });
 }
 
