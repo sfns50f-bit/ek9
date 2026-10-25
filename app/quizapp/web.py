@@ -614,6 +614,38 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return render(request, "status_quality.html", page="/status/quality", stats=stats, job_rows=job_rows,
                       rejected=rejected, codes=codes, days=days_n, from_job=from_n or "")
 
+    @app.get("/status/quality/export.md")
+    def status_quality_export(days: str = "30", from_job: str = "", download: int = 0) -> Response:
+        """「検証の成績」を Markdown で書き出す（第 5 回のレビュー E-1）。"""
+        days_n, from_n = max(0, _int(days, 30)), max(0, _int(from_job, 0))
+        with sessions() as s:
+            stats = stock.verify_stats(s, days_n, from_n)
+            job_rows = stock.job_stats(s, days_n, from_n)
+            rejected = stock.recent_rejected(s, days_n, from_n)
+        codes = {}
+        for sub in all_subjects():
+            codes.update(sub.all_reject_codes())
+        period = {1: "直近 24 時間", 7: "7 日", 30: "30 日", 0: "すべて"}.get(days_n, f"{days_n} 日")
+        if from_n:
+            period += f"・依頼 #{from_n} 以降"
+        text = review.quality_markdown(stats, job_rows, rejected, codes, period, when=lambda dt: localtime(dt))
+        headers = {"Content-Disposition": 'attachment; filename="quality.md"'} if download else {}
+        return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+    @app.get("/review/rereview.md")
+    def review_rereview_table(request: Request, subject: str = "", unit: str = "", level: str = "",
+                              gen_model: str = "", status: str = "ready", date_from: str = "", date_to: str = "",
+                              id_from: str = "", id_to: str = "", download: int = 0) -> Response:
+        """見直しのやり直しの比較表（問題 × 見直し役）。絞り込みは問題検証モードと同じ（E-2）。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
+        with sessions() as s:
+            rows = review.query(s, **review_query_args(f), limit=500)
+            text = review.rereview_table(rows)
+        headers = {"Content-Disposition": 'attachment; filename="rereview.md"'} if download else {}
+        return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
     @app.get("/status/llm")
     def status_llm(request: Request) -> Response:
         with sessions() as s:

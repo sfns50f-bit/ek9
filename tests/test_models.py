@@ -310,3 +310,26 @@ def test_rereview_works_for_math_and_export_shows_rejections(settings, sessions,
     r = client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "x"},
                     follow_redirects=True)
     assert "見直しのやり直しは頼みませんでした" in r.text
+
+
+def test_quality_and_rereview_exports(settings, sessions, sandbox, client):
+    """「検証の成績」の Markdown（E-1）と、見直しのやり直しの比較表（E-2）。不合格の問題も同じ形で書き出す（E-3）。"""
+    add_job(sessions, subject="english", scope="tmpl:en-expository", count=3)
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions, blind_correct={2})).run_once()
+    md = client.get("/status/quality/export.md?days=0").text
+    assert md.startswith("# 検証の成績") and "## 作成役のモデルごと" in md and "## 依頼ごとの比較" in md
+    assert "## 不合格の一覧" in md and "本文を読まなくても解けた" in md
+    assert "attachment" in client.get("/status/quality/export.md?days=0&download=1").headers["content-disposition"]
+    # 見直しのやり直しを 2 つのモデルで
+    for model, judge in (("model-a", "right"), ("model-b", "multiple")):
+        client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "",
+                                              "model_text": model, "limit": "5"})
+        make_worker(settings, sessions, sandbox, EnglishOracle(sessions, judge=judge)).run_once()
+    table = client.get("/review/rereview.md?subject=english").text
+    head = next(ln for ln in table.splitlines() if ln.startswith("| 問題 |"))
+    assert "model-a" in head and "model-b" in head
+    rows = [ln for ln in table.splitlines() if ln.startswith("| #")]
+    assert rows and all(ln.rstrip(" |").endswith("×") and "○" in ln for ln in rows)
+    # 不合格の問題（本文なしで解けた設問）にも選択肢が残り、同じ形で書き出せる
+    rejected_md = client.get("/review/export.md?subject=english&status=rejected").text
+    assert "### 選択肢" in rejected_md and "### 検証と見直しの記録" in rejected_md

@@ -13,6 +13,8 @@
   <label>この依頼番号以降だけ（直す前のデータを外す）
     <input type="number" name="from_job" value="{{ from_job }}" min="1" inputmode="numeric" placeholder="例：依頼 # の番号"></label>
   <button type="submit" class="secondary">絞り込む</button>
+  <a class="button secondary" href="/status/quality/export.md?days={{ days }}&from_job={{ from_job }}" target="_blank">Markdown で表示</a>
+  <a class="button secondary" href="/status/quality/export.md?days={{ days }}&from_job={{ from_job }}&download=1">Markdown を保存</a>
 </form>
 <section class="card">
   <h2>合計</h2>

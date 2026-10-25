@@ -339,6 +339,10 @@ class EnglishSubject(Subject):
             qlog = list(log)
             draft_partial = {**partial, "params": {**params, "q": i}, "question": q["question"],
                              "explanation": q["explanation"], "hint": q["hint"]}
+            if 0 <= q["answer"] < len(q["options"]):  # 不合格でも選択肢を残す（書き出しで見られるように。E-3）
+                draft_partial["choices"] = [{"text": t, "correct": j == q["answer"],
+                                             "mistake": None if j == q["answer"] else q["wrong"].get(LETTERS[j])}
+                                            for j, t in enumerate(q["options"])]
             if problems:
                 summary = "設問の点検で落ちた: " + "／".join(dict.fromkeys(problems))
                 drafts.append(self._rejected_draft(template, "en_text", summary, qlog, draft_partial, source))
