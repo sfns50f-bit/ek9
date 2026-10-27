@@ -10,7 +10,7 @@ import hmac
 from datetime import datetime
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .db import Problem, dumps
@@ -23,6 +23,7 @@ EXPORT_REQUEST = "高校生向けの問題として、正確さ・分かりや�
 STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストックのうち表記の点検で引っかかる問題",
             "reflagged": "ストックのうち見直しのやり直しで誤りを指摘された問題",
             "needs_check": "要確認（検証の判定が割れた問題。確かめてストックに入れるか決める）",
+            "ready_check": "ストックと要確認（新しく作った問題の点検用。要確認は判定が割れた理由も）",
             "deleted": "削除した問題", "rejected": "検証で不合格"}
 REREVIEW_STEP = "見直しのやり直し"  # worker.REREVIEW_STEP と同じ（web は worker を読み込まない）
 PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
@@ -49,6 +50,9 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
     status = status if status in STATUSES else "ready"
     if status == "needs_check":
         q = select(Problem).where(Problem.status == "rejected", Problem.reject_code == "needs_check")
+    elif status == "ready_check":  # 第 8 回のレビュー 4-2：作った問題の合格と要確認をまとめて書き出す
+        q = select(Problem).where(or_(Problem.status == "ready",
+                                      (Problem.status == "rejected") & (Problem.reject_code == "needs_check")))
     else:
         q = select(Problem).where(Problem.status == ("ready" if status in ("issues", "reflagged") else status))
     if since is not None:

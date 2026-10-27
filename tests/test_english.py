@@ -41,7 +41,7 @@ class EnglishOracle:
 
     def __init__(self, sessions, *, bad_evidence_once=False, bad_passage_once=False, blind_correct=(),
                  review_verdict="問題なし", passage_verdict="問題なし", bad_questions=(), judge="right",
-                 multiple_calls=None, absent="museum", awkward=False):
+                 multiple_calls=None, absent="museum", awkward=False, coherence="自然"):
         self.sessions = sessions
         self.bad_evidence_once = bad_evidence_once
         self.bad_passage_once = bad_passage_once
@@ -54,8 +54,9 @@ class EnglishOracle:
         self.judge = judge
         self.multiple_calls = multiple_calls  # judge="multiple" を最初の何回の判定だけにするか（None はいつも）
         self.n_judgments = 0
-        self.absent = absent  # 読解の「本文に書かれていない」の根拠に書く内容（D）
+        self.absent = absent  # 読解の誤答の「違う点」に書く内容（D。空なら書かない）
         self.awkward = awkward  # 語彙の誤答を「文法的には入るが不自然」と判定する（C）
+        self.coherence = coherence  # 例文の筋の確認の答え
         self.n_sentences = 0
         self.calls = []
         self.label = ""
@@ -67,6 +68,9 @@ class EnglishOracle:
             self.n_judgments += 1
             return {"judgments": self._judgments(system, user)}
         if "verdict" in props:
+            if "筋が通っているかだけ" in system:  # 例文の筋（第 8 回のレビュー 3-1）
+                self.calls.append(("coherence", model))
+                return {"verdict": self.coherence, "reason": "理由と結果がつながらない" if self.coherence == "不自然" else ""}
             if "本文を点検" in system:
                 self.calls.append(("passage_review", model))
                 # passage_verdict はリストにすると、呼ぶたびに前から使う（最後のものは使い続ける）
@@ -140,8 +144,11 @@ class EnglishOracle:
                 if self.judge == "relabel" and "park" in text:
                     label = "本文に書かれていない"
                 part = int(re.search(r"answer (\d+)", text).group(1))
-                quote = (f' — 引用: "{SENTENCES[(part - 1) % len(SENTENCES)]}"' if label != "本文に書かれていない"
-                         else f" — ない内容: {self.absent}" if "ない内容" in system else "")
+                quote = f' — 引用: "{SENTENCES[(part - 1) % len(SENTENCES)]}"'
+                if "違う点" in system and label not in ("裏付けあり", "本文と食い違う"):  # 作り直した D（第 8 回 2-2）
+                    quote = f" — 違う点: {self.absent}" if self.absent else ""
+                elif label == "本文に書かれていない":
+                    quote = ""
                 if self.judge == "bad_quote" and label == "裏付けあり":
                     quote = ' — 引用: "This sentence is not in the passage."'
                 lines.append(f"{n}: {label}{quote} — 本文の第1段落")
@@ -864,6 +871,7 @@ def test_review05_brackets_hangul_and_spelling_verifier():
 
 
 class _Spell:
+    template = "en-spelling"
     format = "input"
     question = "日本語の意味に合う英単語を書け。\n\n意味: 形\n\nWhat ( s _ _ _ _ ) is it?"
     answer = {"kind": "word", "word": "shape"}
@@ -895,17 +903,18 @@ def test_spelling_verifier_lists_every_word_that_fits():
     assert not res.ok and res.code == "solver_unreadable" and "合わない答えが続いた" in res.summary
     res = sub.verify(Lister(["shapes", "shape"]), None, "m", _Spell())  # 語形違いは聞き直す
     assert res.ok
-    # 正解のほかに条件に合う語が挙がった：例文に入るかを 3 段階で判定させる
-    llm = Lister(["shape, sharp"], fits="1: 入らない — 意味が合わない")
+    # 正解のほかに条件に合う語が挙がった：例文に入るかを判定させる（既定は 2 段階。第 8 回のレビュー 1 章）
+    llm = Lister(["shape, sharp"], fits="1: 通らない — 意味が合わない")
     res = sub.verify(llm, None, "m", _Spell())
     assert res.ok and "sharp は例文に入らない" in res.summary and "What sharp is it?" in llm.users[-1]
-    res = sub.verify(Lister(["shape, style"], fits="1: 自然に入る — 自然"), None, "m", _Spell())
+    res = sub.verify(Lister(["shape, style"], fits="1: 通る — 自然"), None, "m", _Spell())
     assert not res.ok and res.code == "en_verify_multiple" and "style" in res.summary
-    # スペルは不自然でも入れば答えが 2 つになる（#1006 の method と manner。第 7 回のレビュー H）
-    res = sub.verify(Lister(["shape, style"], fits="1: 文法的には入るが不自然 — ふつう言わない"), None, "m", _Spell())
+    # 3 段階のとき、スペルは不自然でも入れば答えが 2 つになる（#1006 の method と manner。第 7 回のレビュー H）
+    three = {"fit3": "on"}
+    res = sub.verify(Lister(["shape, style"], fits="1: 文法的には入るが不自然 — ふつう言わない"), None, "m", _Spell(),
+                     options=three)
     assert not res.ok and res.code == "en_verify_multiple"
-    # 2 段階（今の方式）に切り替えたとき
-    res = sub.verify(Lister(["shape, style"], fits="1: 通らない — 合わない"), None, "m", _Spell(), options={"fit3": "off"})
+    res = sub.verify(Lister(["shape, style"], fits="1: 入らない — 合わない"), None, "m", _Spell(), options=three)
     assert res.ok
 
 
@@ -1087,8 +1096,9 @@ def test_spelling_list_without_headings_is_read():
 
 def test_vocab_three_levels_do_not_reject_awkward_words(settings, sessions, sandbox):
     """語彙の判定を 3 段階に（第 7 回のレビュー C）：「文法的には入るが不自然」な誤答では弾かず、記録に残す（#987）。"""
-    llm = EnglishOracle(sessions, awkward=True)
-    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
+    add_job(sessions, subject="english", scope="tmpl:en-vocab-blank", count=1,
+            options_json='{"fit3": "on", "reading_strict": "off", "reading_think": "model"}')
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions, awkward=True)).run_once()
     p = problems(sessions, status="ready")[0]
     verify = next(e for e in p.verification if e["step"] == "検証")
     assert "文法的には入るが不自然" in verify["detail"]
@@ -1105,16 +1115,55 @@ def test_vocab_two_levels_can_be_chosen(settings, sessions, sandbox):
     assert "○ 正解が合うか：正解「" in next(e for e in p.verification if e["step"] == "検証")["detail"]
 
 
-def test_reading_wrong_options_need_a_reason(settings, sessions, sandbox):
-    """読解の誤答ごとに否定の根拠（食い違いの引用か、本文にない中心の内容）を書かせる（第 7 回のレビュー D）。
-    書けない・「ない内容」が実は本文にある誤答は、裏付けられる可能性ありとして要確認にする（#860 の dopamine）。"""
-    llm = EnglishOracle(sessions, absent="library")  # 「本文にない」と言った library が本文にある
-    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
-    assert problems(sessions, status="ready") == []
-    p = problems(sessions, status="rejected")[0]
-    assert p.reject_code == "needs_check" and "ない内容「library」は本文にある" in p.reject_reason
-    verify = next(e for e in p.verification if e["step"] == "検証")
-    assert "× 誤答の否定の根拠" in verify["detail"]
+@pytest.mark.parametrize("differs", ["the time", ""])
+def test_reading_wrong_options_need_a_reason(settings, sessions, sandbox, differs):
+    """作り直した D（第 8 回のレビュー 2-2）：引用を求めるのは「本文と食い違う」だけ、ほかの誤答は「違う点」を 1 行。
+    書き方が足りなければ形を示して 1 回だけ聞き直し、それでも足りなくても不合格・要確認にしない（記録に残す）。
+    本文にない内容の機械的な照合はしない（#588・#589・#605 を止めすぎた）。"""
+    add_job(sessions, subject="english", scope="tmpl:en-notice", count=1,
+            options_json='{"fit3": "off", "reading_strict": "all", "reading_think": "model"}')
+    llm = EnglishOracle(sessions, absent=differs)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    ready = problems(sessions, status="ready")
+    assert ready and not [p for p in problems(sessions, status="rejected") if p.reject_code == "needs_check"]
+    verify = next(e for e in ready[0].verification if e["step"] == "検証")
+    if differs:
+        assert "○ 誤答の根拠：どの誤答にも根拠がある" in verify["detail"]
+        assert "前の判定は形が足りませんでした" not in verify["raw"]
+    else:
+        assert "違う点が書かれていない" in verify["detail"]
+
+
+def test_reason_questions_only_get_the_reason_check():
+    """「理由・目的を問う設問だけ」（reason）では、Why / reason などの設問にだけ D をかける。"""
+    from quizapp.subjects.english import REASON_RE
+
+    assert REASON_RE.search("Why did the writer go to the park?")
+    assert REASON_RE.search("What was the main reason for the change?")
+    assert not REASON_RE.search("What is true according to the passage?")
+
+    class P:
+        template = "en-notice"
+        format = "choice"
+        passage = type("Pa", (), {"body": "The library opens at nine. It closes at five."})()
+        choices = [{"text": "It opens at nine.", "correct": True, "mistake": None},
+                   {"text": "It opens at ten.", "correct": False, "mistake": "detail"}]
+
+    systems = []
+
+    class Spy(_Replies):
+        def chat_json(self, model, system, user, schema, **kw):
+            systems.append(system)
+            return super().chat_json(model, system, user, schema, **kw)
+
+    judged = ('[[judgments]]\n1: 裏付けあり — 引用: "The library opens at nine." — 理由\n'
+              '2: 細部の取り違え — 違う点: 時刻 — 理由')
+    for question, strict in (("Why does the library open early?", True), ("What is true?", False)):
+        systems.clear()
+        p = P()
+        p.question = question
+        EnglishSubject().verify(Spy(judged), None, "m", p, options={"reading_strict": "reason"})
+        assert ("違う点" in systems[0]) is strict
 
 
 def test_reading_reason_check_can_be_turned_off(settings, sessions, sandbox):
@@ -1141,7 +1190,7 @@ def test_reading_think_applies_only_to_reading_judgments():
     llm.think_for = original = (lambda m: False)
     shuffled = random.getstate()
     random.seed(1)
-    res = EnglishSubject().verify(llm, None, "m", P(), options={"reading_think": "on", "reading_strict": "on"})
+    res = EnglishSubject().verify(llm, None, "m", P(), options={"reading_think": "on", "reading_strict": "off"})
     random.setstate(shuffled)
     assert llm.think == [True] and llm.think_for is original
     assert res.ok or res.code != "solver_unreadable"
@@ -1154,3 +1203,20 @@ def test_spelling_rivals_are_not_asked():
     severe = next(w for w in WORDS if w.word == "severe")
     assert spelling_rivals(severe) == ["strict"]
     assert spelling_rivals(next(w for w in WORDS if w.word == "decide")) == []
+
+
+def test_review_checks_that_example_sentences_make_sense(settings, sessions, sandbox):
+    """見直しに例文の筋だけの短い確認（第 8 回のレビュー 3-1。#775「予報が正確でなかったので家にいた」）。
+    答えを入れた例文を「自然／不自然」で聞き、不自然なら見直しの不合格。"""
+    from quizapp.subjects.english import example_sentence
+
+    llm = EnglishOracle(sessions, coherence="不自然")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-vocab-blank", count=1)
+    p = next(p for p in problems(sessions, status="rejected") if p.reject_code == "en_review")
+    review = next(e for e in p.verification if e["step"] == "解説の見直し")
+    assert "× 例文の筋：理由と結果がつながらない" in review["detail"]
+    assert "(　　　　)" not in example_sentence(p) and p.params["word"] in example_sentence(p)
+    assert example_sentence(_Spell()) == "What shape is it?"
+    reading = EnglishOracle(sessions)
+    run_job(settings, sessions, sandbox, reading, scope="tmpl:en-notice", count=1)
+    assert "coherence" not in reading.roles()  # 読解には聞かない

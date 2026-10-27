@@ -156,14 +156,14 @@ class Worker:
         if hasattr(self.llm, "label"):
             self.llm.label = text
 
-    def _save_llm_calls(self, job_id: int | None = None) -> None:
+    def _save_llm_calls(self, job_id: int | None = None) -> list[dict[str, Any]]:
         """LLM の呼び出しの時間の内訳を、新しいものから LLM_CALLS_KEEP 件まで kv に残す。
 
         job_id があれば、その依頼の作成・検証の時間（出力 eval と読み込み load を分けて）にも足す。
         """
         calls = self.llm.pop_calls() if hasattr(self.llm, "pop_calls") else []
         if not calls:
-            return
+            return []
         cost = sum(float(c.get("cost_usd") or 0) for c in calls)
         with _KV_LOCK, self.sessions.begin() as s:
             kept = (kv_json(s, "llm_calls", []) or []) + calls
@@ -172,7 +172,7 @@ class Worker:
                 add_api_spend(self.settings, s, cost)  # 月ごとの API の利用額
             job = s.get(Job, job_id) if job_id is not None else None
             if job is None:
-                return
+                return calls
             api_calls = sum(1 for c in calls if provider_of(str(c.get("model", "")))[0] != "ollama")
             if api_calls or cost:  # 科目ごと・日ごとの API の利用（科目の 1 日の上限に使う）
                 add_api_daily(self.settings, s, job.subject, cost, api_calls)
@@ -183,6 +183,7 @@ class Worker:
                 setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
                 setattr(job, f"{role}_eval_s", (getattr(job, f"{role}_eval_s") or 0.0) + float(c.get("eval_s") or 0))
                 setattr(job, f"{role}_load_s", (getattr(job, f"{role}_load_s") or 0.0) + float(c.get("load_s") or 0))
+        return calls
 
     # --- 依頼の読み書き ------------------------------------------------------
 
@@ -604,7 +605,7 @@ class Worker:
                     entry = {"step": step, "key": key, "model": "", "ok": not issues,
                              "code": "" if not issues else "text_issues", "summary": "／".join(issues)[:400]}
                 elif key == "passage" and x.passage.body in passage_done:
-                    entry = {**passage_done[x.passage.body], "summary": "（同じ本文の見直しの結果）"
+                    entry = {**passage_done[x.passage.body], "secs": 0.0, "summary": "（同じ本文の見直しの結果）"
                              + str(passage_done[x.passage.body].get("summary", ""))[:380]}
                 else:
                     try:
@@ -618,10 +619,12 @@ class Worker:
                         res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
                                            raw=getattr(exc, "raw", ""))
                     finally:
-                        self._save_llm_calls(job_id)
+                        calls = self._save_llm_calls(job_id)
                     if res is None:
                         continue
                     entry = {"step": step, "key": key, "model": model, "ok": res.ok, "code": "" if res.ok else res.code,
+                             # 所要時間（呼び出しの合計。モデルの読み込みを含む。第 8 回のレビュー 4-1）
+                             "secs": round(sum(float(c.get("seconds") or 0) for c in calls), 1),
                              "summary": res.summary[:400], "detail": res.detail[:2000],
                              "raw": res.raw[:3000]}  # 生の出力（読めなかった原因を後で確かめる。第 7 回のレビュー A）
                     if key == "passage":

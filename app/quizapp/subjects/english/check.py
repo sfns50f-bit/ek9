@@ -181,14 +181,6 @@ def stated_in_passage(option: str, passage: str) -> bool:
     return share >= 0.6 and len(found) >= 2
 
 
-def claimed_absent_is_there(absent: str, passage: str) -> bool:
-    """「本文に書かれていない」の根拠に書いた中心の内容（ない内容）が、実は本文にある（第 7 回のレビュー D。
-    #860 の dopamine）。中心の語（4 文字以上・ありふれた語でない）がすべて本文にあれば真。中心の語がなければ偽。"""
-    have = {_stem(w.lower()) for w in words(passage)}
-    keys = [w.lower() for w in words(absent) if len(w) >= 4 and w.lower() not in _STOP]
-    return bool(keys) and all(_stem(k) in have for k in keys)
-
-
 def stray_english(explanation: str, allowed_texts: list[str]) -> list[str]:
     """語彙の問題の解説に出てくる英単語のうち、例文にも選択肢にもないもの（第 5 回のレビュー D-1：
     選択肢にない語の説明をしていた）。語形の違い（-s・-ed・-ing）と、ありふれた語は見ない。"""
