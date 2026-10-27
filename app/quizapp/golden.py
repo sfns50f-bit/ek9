@@ -261,6 +261,8 @@ def config_label(job: Any) -> str:
     parts.append(f"見直し {job.review_model or job.verify_model}" if job.explanation_review else "見直しなし")
     if job.review_passage:
         parts.append("本文も")
+    if getattr(job, "options", {}).get("golden_fast") == "on":
+        parts.append("検証で弾いた問題の見直しは省略")
     if getattr(job, "options", None):  # 検証のやり方（第 7 回のレビュー C・D・E。今の方式と新しい方式を並べて比べる）
         from .runtime import option_label
         from .subjects import get_subject
@@ -275,6 +277,8 @@ def score(results: list[dict[str, Any]], expected: dict[int, str] | None = None)
     out = {"reject_total": 0, "reject_caught": 0, "reject_unsure": 0, "pass_total": 0, "pass_wrong": 0,
            "pass_unsure": 0}
     for r in results:
+        if r.get("partial"):  # 測っている途中の問題は数えない
+            continue
         exp = (expected or {}).get(r.get("id"), r.get("expected"))
         r = {**r, "expected": exp}
         if r.get("expected") == "reject":
@@ -311,6 +315,28 @@ def past_reviews(s: Session, ids: list[int]) -> dict[int, dict[str, bool]]:
     return out
 
 
+def _kind(x: Sample | None) -> str:
+    if x is None:
+        return "その他"
+    return "読解" if x.passage is not None else "スペル" if x.format != "choice" else "語彙"
+
+
+def timing_text(gs: GoldenSet, results: list[dict[str, Any]]) -> str:
+    """段階ごと・種類ごとの 1 問 1 回あたりの平均の秒数（第 8 回のレビュー 4-1。読解だけ思考ありの E を比べる）。
+    記録のない前の版の測定は空。同じ本文の結果を写した本文の見直しは数えない。"""
+    samples = gs.by_id()
+    buckets: dict[str, list[float]] = {}
+    for r in results:
+        for st in r.get("steps", []):
+            if "secs" not in st or st.get("key") == "text" or (st.get("key") == "passage" and not st["secs"]):
+                continue
+            name = f"検証（{_kind(samples.get(r['id']))}）" if str(st.get("key", "")).startswith("verify") else st["step"]
+            buckets.setdefault(name, []).append(float(st["secs"]))
+    order = ["検証（読解）", "検証（語彙）", "検証（スペル）", "解説の見直し", "本文の見直し"]
+    return "・".join(f"{k} {sum(v) / len(v):.1f} 秒（{len(v)} 回）" for k in sorted(buckets, key=lambda k: (
+        order.index(k) if k in order else 99, k)) for v in [buckets[k]])
+
+
 def to_markdown(gs: GoldenSet, jobs: list[Any], past: dict[int, dict[str, bool]]) -> str:
     """見本集の測定の比べる表（問題 × 構成 → 弾いた／通した／要確認）と、構成ごとの成績・理由。"""
     expected = {x.id: x.expected for x in gs.samples}
@@ -328,6 +354,9 @@ def to_markdown(gs: GoldenSet, jobs: list[Any], past: dict[int, dict[str, bool]]
     for j in jobs:
         out.append(f"- 依頼 #{j.id}（{config_label(j)}）：{score_text(score(j.results, expected))}"
                    f"{'' if j.status == 'done' else f'（{j.status}：途中まで）'}")
+        timing = timing_text(gs, j.results)
+        if timing:
+            out.append(f"  - 所要時間：{timing}")
     out.append("")
     models = sorted({m for v in past.values() for m in v})
     head = ["問題", "期待", "欠陥の型"] + [f"#{j.id}" for j in jobs] + [f"記録：{m}" for m in models]

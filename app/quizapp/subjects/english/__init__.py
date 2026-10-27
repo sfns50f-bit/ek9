@@ -262,8 +262,8 @@ def read_letter(answer: str, work: str, n: int) -> int | None:
 
 # 検証で、正解そのものが合わないことを表す確認（不合格の理由は solver_mismatch。ほかの確認の不合格は正解が複数）
 ANSWER_CHECKS = ("正解の裏付け", "正解が合うか")
-# 誤答を否定する根拠が書けなかった（第 7 回のレビュー D）。これだけの不合格は要確認（needs_check）にする
-WEAK_CHECK = "誤答の否定の根拠"
+# 理由・目的を問う設問（作り直した D を、まずこれだけに使う。第 8 回のレビュー 2-2。#860 は理由を問う設問）
+REASON_RE = re.compile(r"\b(why|reasons?|because|purpose|in order to|so that|causes?d?)\b", re.I)
 # スペルの問題文の空所「( c _ _ _ _ _ )」
 SPELL_BLANK = r"\(\s*[A-Za-z](?:\s*_)+\s*\)"
 
@@ -287,6 +287,20 @@ def spelling_rivals(word: Any) -> list[str]:
         if mine & theirs or pairs & set().union(*(_kanji_pairs(m) for m in theirs)):
             out.append(w.word)
     return out
+
+
+def example_sentence(problem: Any) -> str:
+    """語彙・スペルの例文に答えを入れた文（例文の筋の確認に使う）。空所は正解の語、[ ] の印は外す。"""
+    sentence = problem.question.split("\n\n")[-1].strip()
+    if problem.template == "en-vocab-blank":
+        right = next((c["text"] for c in problem.choices if c.get("correct")), "")
+        return sentence.replace("(　　　　)", right) if right else ""
+    if problem.template == "en-vocab-meaning":
+        return re.sub(r"\[\s*([^\]]+?)\s*\]", r"\1", sentence)
+    if problem.template == "en-spelling":
+        word = str(problem.answer.get("word", ""))
+        return re.sub(SPELL_BLANK, word, sentence) if word else ""
+    return ""
 
 
 def read_none_fit(answer: str, options: list[str]) -> int | None:
@@ -317,12 +331,6 @@ def read_none_fit(answer: str, options: list[str]) -> int | None:
     return hits[0] if len(hits) == 1 else None
 
 
-def _absent(reason: str) -> str:
-    """判定の理由の中の「ない内容: …」（本文に書かれていない中心の内容）。なければ空。"""
-    m = re.search(r"ない内容\s*[:：]\s*(.+?)(?:\s+[—\-ー]{1,2}\s+|$)", reason or "")
-    return m.group(1).strip(" \"“”「」") if m else ""
-
-
 @contextlib.contextmanager
 def _thinking(llm: Any, choice: str) -> Any:
     """この間だけ思考モードを決める（"on" / "off"。"" はモデルの設定のまま）。読解の選択肢の判定だけ思考ありで
@@ -336,6 +344,26 @@ def _thinking(llm: Any, choice: str) -> Any:
         yield
     finally:
         llm.think_for = old
+
+
+def _differs(reason: str) -> str:
+    """判定の理由の中の「違う点: …」（選択肢のどこが本文と違うか）。なければ空。"""
+    m = re.search(r"違う点\s*[:：]\s*(.+?)(?:\s+[—\-ー]{1,2}\s+|$)", reason or "")
+    return m.group(1).strip() if m else ""
+
+
+def _strict_missing(got: dict[int, tuple[str, str]], right: int, choices: list[dict[str, Any]]) -> list[str]:
+    """作り直した D（第 8 回のレビュー 2-2）で、根拠の書き方が足りない誤答。「本文と食い違う」は本文の文の引用、
+    ほかの誤答（書かれていない・一部だけ・細部）は「違う点」を書く。「裏付けあり」は別の確認（正解が複数）で見る。"""
+    out = []
+    for i, (lb, reason) in got.items():
+        if i == right or lb == "裏付けあり" or i >= len(choices):
+            continue
+        if lb == "本文と食い違う" and not _quote(reason):
+            out.append(f"「{choices[i]['text'][:50]}」食い違う本文の文の引用がない")
+        elif lb != "本文と食い違う" and not _differs(reason):
+            out.append(f"「{choices[i]['text'][:50]}」違う点が書かれていない")
+    return out
 
 
 def _quote(reason: str) -> str:
@@ -363,16 +391,20 @@ class EnglishSubject(Subject):
     }
     test_format = "choice"  # 検証のテスト：正解の印を誤答に移した問題を流す
     verify_split_check = True  # 2 回の判定が割れたら要確認（第 6 回のレビュー 2-4）
-    # 検証のやり方の切り替え（第 7 回のレビュー C・D・E。既定は新しい方式。見本集で今の方式と並べて測れる）
+    # 検証のやり方の切り替え（第 7 回のレビュー C・D・E。見本集で並べて測れる）。既定は見本集でいちばん成績の
+    # 良かった #129 の形（語彙は 2 段階・誤答の根拠は書かせない。第 8 回のレビュー 1 章）
     verify_options = {
-        "fit3": {"label": "語彙の判定", "default": "on",
-                 "choices": {"on": "3 段階（自然に入る／不自然／入らない）", "off": "2 段階（通る／通らない）"}},
-        "reading_strict": {"label": "読解の誤答の根拠", "default": "on",
-                           "choices": {"on": "誤答ごとに食い違いの引用か本文にない内容を書かせる", "off": "書かせない"}},
+        "fit3": {"label": "語彙の判定", "default": "off",
+                 "choices": {"off": "2 段階（通る／通らない）", "on": "3 段階（自然に入る／不自然／入らない）"}},
+        "reading_strict": {"label": "読解の誤答の根拠", "default": "off",
+                           "choices": {"off": "書かせない", "reason": "理由・目的を問う設問だけ書かせる",
+                                       "all": "すべての設問で書かせる"}},
         "reading_think": {"label": "読解の選択肢の判定の思考モード", "default": "model",
                           "choices": {"model": "モデルの設定のまま", "on": "あり", "off": "なし"}},
     }
-    default_models = {"review": "gemma4:12b-it-qat"}  # 見直し役の既定（26b は本文の破綻を見逃した。第 7 回のレビュー F）
+    # 英語の既定のモデル（第 8 回のレビュー 1 章。見本集の #129。26b は本文の破綻を見逃したので見直しは 12b）。
+    # 本文作成・本文なしの確認は、設定がなければ作成役と同じ
+    default_models = {"gen": "gemma4:26b-a4b-it-qat", "verify": "gemma4:e4b-it-qat", "review": "gemma4:12b-it-qat"}
 
     def units(self) -> list[Unit]:
         return _units()
@@ -824,9 +856,10 @@ class EnglishSubject(Subject):
             think = opts.get("reading_think", "model")
             if think in ("on", "off"):
                 _set_label(llm, f"検証（読解・思考{'あり' if think == 'on' else 'なし'}）")  # 所要時間を比べる（E）
+            strict_opt = opts.get("reading_strict", "off")
+            strict = strict_opt in ("all", "on") or (strict_opt == "reason" and bool(REASON_RE.search(problem.question)))
             with _thinking(llm, think):
-                self._judge_choices(llm, model, problem, choices, checks, raws, updates, quote=True,
-                                    strict=opts.get("reading_strict") == "on")
+                self._judge_choices(llm, model, problem, choices, checks, raws, updates, quote=True, strict=strict)
         elif problem.template == "en-vocab-blank":
             sentences = [sentence.replace("(　　　　)", c["text"]) for c in choices]
             self._judge_fit(llm, model, prompts.FIT3_JUDGE_SYSTEM if three else prompts.FIT_JUDGE_SYSTEM,
@@ -844,14 +877,12 @@ class EnglishSubject(Subject):
     def _verdict_of(model: str, checks: list[tuple[str, bool | None, str]], raws: list[str],
                     updates: dict[str, Any] | None = None) -> VerifyResult:
         """検証の確認の結果をまとめる。正解が合わない＝solver_mismatch、正解のほかにも合う＝en_verify_multiple、
-        読めない・引用が本文にない判定が残った＝solver_unreadable、誤答を否定する根拠が書けなかっただけ＝needs_check
-        （裏付けられる可能性あり。人が確かめる。第 7 回のレビュー D）。"""
+        読めない・引用が本文にない判定が残った＝solver_unreadable。"""
         lines = [f"{'○' if ok else '×' if ok is False else '？'} {name}：{text}" for name, ok, text in checks]
         detail, raw = "\n".join(lines), "\n\n".join(raws)[:4000]
         failed = [(name, text) for name, ok, text in checks if ok is False]
         if failed:
-            code = ("solver_mismatch" if any(name in ANSWER_CHECKS for name, _t in failed)
-                    else "needs_check" if all(name == WEAK_CHECK for name, _t in failed) else "en_verify_multiple")
+            code = "solver_mismatch" if any(name in ANSWER_CHECKS for name, _t in failed) else "en_verify_multiple"
             summary = "／".join(f"{name}（{text[:150]}）" for name, text in failed)
             return VerifyResult(False, f"{model}: {summary[:400]}", detail, code, raw=raw)
         unread = [f"{name}：{text[:120]}" for name, ok, text in checks if ok is None]
@@ -939,6 +970,8 @@ class EnglishSubject(Subject):
         """
         checks: list[tuple[str, bool | None, str]] = []  # (確かめたこと, 結果（None は読めなかった）, 内容)
         raws: list[str] = []
+        if problem.template in VOCABS:
+            self._judge_coherence(llm, model, problem, checks, raws)
         self._judge_explanation(llm, model, problem, checks, raws)
         failed = [(name, text) for name, ok, text in checks if ok is False]
         lines = [f"{'○' if ok else '×' if ok is False else '？'} {name}：{text}" for name, ok, text in checks]
@@ -1013,17 +1046,28 @@ class EnglishSubject(Subject):
             else prompts.CHOICE_JUDGE_SYSTEM
         got: dict[int, tuple[str, str]] = {}
         bad: list[str] = []
+        asked_again = False  # 作り直した D の根拠の書き方が足りないときの聞き直し（1 回だけ）
+        right_i = next((i for i, c in enumerate(choices) if c.get("correct")), -1)
+        note = ""
         for _ in range(3 if quote else 2):  # 読めない・引用が本文にないときはやり直す（A-2）
-            out, raw = self._ask(llm, model, system, user + (
-                f"\n\n前の判定の引用「{'」「'.join(q[:60] for q in bad[:2])}」は本文にありません。本文からそのまま引用してください。"
-                if bad else ""), prompts.JUDGMENTS_SCHEMA)
+            out, raw = self._ask(llm, model, system, user + note, prompts.JUDGMENTS_SCHEMA)
             raws.append("【選択肢の判定】\n" + raw)
             got = self._judgments(str(out.get("judgments") or ""), prompts.CHOICE_LABELS, len(choices))
             bad = [q for lb, reason in got.values() for q in [_quote(reason)]
                    if quote and lb != "本文に書かれていない" and (q and not check.contains(passage, q)
                                                                   or not q and lb == "裏付けあり")]
-            if len(got) >= len(choices) and not bad:
+            short = _strict_missing(got, right_i, choices) if strict and len(got) >= len(choices) else []
+            if len(got) >= len(choices) and not bad and (not short or asked_again):
                 break
+            if bad:
+                note = (f"\n\n前の判定の引用「{'」「'.join(q[:60] for q in bad[:2])}」は本文にありません。"
+                        "本文からそのまま引用してください。")
+            elif short:
+                asked_again = True
+                note = ("\n\n前の判定は形が足りませんでした。「本文と食い違う」には「引用: \"本文の文\"」を、"
+                        "ほかの誤答には「違う点: 」のあとに、選択肢のどこが本文と違うか（人・理由・時期など）を 1 行で書いてください。")
+            else:
+                note = ""
         if len(got) < len(choices):
             checks.append(("選択肢の判定", None, "判定を読めなかった"))
             return
@@ -1039,23 +1083,11 @@ class EnglishSubject(Subject):
                        "ほかに裏付けのある選択肢はない" if not also
                        else "「" + "」「".join(choices[i]["text"][:60] for i in also) + "」も本文で裏付けられる（正解が複数）"))
         if strict:
-            # 誤答ごとの否定の根拠（D）：食い違いなら本文の文の引用、書かれていないなら本文にない中心の内容。
-            # 書けない・「ない内容」が実は本文にある誤答は、裏付けられる可能性あり（要確認）
-            weak = []
-            for i, c in enumerate(choices):
-                lb, reason = got[i]
-                if i == right or lb == "裏付けあり":
-                    continue
-                if lb == "本文に書かれていない":
-                    absent = _absent(reason)
-                    if not absent:
-                        weak.append(f"「{c['text'][:50]}」本文にない内容を書けなかった")
-                    elif check.claimed_absent_is_there(absent, passage):
-                        weak.append(f"「{c['text'][:50]}」ない内容「{absent[:40]}」は本文にある")
-                elif not _quote(reason):
-                    weak.append(f"「{c['text'][:50]}」{lb}の根拠の引用がない")
-            checks.append((WEAK_CHECK, not weak, "どの誤答にも否定の根拠がある" if not weak
-                           else "／".join(weak) + "（裏付けられる可能性あり）"))
+            # 誤答ごとの根拠（作り直した D。第 8 回のレビュー 2-2）：書き方が足りない誤答は 1 回聞き直したうえで記録に
+            # 残すだけ（不合格・要確認にしない。言葉の照合では誤答の正しさを決められないため、機械的な照合はやめた）
+            short = _strict_missing(got, right, choices)
+            checks.append(("誤答の根拠", True, "どの誤答にも根拠がある" if not short
+                           else "根拠の書き方が足りない誤答：" + "／".join(short)))
         # 誤答の種類：見直し役の判定はモデルごとにばらつく（第 5 回のレビュー C-1）ので、判定が違うだけでは付け直さない。
         # 付け直すのは機械的な確認が見直し役を支持するときだけ（作成役の「本文に書かれていない」なのに中心の語が本文にある）。
         # それ以外の食い違いは記録に残し（label_doubt）、書き出しに出す（C-3）
@@ -1120,6 +1152,27 @@ class EnglishSubject(Subject):
         checks.append(("正解が 1 つか", not also,
                        ("ほかの選択肢は合わない" + note) if not also
                        else "「" + "」「".join(choices[i]["text"] for i in also) + "」も合う（正解が複数）"))
+
+    def _judge_coherence(self, llm: LLM, model: str, problem: Any,
+                         checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:
+        """語彙・スペルの例文の筋だけを確かめる（第 8 回のレビュー 3-1）。答えを入れた例文を「自然／不自然」の 2 択で。
+        読めなければ 1 回だけやり直し、それでも読めなければ「読めなかった」（見直しの不合格）。"""
+        sentence = example_sentence(problem)
+        if not sentence:
+            return
+        for _ in range(2):
+            out, raw = self._ask(llm, model, prompts.COHERENCE_SYSTEM, prompts.coherence_user(sentence),
+                                 prompts.COHERENCE_SCHEMA)
+            raws.append("【例文の筋】\n" + raw)
+            verdict = re.sub(r"[\s*「」:：。]", "", str(out.get("verdict") or "").splitlines()[0] if out.get("verdict") else "")
+            reason = str(out.get("reason") or "").strip()
+            if verdict.startswith("不自然"):
+                checks.append(("例文の筋", False, reason[:200] or "前半と後半がつながらない"))
+                return
+            if verdict.startswith("自然"):
+                checks.append(("例文の筋", True, "前半と後半が自然につながる"))
+                return
+        checks.append(("例文の筋", None, "結果を読めなかった"))
 
     def _judge_explanation(self, llm: LLM, model: str, problem: Any,
                            checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:

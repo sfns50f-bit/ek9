@@ -53,10 +53,11 @@
     <input type="hidden" name="subject" value="{{ sub.id }}">
     <p class="small">いまの設定: {% for role, label in sub.model_roles.items() %}{{ label }} <strong>{{ sp.model_for(role) }}</strong>／{% endfor %}作成 <strong>{{ sp.gen_model }}</strong>／検証 <strong>{{ sp.verify_model }}</strong>／見直し <strong>{{ sp.reviewer }}</strong></p>
     {% for role, label in sub.model_roles.items() | list + roles.items() | list %}
-    {% set inherit = sp.gen_model if role in sub.model_roles else (plan.gen_model if role == "gen" else plan.verify_model if role == "verify" else overrides.review_model) %}
+    {% set dflt = sub.default_models.get(role, "") %}
+    {% set inherit = dflt or (sp.gen_model if role in sub.model_roles else (plan.gen_model if role == "gen" else plan.verify_model if role == "verify" else overrides.review_model)) %}
     <label>{{ label }}役
       <select name="{{ role }}" data-inherit="{{ inherit }}">
-        <option value="">{{ "作成役と同じ" if role in sub.model_roles else "全体の設定" }}（{{ inherit or "検証役と同じ" }}）</option>
+        <option value="">{{ "科目の既定" if dflt else "作成役と同じ" if role in sub.model_roles else "全体の設定" }}（{{ inherit or "検証役と同じ" }}）</option>
         {% for m in model_names %}<option value="{{ m }}" {{ 'selected' if mine.get(role) == m }}>{{ m }}</option>{% endfor %}
         {% if mine.get(role) and mine.get(role) not in model_names %}<option value="{{ mine.get(role) }}" selected>{{ mine.get(role) }}（Ollama に見当たらない）</option>{% endif %}
       </select></label>

@@ -147,3 +147,18 @@ def settings(tmp_path, monkeypatch):
 @pytest.fixture
 def sessions(settings):
     return init_db(settings.database_path)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "english_defaults: 英語の既定のモデル（Subject.default_models）を使うテスト")
+
+
+@pytest.fixture(autouse=True)
+def _english_default_models(request, monkeypatch):
+    """多くのテストは全体の設定のモデル（作成 12b・検証 e4b）を前提にしているので、英語の既定のモデル
+    （第 8 回のレビュー 1 章）は english_defaults の印を付けたテストだけで使う。"""
+    if request.node.get_closest_marker("english_defaults"):
+        return
+    from quizapp.subjects.english import EnglishSubject
+
+    monkeypatch.setattr(EnglishSubject, "default_models", {})

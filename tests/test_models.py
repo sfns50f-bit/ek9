@@ -28,6 +28,7 @@ def jobs(sessions):
         return list(s.execute(select(Job).order_by(Job.id)).scalars())
 
 
+@pytest.mark.english_defaults
 def test_subject_settings_override_the_default(settings, sessions):
     english, math = get_subject("english"), get_subject("math")
     with sessions.begin() as s:
@@ -37,17 +38,18 @@ def test_subject_settings_override_the_default(settings, sessions):
     with sessions() as s:
         m, e = runtime.model_plan(settings, s, math), runtime.model_plan(settings, s, english)
         default = runtime.model_plan(settings, s)
-    # 数学は全体の設定のまま。英語は本文作成と見直しだけ上書き（空の欄は全体の設定）
+    # 数学は全体の設定のまま。英語は本文作成と見直しを上書き、空の欄は科目の既定（作成 26b・検証 e4b。第 8 回の 1 章）
     assert m == default and m.gen_model == "qwen3.5:9b" and m.reviewer == "gemma4:e4b"
-    assert e.gen_model == "qwen3.5:9b" and e.verify_model == "gemma4:e4b" and e.reviewer == "gemma4:12b"
-    assert e.model_for("passage") == "anthropic/claude-haiku-5-5"
+    assert e.gen_model == "gemma4:26b-a4b-it-qat" and e.verify_model == "gemma4:e4b-it-qat" and e.reviewer == "gemma4:12b"
+    assert e.model_for("passage") == "anthropic/claude-haiku-5-5" and e.model_for("blind") == "gemma4:26b-a4b-it-qat"
     assert m.model_for("passage") == "qwen3.5:9b"  # 科目だけの役割の設定がなければ作成役のモデル
     # 既定値に戻す
     with sessions.begin() as s:
         runtime.save_subject_settings(s, "english", {})
         assert runtime.subject_settings(s) == {}
-        # 英語の見直し役だけは科目の既定（gemma4:12b。第 7 回のレビュー F）
-        assert runtime.model_plan(settings, s, english) == dataclasses.replace(default, review_model="gemma4:12b-it-qat")
+        # 英語は科目の既定（作成 26b・検証 e4b・見直し 12b。第 8 回のレビュー 1 章）
+        assert runtime.model_plan(settings, s, english) == dataclasses.replace(
+            default, gen_model="gemma4:26b-a4b-it-qat", verify_model="gemma4:e4b-it-qat", review_model="gemma4:12b-it-qat")
 
 
 def test_previous_settings_become_the_default(settings, sessions):
@@ -405,12 +407,14 @@ class GoldenLLM:
         if "words" in props:
             meaning = _re.search(r"意味: .*", user)
             return {"work": "考えた", "words": self.words.get(meaning.group() if meaning else "", "")}
+        if "verdict" in props:
+            if "筋が通っているかだけ" in system:
+                return {"verdict": "自然", "reason": ""}
+            return {"verdict": "問題なし", "issues": "なし"}
         if "reason" in props:  # 正解を抜いた判定
             items = _re.findall(r"^(\d+): (.*)$", user, _re.M)
             pick = next((n for n, t in items if t in self.also_fit), None) or items[-1][0]
             return {"answer": pick, "reason": "理由"}
-        if "verdict" in props:
-            return {"verdict": "問題なし", "issues": "なし"}
         raise AssertionError(f"想定していない呼び出し: {list(props)}")
 
     def list_models(self):
@@ -465,7 +469,7 @@ def test_golden_measurement(settings, sessions, sandbox, client, tmp_path, monke
         p = s.get(Problem, 990)
         assert p.status == "rejected" and len(p.verification) == 1
     md = client.get("/review/golden.md?subject=english").text
-    assert f"依頼 #{jb.id}（検証 gemma4:12b-it-qat×1／見直し gemma4:e4b／語彙の判定：3 段階" in md
+    assert f"依頼 #{jb.id}（検証 gemma4:12b-it-qat×1／見直し gemma4:e4b／語彙の判定：2 段階" in md
     assert "| #911 | 弾くべき | 正解のほかにも正しい選択肢がある | ○ 弾いた |" in md
     assert "| #990（DB） | 弾くべき |" in md and "× 通した" in md
     assert "記録：anthropic/claude-haiku-5-5" in md and "誤りあり" in md
@@ -549,6 +553,7 @@ def test_needs_check_list_shows_split_runs_and_can_discard(settings, sessions, s
     assert {(it["id"], it["expected"]) for it in items} == {(held[0].id, "pass"), (held[1].id, "reject")}
 
 
+@pytest.mark.english_defaults
 def test_english_reviewer_defaults_to_12b_and_warns_on_same_model(settings, sessions, client):
     """見直し役の既定は gemma4:12b（第 7 回のレビュー F）。作成役と見直し役が同じなら注意を出す。"""
     with sessions() as s:
@@ -564,16 +569,16 @@ def test_english_reviewer_defaults_to_12b_and_warns_on_same_model(settings, sess
 
 def test_verify_options_are_saved_recorded_and_compared(settings, sessions, sandbox, client):
     """検証のやり方（C・D・E）は科目ごとに保存でき、依頼に記録する。見本集の測定でも選べ、比べる表に出る。"""
-    client.post("/status/subject-models", data={"subject": "english", "opt_fit3": "off", "opt_reading_strict": "on",
+    client.post("/status/subject-models", data={"subject": "english", "opt_fit3": "off", "opt_reading_strict": "reason",
                                                "opt_reading_think": "on"})
     with sessions() as s:
-        assert runtime.verify_options(s, get_subject("english")) == {"fit3": "off", "reading_strict": "on",
+        assert runtime.verify_options(s, get_subject("english")) == {"fit3": "off", "reading_strict": "reason",
                                                                      "reading_think": "on"}
     page = client.get("/status/models").text
     assert "検証のやり方：語彙の判定" in page and "読解の選択肢の判定の思考モード" in page
     client.post("/generate", data={"subject": "english", "scope": "tmpl:en-vocab-blank", "format": "choice",
                                    "count": "1"})
-    assert jobs(sessions)[-1].options == {"fit3": "off", "reading_strict": "on", "reading_think": "on"}
+    assert jobs(sessions)[-1].options == {"fit3": "off", "reading_strict": "reason", "reading_think": "on"}
     # 見本集：画面で選んだやり方（新しい方式）で測る
     client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:e4b", "verify_count": "1",
                                         "opt_fit3": "on", "opt_reading_strict": "off", "opt_reading_think": "model"})
@@ -593,3 +598,65 @@ def test_golden_borderline_and_stopped_score():
                   "pass_unsure": 1}
     text = golden.score_text(sc)
     assert "弾くべき問題を 2／3 問止め" in text and "通すべき問題を 1／1 問止めた" in text
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_golden_measurement_runs_phase_by_phase(settings, sessions, sandbox, client, fast):
+    """見本集の測定は段階ごとに全問を回す（モデルの入れ替えを減らす）。同じ本文の見直しは 1 回だけ。
+    「検証で弾いた問題の見直しを省く」を選ぶと、検証で弾いた問題に見直しをかけない（成績は同じ）。"""
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    data = {"subject": "english", "verify_model": "gemma4:e4b", "verify_count": "2", "with_review": "on",
+            "review_model": "gemma4:12b-it-qat", "with_passage": "on"}
+    if fast:
+        data["fast"] = "on"
+    client.post("/review/golden", data=data)
+    llm = GoldenLLM(gs.samples, also_fit={"探す"})
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.status == "done" and jb.made == len(gs.samples) and not any(r.get("partial") for r in jb.results)
+    switches = sum(1 for a, b in zip(llm.calls, llm.calls[1:]) if a != b)
+    assert switches == 1  # 検証役（e4b）を全部終えてから見直し役（12b）へ。1 問ずつだと何十回も入れ替わる
+    passages = {x.passage.body for x in gs.samples if x.passage is not None}
+    reviewed = [st for r in jb.results for st in r["steps"] if st["step"] == "本文の見直し"
+                and not st["summary"].startswith("（同じ本文")]
+    assert len(reviewed) <= len(passages)
+    rejected_by_verify = [r for r in jb.results if r["id"] == 911][0]
+    has_review = any(st["step"] == "解説の見直し" for st in rejected_by_verify["steps"])
+    assert has_review is (not fast) and rejected_by_verify["outcome"] == "reject"
+    if fast:
+        assert "検証で弾いた問題の見直しは省略" in golden.config_label(jb)
+    # 所要時間（段階・種類ごとの 1 問 1 回あたり。第 8 回のレビュー 4-1）が比べる表に出る
+    assert "所要時間：検証（読解）" in client.get("/review/golden.md?subject=english").text
+
+
+def test_golden_measurement_resumes_in_the_middle_of_a_phase(settings, sessions, sandbox, client, tmp_path, monkeypatch):
+    """段階の途中で止まっても、済んだ段階は呼び直さない。"""
+    _small_golden(tmp_path, monkeypatch, [])
+    client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:12b-it-qat",
+                                        "verify_count": "1", "with_review": "on", "review_model": "gemma4:e4b"})
+    jb = jobs(sessions)[-1]
+    with sessions.begin() as s:  # 911 の検証まで済んでいる
+        s.get(Job, jb.id).results_json = _json.dumps([{"id": 911, "expected": "reject", "partial": True, "steps": [
+            {"step": "機械的な点検", "key": "text", "ok": True, "code": ""},
+            {"step": "検証", "key": "verify1", "model": "gemma4:12b-it-qat", "ok": True, "code": ""}]}])
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    llm = GoldenLLM(gs.samples)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.status == "done" and jb.made == 2
+    assert llm.calls.count("gemma4:12b-it-qat") == 2  # 残りの 1 問の検証（判定と正解を抜いた判定）だけ
+    assert llm.calls.count("gemma4:e4b") == 4  # 見直しは 2 問とも（語彙は例文の筋の確認と解説の点検の 2 回）
+
+
+def test_export_ready_and_needs_check_together(settings, sessions, sandbox, client):
+    """新しく作った問題の点検（第 8 回のレビュー 4-2）：合格と要確認をまとめて書き出す。要確認は割れた理由も出る。"""
+    add_job(sessions, subject="english", scope="tmpl:en-vocab-blank", count=2)
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions, judge="multiple", multiple_calls=2)).run_once()
+    held = [p for p in problems(sessions, status="rejected") if p.reject_code == "needs_check"]
+    ready = problems(sessions, status="ready")
+    assert held and ready
+    md = client.get("/review/export.md?subject=english&status=ready_check").text
+    assert all(f"#{p.id}" in md for p in held + ready)
+    assert "検証の判定が割れた" in md and "× 正解が 1 つか" in md

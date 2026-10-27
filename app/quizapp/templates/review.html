@@ -79,7 +79,8 @@
       <select name="review_model">{% for m in model_names %}<option value="{{ m }}" {{ 'selected' if m == reviewer }}>{{ m }}</option>{% endfor %}</select></label>
     <label>一覧にない見直し役（書けばこちらを使う）
       <input type="text" name="review_text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-    <label class="check"><input type="checkbox" name="with_passage" value="on" checked><span>本文の見直しもする（本文のある問題）</span></label>
+    <label class="check"><input type="checkbox" name="with_passage" value="on" checked><span>本文の見直しもする（本文のある問題。同じ本文は 1 回だけ）</span></label>
+    <label class="check"><input type="checkbox" name="fast" value="on" checked><span>検証で弾いた問題の見直しを省く（速い。成績は変わらず、どの段階で拾えたかの記録だけが減る）</span></label>
     {% for key, spec in subject_options(gs.subject).items() %}{% set cur = option_values(gs.subject).get(key, spec.default) %}
     <label>検証のやり方：{{ spec.label }}
       <select name="opt_{{ key }}">{% for v, text in spec.choices.items() %}<option value="{{ v }}" {{ 'selected' if cur == v }}>{{ text }}{{ "（既定）" if v == spec.default }}</option>{% endfor %}</select></label>

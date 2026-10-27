@@ -156,14 +156,14 @@ class Worker:
         if hasattr(self.llm, "label"):
             self.llm.label = text
 
-    def _save_llm_calls(self, job_id: int | None = None) -> None:
+    def _save_llm_calls(self, job_id: int | None = None) -> list[dict[str, Any]]:
         """LLM の呼び出しの時間の内訳を、新しいものから LLM_CALLS_KEEP 件まで kv に残す。
 
         job_id があれば、その依頼の作成・検証の時間（出力 eval と読み込み load を分けて）にも足す。
         """
         calls = self.llm.pop_calls() if hasattr(self.llm, "pop_calls") else []
         if not calls:
-            return
+            return []
         cost = sum(float(c.get("cost_usd") or 0) for c in calls)
         with _KV_LOCK, self.sessions.begin() as s:
             kept = (kv_json(s, "llm_calls", []) or []) + calls
@@ -172,7 +172,7 @@ class Worker:
                 add_api_spend(self.settings, s, cost)  # 月ごとの API の利用額
             job = s.get(Job, job_id) if job_id is not None else None
             if job is None:
-                return
+                return calls
             api_calls = sum(1 for c in calls if provider_of(str(c.get("model", "")))[0] != "ollama")
             if api_calls or cost:  # 科目ごと・日ごとの API の利用（科目の 1 日の上限に使う）
                 add_api_daily(self.settings, s, job.subject, cost, api_calls)
@@ -183,6 +183,7 @@ class Worker:
                 setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
                 setattr(job, f"{role}_eval_s", (getattr(job, f"{role}_eval_s") or 0.0) + float(c.get("eval_s") or 0))
                 setattr(job, f"{role}_load_s", (getattr(job, f"{role}_load_s") or 0.0) + float(c.get("load_s") or 0))
+        return calls
 
     # --- 依頼の読み書き ------------------------------------------------------
 
@@ -546,7 +547,11 @@ class Worker:
     def _golden(self, job_id: int, plan: ModelPlan, options: dict[str, str] | None = None) -> None:
         """見本集での測定（第 6 回のレビューの 5 章）：見本集の問題に、機械的な点検・検証（設定の回数）・見直し
         （と本文の見直し）をかけ、弾いた／通した／要確認を依頼の results に残す。ストックや問題の記録は変えない。
-        どの段階も最後までかける（どこで拾えたかを比べるため）。待機・再起動のあとは、まだ測っていない問題から続ける。
+
+        速くするため、作成の依頼の検証と同じく**段階ごとに全問を回す**（検証 1 回目を全問 → 2 回目 → 見直し → 本文の見直し）。
+        1 問ずつ検証役と見直し役を交互に呼ぶと、GPU 8GB ではモデルの入れ替えが問題ごとに起きていた。同じ本文の見直しは
+        1 回だけ。「検証で弾いた問題の見直しを省く」（options の golden_fast）を選ぶと、検証で弾いた問題には見直しを
+        かけない（結果は同じ「弾いた」。どの段階で拾えたかの記録だけが減る）。待機・再起動のあとは、まだの段階から続ける。
         """
         from . import golden
 
@@ -559,46 +564,84 @@ class Worker:
             return
         samples = gs.by_id()
         ids = [i for i in job.target_ids if i in samples]
+        fast = (options or {}).get("golden_fast") == "on"
         self._update_job(job_id, status="running", error="")
-        for k, sid in enumerate(ids, 1):
-            self._check_cancel(job_id)
-            if any(r.get("id") == sid for r in self._job(job_id).results):
-                continue
-            x = samples[sid]
-            text = f"見本集 {k}/{len(ids)}（#{sid}）"
-            self._update_job(job_id, progress=text)
-            self.set_status(f"依頼 #{job_id} — {text}", job_id)
-            steps: list[dict[str, Any]] = []
-            issues = subject.text_issues(x)
-            steps.append({"step": "機械的な点検", "model": "", "ok": not issues, "code": "" if not issues else "text_issues",
-                          "summary": "／".join(issues)[:400]})
-            calls: list[tuple[str, str, Any]] = [("検証", m, lambda m=m: subject.verify(self.llm, self.sandbox, m, x, **_opts(subject, options)))
-                                                 for m in plan.verify_runs]
-            if job.explanation_review:
-                calls.append(("解説の見直し", plan.reviewer, lambda: subject.review(self.llm, plan.reviewer, x)))
-            if job.review_passage and x.passage is not None:
-                calls.append(("本文の見直し", plan.reviewer,
-                              lambda: subject.review_passage(self.llm, plan.reviewer, x.passage)))
-            for step, model, call in calls:
+        # 段階：(記録の名前, 段階の印, モデル)。段階の印で、どこまで済んだかを見分ける
+        phases: list[tuple[str, str, str]] = [("機械的な点検", "text", "")]
+        phases += [("検証", f"verify{r}", m) for r, m in enumerate(plan.verify_runs, 1)]
+        if job.explanation_review:
+            phases.append(("解説の見直し", "review", plan.reviewer))
+        if job.review_passage:
+            phases.append(("本文の見直し", "passage", plan.reviewer))
+
+        def partial() -> dict[int, dict[str, Any]]:
+            return {r["id"]: r for r in self._job(job_id).results}
+
+        for step, key, model in phases:
+            if model:
                 self._label(step if step != "解説の見直し" else "見直し")
-                try:
-                    res = call()
-                except LLMError as exc:
-                    res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
-                                       raw=getattr(exc, "raw", ""))
-                finally:
-                    self._save_llm_calls(job_id)
-                if res is None:
+            passage_done: dict[str, dict[str, Any]] = {}  # 本文 → この依頼での本文の見直しの結果（同じ本文は 1 回だけ）
+            for r in partial().values():
+                for st in r.get("steps", []):
+                    if st.get("key") == "passage" and samples.get(r["id"]) and samples[r["id"]].passage is not None:
+                        passage_done.setdefault(samples[r["id"]].passage.body, st)
+            for k, sid in enumerate(ids, 1):
+                self._check_cancel(job_id)
+                x = samples[sid]
+                mine = partial().get(sid, {"id": sid, "steps": [], "partial": True})
+                steps = list(mine.get("steps", []))
+                if not mine.get("partial") or any(st.get("key") == key for st in steps):  # 測り終えた問題・済んだ段階
+                    continue  # この段階は済んでいる
+                if key == "passage" and x.passage is None:
                     continue
-                steps.append({"step": step, "model": model, "ok": res.ok, "code": "" if res.ok else res.code,
-                              "summary": res.summary[:400], "detail": res.detail[:2000],
-                              "raw": res.raw[:3000]})  # 生の出力（読めなかった原因を後で確かめる。第 7 回のレビュー A）
-            result = {"id": sid, "expected": x.expected, "defect_type": x.defect_type,
-                      "outcome": golden.outcome_of(steps), "steps": steps}
-            with self.sessions.begin() as s:
-                row = s.get(Job, job_id)
-                row.results_json = dumps([r for r in row.results if r.get("id") != sid] + [result])
-                row.made = len(row.results)
+                verify = [st for st in steps if str(st.get("key", "")).startswith("verify")]
+                if fast and key in ("review", "passage") and golden.outcome_of(verify) == "reject":
+                    continue  # 検証で弾いた問題の見直しは省く（結果は変わらない）
+                text = f"見本集 {step}{'（' + model + '）' if model else ''} {k}/{len(ids)}（#{sid}）"
+                self._update_job(job_id, progress=text)
+                self.set_status(f"依頼 #{job_id} — {text}", job_id)
+                if key == "text":
+                    issues = subject.text_issues(x)
+                    entry = {"step": step, "key": key, "model": "", "ok": not issues,
+                             "code": "" if not issues else "text_issues", "summary": "／".join(issues)[:400]}
+                elif key == "passage" and x.passage.body in passage_done:
+                    entry = {**passage_done[x.passage.body], "secs": 0.0, "summary": "（同じ本文の見直しの結果）"
+                             + str(passage_done[x.passage.body].get("summary", ""))[:380]}
+                else:
+                    try:
+                        if key == "review":
+                            res = subject.review(self.llm, model, x)
+                        elif key == "passage":
+                            res = subject.review_passage(self.llm, model, x.passage)
+                        else:
+                            res = subject.verify(self.llm, self.sandbox, model, x, **_opts(subject, options))
+                    except LLMError as exc:
+                        res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
+                                           raw=getattr(exc, "raw", ""))
+                    finally:
+                        calls = self._save_llm_calls(job_id)
+                    if res is None:
+                        continue
+                    entry = {"step": step, "key": key, "model": model, "ok": res.ok, "code": "" if res.ok else res.code,
+                             # 所要時間（呼び出しの合計。モデルの読み込みを含む。第 8 回のレビュー 4-1）
+                             "secs": round(sum(float(c.get("seconds") or 0) for c in calls), 1),
+                             "summary": res.summary[:400], "detail": res.detail[:2000],
+                             "raw": res.raw[:3000]}  # 生の出力（読めなかった原因を後で確かめる。第 7 回のレビュー A）
+                    if key == "passage":
+                        passage_done[x.passage.body] = entry
+                result = {"id": sid, "expected": x.expected, "defect_type": x.defect_type, "partial": True,
+                          "steps": steps + [entry]}
+                result["outcome"] = golden.outcome_of(result["steps"])
+                with self.sessions.begin() as s:
+                    row = s.get(Job, job_id)
+                    row.results_json = dumps([r for r in row.results if r.get("id") != sid] + [result])
+        # 全段階が終わった問題を「測った」にする
+        with self.sessions.begin() as s:
+            row = s.get(Job, job_id)
+            done = [{**{k: v for k, v in r.items() if k != "partial"}, "outcome": golden.outcome_of(r.get("steps", []))}
+                    for r in row.results if r.get("id") in samples]
+            row.results_json = dumps(done)
+            row.made = len(done)
         results = self._job(job_id).results
         self._finish(job_id, "done", f"見本集 {len(results)} 問を測りました：{golden.score_text(golden.score(results))}。"
                                      "問題検証モードの「見本集での測定」で問題ごとの結果を見られます")

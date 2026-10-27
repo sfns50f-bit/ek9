@@ -168,10 +168,12 @@ def model_plan(settings: Settings, session: Session, subject: object | None = No
     extra: list[tuple[str, str]] = []
     if subject is not None:
         mine = subject_settings(session).get(getattr(subject, "id", ""), {})
-        gen = mine.get("gen") or gen
-        verify = mine.get("verify") or verify
-        # 見直し役：科目の設定 → 全体の設定 → 科目の既定（英語は gemma4:12b。第 7 回のレビュー F）→ 検証役
-        review_model = mine.get("review") or review_model or getattr(subject, "default_models", {}).get("review", "")
+        # 役割ごとに：科目の設定 → 科目の既定（Subject.default_models。英語は作成 26b・検証 e4b・見直し 12b。
+        # 第 8 回のレビュー 1 章）→ 全体の設定 → .env（見直し役は最後に検証役）
+        dflt = getattr(subject, "default_models", {}) or {}
+        gen = mine.get("gen") or dflt.get("gen") or gen
+        verify = mine.get("verify") or dflt.get("verify") or verify
+        review_model = mine.get("review") or dflt.get("review") or review_model
         extra = [(role, mine[role]) for role in getattr(subject, "model_roles", {}) if mine.get(role)]
     return ModelPlan(
         gen_model=gen,
