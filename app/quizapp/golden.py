@@ -261,6 +261,8 @@ def config_label(job: Any) -> str:
     parts.append(f"見直し {job.review_model or job.verify_model}" if job.explanation_review else "見直しなし")
     if job.review_passage:
         parts.append("本文も")
+    if getattr(job, "options", {}).get("golden_fast") == "on":
+        parts.append("検証で弾いた問題の見直しは省略")
     if getattr(job, "options", None):  # 検証のやり方（第 7 回のレビュー C・D・E。今の方式と新しい方式を並べて比べる）
         from .runtime import option_label
         from .subjects import get_subject
@@ -275,6 +277,8 @@ def score(results: list[dict[str, Any]], expected: dict[int, str] | None = None)
     out = {"reject_total": 0, "reject_caught": 0, "reject_unsure": 0, "pass_total": 0, "pass_wrong": 0,
            "pass_unsure": 0}
     for r in results:
+        if r.get("partial"):  # 測っている途中の問題は数えない
+            continue
         exp = (expected or {}).get(r.get("id"), r.get("expected"))
         r = {**r, "expected": exp}
         if r.get("expected") == "reject":

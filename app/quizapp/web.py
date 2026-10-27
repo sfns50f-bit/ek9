@@ -763,7 +763,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     def review_golden(request: Request, subject: str = Form(...), verify_model: str = Form(""),
                       verify_text: str = Form(""), verify_count: str = Form("2"), review_model: str = Form(""),
                       review_text: str = Form(""), with_review: str = Form(""),
-                      with_passage: str = Form(""), opt_fit3: str = Form(None),
+                      with_passage: str = Form(""), fast: str = Form(""), opt_fit3: str = Form(None),
                       opt_reading_strict: str = Form(None), opt_reading_think: str = Form(None)) -> Response:
         """見本集での測定（第 6 回のレビューの 5 章）：見本集の問題に、選んだ検証役・見直し役で検証・見直しをかける。
         結果は依頼に残すだけ（ストック・問題の記録は変えない）。"""
@@ -787,6 +787,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             opts = runtime.verify_options(s, get_subject(subject))
             specs = getattr(get_subject(subject), "verify_options", {})
             opts.update({k: v for k, v in chosen.items() if v is not None and k in specs and v in specs[k]["choices"]})
+            if fast == "on":  # 検証で弾いた問題の見直しを省く（速い。結果の「弾いた」は変わらない）
+                opts["golden_fast"] = "on"
             job.options_json = json.dumps(opts)
             runtime.apply_plan(job, plan)
             runtime.record_think(settings, s, job, plan)

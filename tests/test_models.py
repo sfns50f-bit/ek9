@@ -593,3 +593,51 @@ def test_golden_borderline_and_stopped_score():
                   "pass_unsure": 1}
     text = golden.score_text(sc)
     assert "弾くべき問題を 2／3 問止め" in text and "通すべき問題を 1／1 問止めた" in text
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_golden_measurement_runs_phase_by_phase(settings, sessions, sandbox, client, fast):
+    """見本集の測定は段階ごとに全問を回す（モデルの入れ替えを減らす）。同じ本文の見直しは 1 回だけ。
+    「検証で弾いた問題の見直しを省く」を選ぶと、検証で弾いた問題に見直しをかけない（成績は同じ）。"""
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    data = {"subject": "english", "verify_model": "gemma4:e4b", "verify_count": "2", "with_review": "on",
+            "review_model": "gemma4:12b-it-qat", "with_passage": "on"}
+    if fast:
+        data["fast"] = "on"
+    client.post("/review/golden", data=data)
+    llm = GoldenLLM(gs.samples, also_fit={"探す"})
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.status == "done" and jb.made == len(gs.samples) and not any(r.get("partial") for r in jb.results)
+    switches = sum(1 for a, b in zip(llm.calls, llm.calls[1:]) if a != b)
+    assert switches == 1  # 検証役（e4b）を全部終えてから見直し役（12b）へ。1 問ずつだと何十回も入れ替わる
+    passages = {x.passage.body for x in gs.samples if x.passage is not None}
+    reviewed = [st for r in jb.results for st in r["steps"] if st["step"] == "本文の見直し"
+                and not st["summary"].startswith("（同じ本文")]
+    assert len(reviewed) <= len(passages)
+    rejected_by_verify = [r for r in jb.results if r["id"] == 911][0]
+    has_review = any(st["step"] == "解説の見直し" for st in rejected_by_verify["steps"])
+    assert has_review is (not fast) and rejected_by_verify["outcome"] == "reject"
+    if fast:
+        assert "検証で弾いた問題の見直しは省略" in golden.config_label(jb)
+
+
+def test_golden_measurement_resumes_in_the_middle_of_a_phase(settings, sessions, sandbox, client, tmp_path, monkeypatch):
+    """段階の途中で止まっても、済んだ段階は呼び直さない。"""
+    _small_golden(tmp_path, monkeypatch, [])
+    client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:12b-it-qat",
+                                        "verify_count": "1", "with_review": "on", "review_model": "gemma4:e4b"})
+    jb = jobs(sessions)[-1]
+    with sessions.begin() as s:  # 911 の検証まで済んでいる
+        s.get(Job, jb.id).results_json = _json.dumps([{"id": 911, "expected": "reject", "partial": True, "steps": [
+            {"step": "機械的な点検", "key": "text", "ok": True, "code": ""},
+            {"step": "検証", "key": "verify1", "model": "gemma4:12b-it-qat", "ok": True, "code": ""}]}])
+    with sessions() as s:
+        gs = golden.golden_set(s, "english")
+    llm = GoldenLLM(gs.samples)
+    make_worker(settings, sessions, sandbox, llm).run_once()
+    jb = jobs(sessions)[-1]
+    assert jb.status == "done" and jb.made == 2
+    assert llm.calls.count("gemma4:12b-it-qat") == 2  # 残りの 1 問の検証（判定と正解を抜いた判定）だけ
+    assert llm.calls.count("gemma4:e4b") == 2  # 見直しは 2 問とも
