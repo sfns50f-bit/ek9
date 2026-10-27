@@ -262,6 +262,8 @@ def read_letter(answer: str, work: str, n: int) -> int | None:
 
 # 検証で、正解そのものが合わないことを表す確認（不合格の理由は solver_mismatch。ほかの確認の不合格は正解が複数）
 ANSWER_CHECKS = ("正解の裏付け", "正解が合うか")
+# 読解の 1 対 1 の判定（第 9 回のレビュー 1 章）。これだけの不合格は要確認（needs_check）にする
+PAIR_CHECK = "1 対 1 の判定"
 # 理由・目的を問う設問（作り直した D を、まずこれだけに使う。第 8 回のレビュー 2-2。#860 は理由を問う設問）
 REASON_RE = re.compile(r"\b(why|reasons?|because|purpose|in order to|so that|causes?d?)\b", re.I)
 # スペルの問題文の空所「( c _ _ _ _ _ )」
@@ -301,6 +303,16 @@ def example_sentence(problem: Any) -> str:
         word = str(problem.answer.get("word", ""))
         return re.sub(SPELL_BLANK, word, sentence) if word else ""
     return ""
+
+
+def read_pair(answer: str) -> int | str | None:
+    """1 対 1 の判定の答え：「1」→ 0、「2」→ 1、「両方」→ "both"。読めなければ None。"""
+    text = unicodedata.normalize("NFKC", answer or "").strip()
+    first = re.sub(r"[\s*「」:：。.]", "", text.splitlines()[0] if text else "")
+    if first.startswith(("両方", "どちらも", "both", "Both")):
+        return "both"
+    m = re.fullmatch(r"\(?([12])\)?(?:番)?", first)
+    return int(m.group(1)) - 1 if m else None
 
 
 def read_none_fit(answer: str, options: list[str]) -> int | None:
@@ -401,6 +413,15 @@ class EnglishSubject(Subject):
                                        "all": "すべての設問で書かせる"}},
         "reading_think": {"label": "読解の選択肢の判定の思考モード", "default": "model",
                           "choices": {"model": "モデルの設定のまま", "on": "あり", "off": "なし"}},
+        # 第 9 回のレビュー 1 章：根拠の近くの言葉を使った誤答だけ、正解と 1 対 1 で比べる（#860・#796 の型）
+        "pair_check": {"label": "読解の怪しい誤答の 1 対 1 の判定", "default": "on",
+                       "choices": {"on": "する（1 回目の検証だけ）", "off": "しない"}},
+        "pair_threshold": {"label": "怪しい誤答とみなす重なり（誤答の内容語のうち、根拠の文と前後 1 文にある割合）",
+                           "default": "0.5", "choices": {"0.3": "3 割以上", "0.4": "4 割以上", "0.5": "5 割以上",
+                                                         "0.6": "6 割以上", "0.7": "7 割以上"}},
+        # 第 9 回のレビュー 3-2：最終確認では本文の在庫を使わず、新しく作った本文だけで作る
+        "reuse_passages": {"label": "読解の本文の使い回し（作成）", "default": "on",
+                           "choices": {"on": "前に作った本文に設問を足す", "off": "使わない（新しい本文だけ）"}},
     }
     # 英語の既定のモデル（第 8 回のレビュー 1 章。見本集の #129。26b は本文の破綻を見逃したので見直しは 12b）。
     # 本文作成・本文なしの確認は、設定がなければ作成役と同じ
@@ -431,7 +452,8 @@ class EnglishSubject(Subject):
         # （弱い作成役で設問が落ち続けた本文にも、別の作成役なら設問を足せる。第 4 回のレビュー E-5）
         reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic") and len(p["questions"]) < n
                     and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * n]
-        src = self._reusable_passage(ctx, reusable) if reusable else None
+        reuse = ctx.options.get("reuse_passages", "on") != "off"  # 最終確認では新しい本文だけで作る（第 9 回 3-2）
+        src = self._reusable_passage(ctx, reusable) if reusable and reuse else None
         if src is not None:
             topic, body, have = src["topic"], src["body"], list(src["questions"])
             source: dict[str, Any] = {"id": src["id"]}
@@ -860,6 +882,10 @@ class EnglishSubject(Subject):
             strict = strict_opt in ("all", "on") or (strict_opt == "reason" and bool(REASON_RE.search(problem.question)))
             with _thinking(llm, think):
                 self._judge_choices(llm, model, problem, choices, checks, raws, updates, quote=True, strict=strict)
+            # 怪しい誤答だけ正解と 1 対 1 で比べる（1 回目の検証だけ。時間を抑えるため）
+            if opts.get("pair_check") == "on" and str(opts.get("_run", "1")) == "1":
+                _set_label(llm, "検証（1 対 1）")
+                self._judge_pairs(llm, model, problem, float(opts.get("pair_threshold") or 0.5), checks, raws)
         elif problem.template == "en-vocab-blank":
             sentences = [sentence.replace("(　　　　)", c["text"]) for c in choices]
             self._judge_fit(llm, model, prompts.FIT3_JUDGE_SYSTEM if three else prompts.FIT_JUDGE_SYSTEM,
@@ -882,16 +908,63 @@ class EnglishSubject(Subject):
         detail, raw = "\n".join(lines), "\n\n".join(raws)[:4000]
         failed = [(name, text) for name, ok, text in checks if ok is False]
         if failed:
-            code = "solver_mismatch" if any(name in ANSWER_CHECKS for name, _t in failed) else "en_verify_multiple"
+            code = ("solver_mismatch" if any(name in ANSWER_CHECKS for name, _t in failed)
+                    else "needs_check" if all(name == PAIR_CHECK for name, _t in failed) else "en_verify_multiple")
             summary = "／".join(f"{name}（{text[:150]}）" for name, text in failed)
             return VerifyResult(False, f"{model}: {summary[:400]}", detail, code, raw=raw)
         unread = [f"{name}：{text[:120]}" for name, ok, text in checks if ok is None]
         if unread:
+            # 1 対 1 の判定だけが読めなかったときは要確認（第 9 回のレビュー 1-2）
+            only_pair = all(name == PAIR_CHECK for name, ok, _t in checks if ok is None)
             return VerifyResult(False, f"{model}: 判定を読めなかった（{'／'.join(unread)}）", detail,
-                                "solver_unreadable", raw=raw)
+                                "needs_check" if only_pair else "solver_unreadable", raw=raw)
         relabel = "。誤答の種類を付け直した" if updates else ""
         return VerifyResult(True, f"{model}: 正解は 1 つに決まる（{len(checks)} つの確認）{relabel}", detail, raw=raw,
                             updates=updates or {})
+
+    def _judge_pairs(self, llm: LLM, model: str, problem: Any, threshold: float,
+                     checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:
+        """読解の怪しい誤答を、正解と 2 つだけで比べる（第 9 回のレビュー 1 章。#860・#796：誤答が正解の根拠と同じ段落の
+        内容を使っていて、4 つ並べた判定では見逃していた）。怪しい誤答は言葉の重なりで選ぶだけで、重なりで止めはしない。
+        「両方」か誤答を選んだら、また読めなければ（1 回聞き直して）要確認。"""
+        passage = problem.passage.body if problem.passage is not None else ""
+        right = next((c for c in problem.choices if c.get("correct")), None)
+        if not passage or right is None:
+            return
+        evidence = str((getattr(problem, "params", None) or {}).get("evidence", ""))
+        window = check.evidence_window(passage, evidence, right["text"])
+        suspects = [c for c in problem.choices if not c.get("correct")
+                    and check.overlap_share(c["text"], window) >= threshold]
+        if not suspects:
+            return
+        notes, bad, unread = [], [], []
+        for c in suspects:
+            pair = [right, c]
+            random.shuffle(pair)  # 並べる順番は毎回入れ替える
+            user = prompts.pair_user(passage, problem.question, pair[0]["text"], pair[1]["text"])
+            got = None
+            for attempt in range(2):
+                out, raw = self._ask(llm, model, prompts.PAIR_SYSTEM, user + (
+                    "\n\n前の出力は形が違って読めませんでした。[[answer]] の下に「1」「2」「両方」のどれかだけを書いてください。"
+                    if attempt else ""), prompts.PAIR_SCHEMA)
+                raws.append("【1 対 1 の判定】\n" + raw)
+                got = read_pair(str(out.get("answer") or ""))
+                if got is not None:
+                    break
+            reason = str(out.get("reason") or "").strip()[:100]
+            if got is None:
+                unread.append(c["text"][:50])
+            elif got == "both" or pair[got] is c:
+                bad.append(f"「{c['text'][:50]}」と比べて{'両方成り立つ' if got == 'both' else '誤答の方を選んだ'}"
+                           + (f"：{reason}" if reason else ""))
+            else:
+                notes.append(c["text"][:30])
+        if bad:
+            checks.append((PAIR_CHECK, False, "／".join(bad) + "（正解が複数の疑い）"))
+        elif unread:
+            checks.append((PAIR_CHECK, None, "判定を読めなかった（「" + "」「".join(unread) + "」）"))
+        else:
+            checks.append((PAIR_CHECK, True, f"怪しい誤答 {len(notes)} つは、どれも正解の方が成り立つ"))
 
     def _judge_without_answer(self, llm: LLM, model: str, system: str, sentence: str,
                               choices: list[dict[str, Any]], checks: list[tuple[str, bool | None, str]],

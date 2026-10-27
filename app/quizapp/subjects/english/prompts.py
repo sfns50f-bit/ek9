@@ -295,6 +295,25 @@ CHOICE_STRICT_SYSTEM = CHOICE_VERIFY_SYSTEM.replace(
     "「番号: 判定 — 引用: \"本文の文\" — 理由（日本語で短く）」",
     "「番号: 判定 — 引用: \"本文の文\"（または 違う点: …） — 理由（日本語で短く）」")
 
+# 読解の 1 対 1 の判定（第 9 回のレビュー 1 章）：根拠の近くの言葉を使った「怪しい誤答」だけ、正解と 2 つだけで比べる
+PAIR_SYSTEM = """あなたは日本の高校の英語の先生です。英語の読解問題で、2 つの選択肢のうち、設問への答えとして本文に照らして
+成り立つのはどちらかを判定します。本文に書かれていることだけを根拠にする。両方とも設問への答えとして成り立つなら「両方」と答える。"""
+
+PAIR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string", "description": "「1」「2」「両方」のどれか 1 つだけ"},
+        "reason": {"type": "string", "description": "理由を 1 行（日本語）"},
+    },
+    "required": ["answer"],
+}
+
+
+def pair_user(passage: str, question: str, first: str, second: str) -> str:
+    return "\n".join(["本文:", passage, "", "設問:", question, "", "選択肢:", f"1: {first}", f"2: {second}", "",
+                      "答え方: [[answer]] の下に「1」「2」「両方」のどれかだけ、[[reason]] の下に理由を 1 行"])
+
+
 # 語彙（空所・意味）の 3 段階の判定（第 7 回のレビュー C：文法的には入るが不自然な語まで「通る」にして弾きすぎていた）
 FIT3_LABELS = {"自然に入る": "natural", "文法的には入るが不自然": "awkward", "不自然": "awkward", "入らない": "no"}
 

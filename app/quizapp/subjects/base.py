@@ -152,6 +152,8 @@ class GenContext:
     passages: Callable[[str], list[dict[str, Any]]] = lambda _template: []
     # (本文の ID, {"status": …, "log_add": [記録]}) -> 本文を書き換える（使い回す前の見直しの結果を残す・使えない印を付ける）
     update_passage: Callable[[int, dict[str, Any]], None] = lambda _id, _changes: None
+    # 依頼に記録した科目のやり方（Subject.verify_options の値。作成で使うもの：英語の本文の使い回しなど）
+    options: dict[str, str] = field(default_factory=dict)
 
     def model(self, role: str) -> str:
         """役割のモデル。設定がなければ作成役のモデル。"""
