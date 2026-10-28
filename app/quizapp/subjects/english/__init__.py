@@ -479,7 +479,7 @@ class EnglishSubject(Subject):
                       "log": list(log)}  # 本文の記録だけ（このあと設問の記録が log に足されるので、ここで写す）
             have = []
         # 設問の番号（重複の判定に使う）。不合格になった設問の番号とも重ならないよう、不合格の数も足す
-        start = len(have) + (src.get("rejected", 0) if reusable else 0) + 1
+        start = len(have) + (src.get("rejected", 0) if src is not None else 0) + 1
         params = {"topic": topic, "seed": ctx.rng.randrange(1 << 30), "test": ctx.is_test,
                   "passage_model": passage_model}
         partial: dict[str, Any] = {"unit": "en-reading", "template": template, "format": "choice", "params": params}
