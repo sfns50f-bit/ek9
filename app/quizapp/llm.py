@@ -156,6 +156,14 @@ def parse_tagged(text: str, schema: dict[str, Any]) -> dict[str, Any]:
             # 同じ見出しが何度も出たら後のものを使う（前回の出力を書き写してから直したものを書く、など）
             data[m.group(1).lower()] = _FENCE_RE.sub("", value).strip()
     missing = [k for k in schema.get("required", []) if not str(data.get(k, "")).strip()]
+    if len(missing) == 1 and found:
+        # 答えの見出しの代わりに答えそのものを見出しの形で書いた返事（「[[1]]」「[[なし]]」の次に [[reason]]）は、
+        # 最初の見出しより前に書いた短い答えをその項目とみなす（第 10 回のレビュー 4-5。思考なしの e4b の #136）
+        head = _FENCE_RE.sub("", body[:found[0].start()]).strip()
+        inner = re.fullmatch(r"\[\[\s*([^\[\]\n]{1,20}?)\s*\]\]|([0-9０-９]{1,2}|なし|両方)", head)
+        if inner:
+            data[missing[0]] = (inner.group(1) or inner.group(2)).strip()
+            missing = []
     if missing:
         raise LLMError("出力に " + "・".join(f"[[{k}]]" for k in missing) + " がありません", raw=raw)
     return data

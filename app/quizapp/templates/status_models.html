@@ -110,7 +110,7 @@
   <table class="compact small">
     <tr><th>モデル</th><th>思考モード</th></tr>
     {% for r in think_rows %}
-    <tr><td>{{ r.model }}{% if not r.saved %} <span class="muted">（未設定＝{{ think_labels[r.choice] }}）</span>{% endif %}</td>
+    <tr><td>{{ r.model }}{% if not r.saved %} <span class="muted">（未設定＝{{ think_labels[r.choice] }}{% if r.subject_note %}。{{ r.subject_note }}{% endif %}）</span>{% endif %}</td>
       <td><form method="post" action="/status/think" class="inline"><input type="hidden" name="model" value="{{ r.model }}">
         <select name="choice" onchange="this.form.submit()">
           {% for key, label in think_labels.items() %}<option value="{{ key }}" {{ 'selected' if r.choice == key }}>{{ label }}</option>{% endfor %}

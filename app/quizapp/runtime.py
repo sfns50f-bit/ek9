@@ -218,7 +218,10 @@ def apply_plan(job: object, plan: ModelPlan) -> None:
 
 def record_think(settings: Settings, session: Session, job: object, plan: ModelPlan) -> None:
     """依頼したときの思考モードを依頼に記録する（後で設定を変えても、この依頼はこの値で最後まで処理する）。"""
-    job.think_json = dumps(think_map(settings, session, plan))  # type: ignore[attr-defined]
+    from .subjects import get_subject
+
+    subject = get_subject(getattr(job, "subject", ""))
+    job.think_json = dumps(think_map(settings, session, plan, subject))  # type: ignore[attr-defined]
 
 
 # --- API の利用額（ドル） ----------------------------------------------------------
@@ -331,9 +334,11 @@ def think_record(model: str, choices: dict[str, str], env_think: bool | None) ->
     return "on" if resolve_think(model, choices, env_think) else "off"
 
 
-def think_map(settings: Settings, session: Session, plan: ModelPlan) -> dict[str, str]:
-    """依頼で使うモデルごとの思考モード（依頼したときの設定。依頼に記録し、worker は最後までこの値で呼ぶ）。"""
-    choices = think_settings(session)
+def think_map(settings: Settings, session: Session, plan: ModelPlan,
+              subject: object | None = None) -> dict[str, str]:
+    """依頼で使うモデルごとの思考モード（依頼したときの設定。依頼に記録し、worker は最後までこの値で呼ぶ）。
+    画面で設定していないモデルは、科目の既定（Subject.default_think。英語は検証役の e4b を「あり」）を使う。"""
+    choices = {**(getattr(subject, "default_think", {}) or {}), **think_settings(session)}
     used = [*plan.models.values(), *plan.verify_runs]
     return {m: think_record(m, choices, settings.think) for m in dict.fromkeys(used) if m}
 

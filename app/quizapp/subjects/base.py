@@ -187,6 +187,8 @@ class Subject:
     verify_options: dict[str, dict[str, Any]] = {}
     # 役割ごとの既定のモデル（全体・科目の設定がないときに使う。英語の見直し役＝gemma4:12b など）
     default_models: dict[str, str] = {}
+    # モデルごとの思考モードの既定（"on" / "off"）。画面で設定していないモデルを、この科目の依頼ではこの値で呼ぶ
+    default_think: dict[str, str] = {}
 
     test_format: str = ""
 

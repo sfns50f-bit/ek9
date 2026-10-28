@@ -586,8 +586,10 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         think_rows = []
         for name in ollama_names:
             effective = runtime.resolve_think(name, think_choices, settings.think)
+            by_subject = [f"{sub.name}の依頼では{runtime.THINK_CHOICES[sub.default_think[name]]}"
+                          for sub in all_subjects() if name in sub.default_think and name not in think_choices]
             think_rows.append({"model": name, "choice": "on" if effective else "off",
-                               "saved": name in think_choices})
+                               "saved": name in think_choices, "subject_note": "・".join(by_subject)})
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
                       subject_settings=subject_settings, plans=plans, today=today, roles=runtime.ROLES,

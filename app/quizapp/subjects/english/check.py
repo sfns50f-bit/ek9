@@ -64,10 +64,15 @@ def count_word(sentence: str, word: str) -> int:
 
 
 def normalize(text: str) -> str:
-    """意味を変えずに直せる表記の揺れ：文字どおりの \\n を改行に、日本語の文の簡体字を日本の字に、前後の空白。"""
+    """意味を変えずに直せる表記の揺れ：文字どおりの \\n を改行に、日本語の文の簡体字を日本の字に、前後の空白。
+    Markdown の強調（**太字**・*斜体*・__太字__）の記号を外し、行頭の「* 」の箇条書きを「- 」にそろえる
+    （画面は Markdown を表示しないので、記号がそのまま見えていた。第 10 回のレビュー 4-5。#1114・#1130）。"""
     t = (text or "").replace("\r\n", "\n").replace("\\n", "\n")
     t = t.translate(latexfix._ZH_TO_JA)
     t = _DOUBLE_BRACKET_RE.sub(r"[ \1 ]", t)
+    t = re.sub(r"^([ \t]*)[*+][ \t]+", r"\1- ", t, flags=re.M)
+    t = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), t)
+    t = re.sub(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"\1", t)
     return t.strip()
 
 
@@ -212,6 +217,25 @@ def overlap_share(option: str, window: str) -> float:
         return 0.0
     have = set(_content(window))
     return sum(1 for k in keys if k in have) / len(keys)
+
+
+_NARRATOR_RE = re.compile(r"\b(the\s+)?(writer|author|narrator|speaker)\b", re.I)
+_GENDERED_RE = re.compile(r"\b(he|his|him|himself|she|her|hers|herself)\b", re.I)
+_NARRATOR_SAYS_RE = re.compile(
+    r"\bI(?:'m|\s+am|\s+was|\s+became)\s+(?:a|an|the)?\s*(?:\w+\s+)?(boy|girl|man|woman|son|daughter|father|mother|"
+    r"husband|wife|brother|sister|grandfather|grandmother)\b", re.I)
+
+
+def narrator_pronoun(question: str, options: list[str], passage: str) -> bool:
+    """本文が一人称（I）で語られ、語り手の性別が本文から分からないのに、設問・選択肢で語り手（the writer など）を
+    he・she などで呼んでいる（第 6 回のレビュー 3-4、第 10 回の #1100）。語り手を問う設問で、設問に he・she が
+    あるか、選択肢の 2 つ以上が He・She で始まるときに真。"""
+    if len(re.findall(r"\bI\b", passage or "")) < 2 or _NARRATOR_SAYS_RE.search(passage or ""):
+        return False
+    if not _NARRATOR_RE.search(question or ""):
+        return False
+    starts = sum(1 for o in options if re.match(r"\s*(he|she|his|her)\b", o or "", re.I))
+    return bool(_GENDERED_RE.search(question or "")) or starts >= 2
 
 
 def stray_english(explanation: str, allowed_texts: list[str]) -> list[str]:

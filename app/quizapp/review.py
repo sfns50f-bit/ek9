@@ -143,6 +143,16 @@ def normalize_all(s: Session) -> int:
             for f, v in new.items():
                 setattr(p, f, v)
             changed += 1
+        # 本文（英語の読解）も直す（Markdown の記号など。第 10 回のレビュー 4-5）。直す前の本文は本文の記録に残す
+        passage = p.passage
+        if passage is not None and passage.body:
+            body = sub.normalize_text(passage.body)
+            if body != passage.body:
+                passage.log_json = dumps(passage.log + [{"step": "表記の直し", "ok": True,
+                                                         "summary": "問題検証モードで表記をまとめて直した",
+                                                         "detail": passage.body[:4000]}])
+                passage.body = body
+                changed += 1
     return changed
 
 

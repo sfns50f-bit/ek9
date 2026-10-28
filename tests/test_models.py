@@ -666,3 +666,25 @@ def test_export_ready_and_needs_check_together(settings, sessions, sandbox, clie
     md = client.get("/review/export.md?subject=english&status=ready_check").text
     assert all(f"#{p.id}" in md for p in held + ready)
     assert "検証の判定が割れた" in md and "× 正解が 1 つか" in md
+
+
+@pytest.mark.english_defaults
+def test_english_verifier_thinks_unless_set_on_screen(settings, sessions, client):
+    """英語の検証役 e4b は、画面で設定していなければ英語の依頼では思考あり（第 10 回のレビュー 4 章：思考なしでは
+    判定の形が崩れた）。画面で設定したものが優先。数学の依頼には効かない。"""
+    english = get_subject("english")
+    with sessions.begin() as s:
+        plan = runtime.model_plan(settings, s, english)
+        j = Job(subject="english", scope="", format="choice", count=1)
+        runtime.apply_plan(j, plan)
+        runtime.record_think(settings, s, j, plan)
+        m = Job(subject="math", scope="", format="choice", count=1, verify_model="gemma4:e4b-it-qat")
+        mplan = dataclasses.replace(runtime.model_plan(settings, s), verify_model="gemma4:e4b-it-qat")
+        runtime.record_think(settings, s, m, mplan)
+    assert j.think["gemma4:e4b-it-qat"] == "on" and j.think["gemma4:12b-it-qat"] == "off"
+    assert m.think["gemma4:e4b-it-qat"] == "off"
+    with sessions.begin() as s:
+        runtime.save_think_setting(s, "gemma4:e4b-it-qat", "off")
+        j2 = Job(subject="english", scope="", format="choice", count=1)
+        runtime.record_think(settings, s, j2, plan)
+    assert j2.think["gemma4:e4b-it-qat"] == "off"
