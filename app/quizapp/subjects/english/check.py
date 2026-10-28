@@ -232,10 +232,16 @@ def narrator_pronoun(question: str, options: list[str], passage: str) -> bool:
     あるか、選択肢の 2 つ以上が He・She で始まるときに真。"""
     if len(re.findall(r"\bI\b", passage or "")) < 2 or _NARRATOR_SAYS_RE.search(passage or ""):
         return False
-    if not _NARRATOR_RE.search(question or ""):
+    m = _NARRATOR_RE.search(question or "")
+    if not m:
         return False
+    # 設問では、語り手の語のあとで、ほかの人物（大文字で始まる名前）を挟まずに出てくる he・she だけを見る
+    # （「the writer learn from Mr. Tanaka about his past」の his は Mr. Tanaka）
+    after = (question or "")[m.end():]
+    pron = _GENDERED_RE.search(after)
+    in_question = bool(pron) and not re.search(r"\b(?!I\b)[A-Z][a-z]+", after[:pron.start()])
     starts = sum(1 for o in options if re.match(r"\s*(he|she|his|her)\b", o or "", re.I))
-    return bool(_GENDERED_RE.search(question or "")) or starts >= 2
+    return in_question or starts >= 2
 
 
 def stray_english(explanation: str, allowed_texts: list[str]) -> list[str]:

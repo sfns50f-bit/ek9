@@ -430,7 +430,8 @@ class EnglishSubject(Subject):
     default_models = {"gen": "gemma4:26b-a4b-it-qat", "verify": "gemma4:e4b-it-qat", "review": "gemma4:12b-it-qat"}
     # 検証役の e4b は思考ありで使う（思考なしでは判定の形が崩れ、通すべき問題を 15／16 止めた。第 10 回のレビュー 1 章・4 章）。
     # 画面で設定していなければ、英語の依頼ではこの値（画面で設定したものが優先）
-    default_think = {"gemma4:e4b-it-qat": "on"}
+    # 全体の既定の検証役 gemma4:e4b を英語の欄で選んだときも同じ（第 10 回のフェーズの終わりのレビュー）
+    default_think = {"gemma4:e4b-it-qat": "on", "gemma4:e4b": "on"}
 
     def units(self) -> list[Unit]:
         return _units()
@@ -1063,6 +1064,23 @@ class EnglishSubject(Subject):
             return VerifyResult(False, f"{model}: 見直しの結果を読めなかった（{'・'.join(unread)}）", detail,
                                 "en_review_unread", raw=raw)
         return VerifyResult(True, f"{model}: 誤りは見つからなかった", detail, raw=raw)
+
+    def golden_params(self, template: str, question: str, explanation: str, choices: list[dict[str, Any]],
+                      answer: str) -> dict[str, Any]:
+        """見本集の語彙の問題の params（点検に使う語）を、問題文・選択肢・解説から組み立てる。"""
+        word = ""
+        m = re.search(r"\[\s*([A-Za-z][A-Za-z' -]*?)\s*\]", question)
+        if template == "en-vocab-meaning" and m:
+            word = m.group(1)
+        elif template == "en-vocab-blank":
+            word = next((c["text"] for c in choices if c.get("correct")), "")
+        elif template == "en-spelling":
+            word = answer
+        if not word:
+            m = re.search(r"答え:\s*([A-Za-z][A-Za-z' -]*)", explanation)
+            word = m.group(1).strip() if m else ""
+        others = [c["text"] for c in choices if not c.get("correct")] if template == "en-vocab-blank" else []
+        return {"word": word, "others": others}
 
     def rereview(self, llm: LLM, model: str, problem: Any,
                  options: dict[str, str] | None = None) -> VerifyResult | None:

@@ -214,6 +214,12 @@ class Subject:
         """
         return None
 
+    def golden_params(self, template: str, question: str, explanation: str, choices: list[dict[str, Any]],
+                      answer: str) -> dict[str, Any]:
+        """見本集のファイルの問題（書き出しから復元したもの。params がない）の params を、問題文などから組み立てる。
+        点検（text_issues）に要る値だけでよい。既定は空。"""
+        return {}
+
     def rereview(self, llm: LLM, model: str, problem: Any,
                  options: dict[str, str] | None = None) -> VerifyResult | None:
         """見直しだけをやり直す依頼で、前に作った問題を点検し直す。ふつうは見直しと同じ。"""

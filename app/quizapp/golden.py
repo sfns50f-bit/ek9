@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -96,24 +95,6 @@ def _template_of(subject_id: str, category: str) -> tuple[str, str] | None:
     return None
 
 
-def _vocab_params(template: str, question: str, explanation: str, choices: list[dict[str, Any]],
-                  answer: str) -> dict[str, Any]:
-    """語彙の問題の params（点検に使う語）を問題文から組み立てる（見本集のファイルには params がない）。"""
-    word = ""
-    m = re.search(r"\[\s*([A-Za-z][A-Za-z' -]*?)\s*\]", question)
-    if template == "en-vocab-meaning" and m:
-        word = m.group(1)
-    elif template == "en-vocab-blank":
-        word = next((c["text"] for c in choices if c.get("correct")), "")
-    elif template == "en-spelling":
-        word = answer
-    if not word:
-        m = re.search(r"答え:\s*([A-Za-z][A-Za-z' -]*)", explanation)
-        word = m.group(1).strip() if m else ""
-    others = [c["text"] for c in choices if not c.get("correct")] if template == "en-vocab-blank" else []
-    return {"word": word, "others": others}
-
-
 def _choice(sub: Any, o: dict[str, Any]) -> dict[str, Any]:
     """書き出しの選択肢（間違いの種類は名前。「X／見直しでは「Y」」は判定が分かれたもの）を問題の形に。"""
     by_label = {v: k for k, v in sub.mistakes.items()}
@@ -135,8 +116,9 @@ def sample_from_item(subject_id: str, item: dict[str, Any]) -> Sample | None:
     choices = [_choice(sub, o) for o in item.get("options") or []]
     answer = str(item.get("answer", ""))
     body = item.get("passage")
-    params = {} if body else _vocab_params(template, str(item.get("question", "")),
-                                           str(item.get("explanation", "")), choices, answer)
+    # 見本集のファイルには params がないので、点検に使う値を科目に組み立ててもらう（Subject.golden_params）
+    params = {} if body else sub.golden_params(template, str(item.get("question", "")),
+                                               str(item.get("explanation", "")), choices, answer)
     return Sample(
         id=int(item["id"]), expected=str(item.get("expected", "")), defect_type=str(item.get("defect_type") or ""),
         note=str(item.get("note") or ""), subject=subject_id, unit=unit, template=template,

@@ -1365,6 +1365,9 @@ def test_markdown_marks_are_removed_and_narrator_pronouns_are_checked(settings, 
     assert check.narrator_pronoun("How did the writer feel when he helped?", ["a", "b", "c", "d"], story)
     assert check.narrator_pronoun("How did the writer feel?", ["He felt sad.", "He felt happy.", "c", "d"], story)
     assert not check.narrator_pronoun("How did the writer feel?", ["The writer felt sad.", "b", "c", "d"], story)
+    # 語り手の語のあとにほかの人物を挟んだ his・he は、その人物を指す（フェーズの終わりのレビュー 5）
+    assert not check.narrator_pronoun("What did the writer learn from Mr. Tanaka about his past?", ["a", "b", "c", "d"],
+                                      story)
     assert not check.narrator_pronoun("How did the writer feel when he helped?", ["a", "b", "c", "d"],
                                       "I am a boy. I met my neighbor and I helped him.")
     run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-notice", count=1)
