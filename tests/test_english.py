@@ -1313,11 +1313,30 @@ def test_pair_check_split_goes_to_needs_check_in_a_job(settings, sessions, sandb
 def test_passages_can_be_made_new_only(settings, sessions, sandbox, monkeypatch):
     """最終確認用：本文の在庫を使わず、新しく作った本文だけで作る（第 9 回のレビュー 3-2）。"""
     run_job(settings, sessions, sandbox, EnglishOracle(sessions, bad_questions={2, 3}), scope="tmpl:en-notice", count=1)
+    from quizapp.db import Passage
+
+    with sessions() as s:
+        before = {p.id for p in s.execute(select(Passage)).scalars()}
     used = []
-    monkeypatch.setattr(EnglishSubject, "_reusable_passage", lambda self, ctx, c: used.append(c) or None)
-    add_job(sessions, subject="english", scope="tmpl:en-notice", count=1, options_json='{"reuse_passages": "off"}')
+    real = EnglishSubject._reusable_passage
+    monkeypatch.setattr(EnglishSubject, "_reusable_passage",
+                        lambda self, ctx, c: used.append(c) or real(self, ctx, c))
+    # 使い回せる本文が在庫にあっても、「使わない」なら新しい本文で作る（在庫があるときに止まっていた。#145）
+    jid = add_job(sessions, subject="english", scope="tmpl:en-notice", count=1,
+                  options_json='{"reuse_passages": "off"}')
     make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
-    assert used == []
-    add_job(sessions, subject="english", scope="tmpl:en-notice", count=1, options_json='{"reuse_passages": "on"}')
+    assert used == [] and job(sessions, jid).status == "done", job(sessions, jid).error
+    with sessions() as s:
+        new = [p for p in problems(sessions, status="ready") if p.job_id == jid]
+        assert new and all(p.passage_id not in before for p in new)
+    jid = add_job(sessions, subject="english", scope="tmpl:en-notice", count=1, options_json='{"reuse_passages": "on"}')
     make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
-    assert used  # 既定（使い回す）なら在庫を見る
+    assert used and job(sessions, jid).status == "done"  # 既定（使い回す）なら在庫を見る
+
+
+def test_reading_works_when_no_stored_passage_can_be_reused(settings, sessions, sandbox, monkeypatch):
+    """在庫の本文がどれも使い回せない（見直しを通らない）ときも、新しい本文で作る（同じ所で止まっていた）。"""
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions, bad_questions={2, 3}), scope="tmpl:en-notice", count=1)
+    monkeypatch.setattr(EnglishSubject, "_reusable_passage", lambda self, ctx, c: None)
+    jid = run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-notice", count=1)
+    assert job(sessions, jid).status == "done", job(sessions, jid).error
