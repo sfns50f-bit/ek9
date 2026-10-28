@@ -181,6 +181,39 @@ def stated_in_passage(option: str, passage: str) -> bool:
     return share >= 0.6 and len(found) >= 2
 
 
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for para in (text or "").split("\n") for s in re.split(r"(?<=[.!?])\s+", para) if s.strip()]
+
+
+def _content(text: str) -> list[str]:
+    """内容語（4 文字以上で、ありふれた語でないもの）の語幹。"""
+    return list(dict.fromkeys(_stem(w.lower()) for w in words(text) if len(w) >= 4 and w.lower() not in _STOP))
+
+
+def evidence_window(passage: str, evidence: str, answer: str) -> str:
+    """根拠の文とその前後 1 文（第 9 回のレビュー 1-1）。根拠の文が分からないとき（見本集の問題など）は、正解と内容語が
+    いちばん重なる本文の文を根拠とみなす。"""
+    sents = _sentences(passage)
+    if not sents:
+        return ""
+    idx = next((i for i, s in enumerate(sents) if evidence and contains(s, evidence) or evidence and contains(evidence, s)),
+               None)
+    if idx is None:
+        want = set(_content(evidence or answer))
+        idx = max(range(len(sents)), key=lambda i: len(want & set(_content(sents[i]))))
+    return " ".join(sents[max(0, idx - 1):idx + 2])
+
+
+def overlap_share(option: str, window: str) -> float:
+    """誤答の内容語のうち、根拠の文と前後 1 文にある割合（どの誤答を 1 対 1 で確かめるかを選ぶだけに使う）。
+    内容語が 2 つ未満なら 0。"""
+    keys = _content(option)
+    if len(keys) < 2:
+        return 0.0
+    have = set(_content(window))
+    return sum(1 for k in keys if k in have) / len(keys)
+
+
 def stray_english(explanation: str, allowed_texts: list[str]) -> list[str]:
     """語彙の問題の解説に出てくる英単語のうち、例文にも選択肢にもないもの（第 5 回のレビュー D-1：
     選択肢にない語の説明をしていた）。語形の違い（-s・-ed・-ing）と、ありふれた語は見ない。"""

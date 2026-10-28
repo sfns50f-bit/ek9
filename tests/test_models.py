@@ -411,6 +411,11 @@ class GoldenLLM:
             if "筋が通っているかだけ" in system:
                 return {"verdict": "自然", "reason": ""}
             return {"verdict": "問題なし", "issues": "なし"}
+        if "reason" in props and "成り立つのはどちらか" in system:  # 1 対 1 の判定（正解の方を選ぶ。also_fit なら両方）
+            items = dict(_re.findall(r"^([12]): (.*)$", user, _re.M))
+            if any(t in self.also_fit for t in items.values()):
+                return {"answer": "両方", "reason": "どちらも成り立つ"}
+            return {"answer": next(n for n, t in items.items() if t in self.right), "reason": "正解の方"}
         if "reason" in props:  # 正解を抜いた判定
             items = _re.findall(r"^(\d+): (.*)$", user, _re.M)
             pick = next((n for n, t in items if t in self.also_fit), None) or items[-1][0]
@@ -572,18 +577,19 @@ def test_verify_options_are_saved_recorded_and_compared(settings, sessions, sand
     client.post("/status/subject-models", data={"subject": "english", "opt_fit3": "off", "opt_reading_strict": "reason",
                                                "opt_reading_think": "on"})
     with sessions() as s:
-        assert runtime.verify_options(s, get_subject("english")) == {"fit3": "off", "reading_strict": "reason",
-                                                                     "reading_think": "on"}
+        assert runtime.verify_options(s, get_subject("english")).items() >= {
+            "fit3": "off", "reading_strict": "reason", "reading_think": "on", "pair_check": "on"}.items()
     page = client.get("/status/models").text
     assert "検証のやり方：語彙の判定" in page and "読解の選択肢の判定の思考モード" in page
     client.post("/generate", data={"subject": "english", "scope": "tmpl:en-vocab-blank", "format": "choice",
                                    "count": "1"})
-    assert jobs(sessions)[-1].options == {"fit3": "off", "reading_strict": "reason", "reading_think": "on"}
+    assert jobs(sessions)[-1].options.items() >= {"fit3": "off", "reading_strict": "reason", "reading_think": "on"}.items()
     # 見本集：画面で選んだやり方（新しい方式）で測る
     client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:e4b", "verify_count": "1",
                                         "opt_fit3": "on", "opt_reading_strict": "off", "opt_reading_think": "model"})
     jb = jobs(sessions)[-1]
-    assert jb.kind == "golden" and jb.options == {"fit3": "on", "reading_strict": "off", "reading_think": "model"}
+    assert jb.kind == "golden" and jb.options.items() >= {"fit3": "on", "reading_strict": "off",
+                                                          "reading_think": "model"}.items()
     assert "語彙の判定：3 段階" in golden.config_label(jb) and "読解の誤答の根拠：書かせない" in golden.config_label(jb)
 
 

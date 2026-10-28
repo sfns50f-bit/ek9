@@ -179,7 +179,8 @@ class Worker:
             job.api_cost_usd = round((job.api_cost_usd or 0.0) + cost, 6)
             for c in calls:
                 # 解説・本文の見直しは検証の時間に数える
-                role = "verify" if c.get("label") in ("検証", "見直し", "本文の見直し") else "gen"
+                label = str(c.get("label") or "")
+                role = "verify" if label.startswith("検証") or label in ("見直し", "本文の見直し") else "gen"
                 setattr(job, f"{role}_calls", (getattr(job, f"{role}_calls") or 0) + 1)
                 setattr(job, f"{role}_eval_s", (getattr(job, f"{role}_eval_s") or 0.0) + float(c.get("eval_s") or 0))
                 setattr(job, f"{role}_load_s", (getattr(job, f"{role}_load_s") or 0.0) + float(c.get("load_s") or 0))
@@ -614,7 +615,8 @@ class Worker:
                         elif key == "passage":
                             res = subject.review_passage(self.llm, model, x.passage)
                         else:
-                            res = subject.verify(self.llm, self.sandbox, model, x, **_opts(subject, options))
+                            res = subject.verify(self.llm, self.sandbox, model, x,
+                                                 **_opts(subject, {**(options or {}), "_run": key[len("verify"):]}))
                     except LLMError as exc:
                         res = VerifyResult(False, f"{model}: 出力を読めません（{exc}）", code="llm_output",
                                            raw=getattr(exc, "raw", ""))
@@ -654,7 +656,7 @@ class Worker:
         ctx = GenContext(llm=self.llm, sandbox=self.sandbox, gen_model=plan.gen_model, rng=self.rng,
                          is_test=job.is_test, existing_keys=self.existing_keys, models=plan.models,
                          review=plan.review and not job.is_test, passages=self.passages_for,
-                         update_passage=self.update_passage)
+                         update_passage=self.update_passage, options=job.options)
         order = list(templates)
         self.rng.shuffle(order)
         produced = 0
@@ -727,7 +729,9 @@ class Worker:
                         if step == REVIEW_STEP:
                             res = subject.review(self.llm, model, problem) or VerifyResult(True, "見直しなし")
                         else:
-                            res = subject.verify(self.llm, self.sandbox, model, problem, **_opts(subject, job.options))
+                            # 何回目の検証か（_run）も渡す（1 回目だけかける確認がある。英語の 1 対 1 の判定）
+                            res = subject.verify(self.llm, self.sandbox, model, problem,
+                                                 **_opts(subject, {**job.options, "_run": str(r)}))
                         ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
                         if res.updates:
                             updates[pid] = res.updates

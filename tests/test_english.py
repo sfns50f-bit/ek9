@@ -1220,3 +1220,104 @@ def test_review_checks_that_example_sentences_make_sense(settings, sessions, san
     reading = EnglishOracle(sessions)
     run_job(settings, sessions, sandbox, reading, scope="tmpl:en-notice", count=1)
     assert "coherence" not in reading.roles()  # 読解には聞かない
+
+
+# --- 第 9 回のレビュー（1 対 1 の判定・本文の使い回しの切り替え） --------------------------------
+
+class _Music:
+    """#860 の形：誤答「ドーパミンを出す」が、正解「報酬系につながる」と同じ段落の内容を使っている。"""
+    template = "en-expository"
+    format = "choice"
+    question = "Why does listening to music make people feel good?"
+    params = {}
+    passage = type("Pa", (), {"body": (
+        "Music and the Brain\n\nMany people listen to music every day. Listening to music releases dopamine, "
+        "which connects to the reward system of the brain. That is why music can make people feel good.\n\n"
+        "Some songs also have a tempo that is close to walking speed.")})()
+    choices = [{"text": "Because it connects to the reward system of the brain.", "correct": True, "mistake": None},
+               {"text": "Because listening releases dopamine in the brain.", "correct": False, "mistake": "partial"},
+               {"text": "Because every song has the speed of a heartbeat.", "correct": False, "mistake": "not_stated"},
+               {"text": "Because doctors tell people to sing loudly.", "correct": False, "mistake": "not_stated"}]
+
+
+class _PairLLM:
+    """選択肢の判定は正しく（正解だけ裏付けあり）、1 対 1 の判定は pair の答えを返す。"""
+
+    def __init__(self, pair):
+        self.pair, self.pair_calls = pair, []
+
+    def chat_json(self, model, system, user, schema, **kw):
+        if "成り立つのはどちらか" in system:
+            self.pair_calls.append(user)
+            items = dict(re.findall(r"^([12]): (.*)$", user, re.M))
+            right = next(n for n, t in items.items() if "reward" in t)
+            answer = {"both": "両方", "right": right, "wrong": "2" if right == "1" else "1"}.get(self.pair, self.pair)
+            return {"answer": answer, "reason": "理由"}
+        lines = []
+        for n, text in re.findall(r"^(\d+): (.*)$", user, re.M):
+            if "reward" in text:
+                lines.append(f'{n}: 裏付けあり — 引用: "Listening to music releases dopamine, which connects to the '
+                             f'reward system of the brain." — 理由')
+            else:
+                lines.append(f"{n}: 本文に書かれていない — 理由")
+        return {"judgments": "\n".join(lines)}
+
+
+@pytest.mark.parametrize("pair,code", [("both", "needs_check"), ("wrong", "needs_check"), ("right", ""),
+                                       ("よく分からない", "needs_check")])
+def test_pair_check_holds_answers_that_share_the_evidence(pair, code):
+    """怪しい誤答（根拠の文と前後 1 文の言葉を多く使う誤答）だけを正解と 1 対 1 で比べ、「両方」か誤答を選んだら
+    要確認（第 9 回のレビュー 1 章。#860・#796）。正解を選べば通す（#605 のような通すべき問題を止めない）。
+    読めなければ 1 回聞き直して要確認。重なりの少ない誤答は比べない。"""
+    llm = _PairLLM(pair)
+    res = EnglishSubject().verify(llm, None, "m", _Music(), options={"pair_check": "on"})
+    assert len(llm.pair_calls) == (2 if pair == "よく分からない" else 1)  # dopamine の誤答だけ
+    assert "dopamine" in llm.pair_calls[0] and "heartbeat" not in llm.pair_calls[0]
+    assert res.ok is (code == "") and (res.code == code or res.ok)
+    assert "1 対 1 の判定" in res.detail
+
+
+def test_pair_check_only_on_the_first_run_and_can_be_off():
+    llm = _PairLLM("both")
+    assert EnglishSubject().verify(llm, None, "m", _Music(), options={"pair_check": "on", "_run": "2"}).ok
+    assert EnglishSubject().verify(llm, None, "m", _Music(), options={"pair_check": "off"}).ok
+    assert llm.pair_calls == []
+    # 怪しい誤答の選び方：根拠の文（分からなければ正解といちばん重なる文）と前後 1 文の内容語の割合
+    window = check.evidence_window(_Music.passage.body, "", _Music.choices[0]["text"])
+    assert "dopamine" in window and "walking speed" not in window
+    assert check.overlap_share(_Music.choices[1]["text"], window) == 1.0
+    assert check.overlap_share(_Music.choices[2]["text"], window) == 0.0
+
+
+def test_pair_check_split_goes_to_needs_check_in_a_job(settings, sessions, sandbox, monkeypatch):
+    """依頼の中では、1 回目の検証の 1 対 1 で疑いが出れば、2 回目が通っても要確認になる。"""
+    from quizapp.subjects.english import check as check_mod
+
+    monkeypatch.setattr(check_mod, "overlap_share", lambda option, window: 1.0 if "museum" in option else 0.0)
+
+    class Oracle(EnglishOracle):
+        def chat_json(self, model, system, user, schema, *, temperature=0.7):
+            if "成り立つのはどちらか" in system:
+                self.calls.append(("pair", model))
+                return {"answer": "両方", "reason": "どちらも成り立つ"}
+            return super().chat_json(model, system, user, schema, temperature=temperature)
+
+    llm = Oracle(sessions)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-notice", count=1)
+    held = [p for p in problems(sessions, status="rejected") if p.reject_code == "needs_check"]
+    assert held and "pair" in llm.roles()
+    entries = [e for e in held[0].verification if e["step"] == "検証"]
+    assert "× 1 対 1 の判定" in entries[0]["detail"] and entries[1]["ok"]
+
+
+def test_passages_can_be_made_new_only(settings, sessions, sandbox, monkeypatch):
+    """最終確認用：本文の在庫を使わず、新しく作った本文だけで作る（第 9 回のレビュー 3-2）。"""
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions, bad_questions={2, 3}), scope="tmpl:en-notice", count=1)
+    used = []
+    monkeypatch.setattr(EnglishSubject, "_reusable_passage", lambda self, ctx, c: used.append(c) or None)
+    add_job(sessions, subject="english", scope="tmpl:en-notice", count=1, options_json='{"reuse_passages": "off"}')
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    assert used == []
+    add_job(sessions, subject="english", scope="tmpl:en-notice", count=1, options_json='{"reuse_passages": "on"}')
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    assert used  # 既定（使い回す）なら在庫を見る
