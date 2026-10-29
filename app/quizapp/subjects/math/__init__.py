@@ -107,7 +107,7 @@ class MathSubject(Subject):
                          "mistake": inst.candidates[i - 1].mistake} for i in chosen]
             ctx.rng.shuffle(choices)
             return inst, choices, key
-        raise Rejected("choices" if "誤答" in last_error or "選択肢" in last_error else "duplicate", last_error)
+        raise Rejected("choices" if "誤答" in last_error or "選択肢" in last_error else "exhausted", last_error)
 
     def generate(self, ctx: GenContext, template: str, fmt: str) -> Draft:
         import sympy as sp

@@ -29,6 +29,7 @@ from .db import (
     DEFAULT_USER_ID,
     Attempt,
     Job,
+    Passage,
     Problem,
     StudySession,
     dumps,
@@ -426,7 +427,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     # --- 作成依頼 -----------------------------------------------------------
 
     @app.get("/generate")
-    def generate_page(request: Request, msg: str = "") -> Response:
+    def generate_page(request: Request, msg: str = "", left: int = 0) -> Response:
         with sessions() as s:
             jobs = list(s.execute(select(Job).order_by(Job.id.desc()).limit(30)).scalars())
             data = picker_data(s, user_id(request))
@@ -438,7 +439,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             api = api_info(s)
         # 候補：Ollama にあるモデルと、API のモデル（「anthropic/…」）
         model_names = [m["name"] for m in ollama.get("models", [])] + api["models"]
-        return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plans=plans, api_plans=api_plans,
+        return render(request, "generate.html", jobs=jobs, data=data, msg=msg, left=left, plans=plans, api_plans=api_plans,
                       model_names=model_names, max_verify=runtime.MAX_VERIFY_COUNT, api=api,
                       presets=runtime.PRESETS)
 
@@ -518,7 +519,23 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             runtime.apply_plan(job, chosen)
             runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
             s.add(job)
+            left = remaining_for(s, sub, sub.templates_for(scope_s, fmt, levels_s), fmt)
+        if left is not None and left < job.count:  # 題材・語の残りが頼んだ数より少ない（第 11 回のレビュー 2-3）
+            return redirect(f"/generate?msg=queued_low&left={left}")
         return redirect("/generate?msg=queued")
+
+    def remaining_for(s: Session, sub: Subject, templates: list[str], fmt: str) -> int | None:
+        """選んだ範囲でまだ作れる問題の数の目安（科目が数えないなら None）。"""
+        total, counted = 0, False
+        for t in templates:
+            existing = set(s.execute(select(Problem.params_key).where(
+                Problem.template == t, Problem.status.in_(("ready", "draft", "test")))).scalars())
+            topics = set(s.execute(select(Passage.topic).where(Passage.template == t,
+                                                               Passage.status != "rejected")).scalars())
+            n = sub.remaining(t, fmt, existing, topics)
+            if n is not None:
+                total, counted = total + n, True
+        return total if counted else None
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel(job_id: int, back: str = Form("/generate")) -> Response:

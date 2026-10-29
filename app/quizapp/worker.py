@@ -203,6 +203,10 @@ class Worker:
                 su = self._subunit(p.subject, p.template)
                 if su is not None and su.level:
                     p.level, p.related_units = su.level, ",".join(su.related)
+            # 前の版では、作る段階で題材・語・数値を使い切ったときも duplicate にしていた（成績で合格に数えていた。
+            # 第 11 回のレビュー：依頼 #158 の 23 問）。検証にかけていない duplicate は使い切り（exhausted）に直す
+            s.execute(update(Problem).where(Problem.status == "rejected", Problem.reject_code == "duplicate",
+                                            Problem.verified_at.is_(None)).values(reject_code="exhausted"))
 
     def next_job_id(self, ollama_ok: bool = True) -> int | None:
         """次に処理する依頼。Ollama につながらないときは、API のモデルだけを使う依頼を先に進める。

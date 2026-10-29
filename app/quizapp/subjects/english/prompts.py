@@ -187,6 +187,24 @@ def vocab_user(word: str, pos: str, meanings: list[str], candidates: list[str]) 
     return "\n".join(lines)
 
 
+# --- 解説だけの書き直し（解説が空・短すぎるときに設問ごと捨てない。第 11 回のレビュー 2-2） ---------------
+
+EXPLANATION_SCHEMA: dict[str, Any] = {
+    "type": "object", "properties": {"explanation": {"type": "string", "description": "解説（日本語）"}},
+    "required": ["explanation"]}
+
+
+def explanation_user(body: str, q: dict[str, Any]) -> str:
+    letters = "ABCD"
+    options = "\n".join(f"{letters[i]}. {t}" for i, t in enumerate(q["options"]))
+    return "\n".join([
+        "本文:", body, "", "設問: " + q["question"], options, "正解: " + letters[q["answer"]],
+        "正解の根拠の文: " + q["evidence"], "",
+        "この設問の解説だけを日本語で書いてください（2〜4 文）。本文のどこからなぜ正解になるかと、"
+        "ほかの選択肢が違う理由を書く。選択肢は A・B などの記号ではなく、中身で呼ぶ。",
+    ])
+
+
 # --- 直し ---------------------------------------------------------------------
 
 def fix_user(original: str, previous: dict[str, Any], issues: str, keys: list[str]) -> str:

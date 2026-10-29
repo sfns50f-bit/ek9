@@ -351,7 +351,7 @@ def test_rereview_works_for_math_and_export_shows_rejections(settings, sessions,
     add_job(sessions, count=1)
     make_worker(settings, sessions, sandbox, OracleLLM(sessions, solve_answer="0")).run_once()
     md = client.get("/review/export.md?subject=math&status=rejected").text
-    assert "- **不合格**：検証役の答えは読めたが、数値が正解と違う" in md and "× 検証（gemma4:e4b）" in md
+    assert "- **不合格**：検証役の答えは読めたが、正解と違う" in md and "× 検証（gemma4:e4b）" in md
     # 絞り込みに当てはまる問題がないとき
     r = client.post("/review/rereview", data={"subject": "english", "status": "ready", "model": "x"},
                     follow_redirects=True)

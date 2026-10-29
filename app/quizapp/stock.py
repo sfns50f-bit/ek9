@@ -225,6 +225,7 @@ def verify_stats(s: Session, days: int = 30, from_job: int = 0) -> dict[str, Any
     rows = s.execute(
         select(Problem.status, Problem.reject_code, Problem.verification_json, Problem.gen_model)
         .where(*_period(days, from_job), Problem.status.in_(("ready", "rejected", "deleted")),
+               Problem.reject_code != "exhausted",  # 使い切りは作った問題ではない（合格率に数えない）
                or_(Problem.job_id.is_(None), Problem.job_id.not_in(select(Job.id).where(Job.is_test.is_(True)))))
     ).all()
     by_code: Counter[str] = Counter()
@@ -304,7 +305,8 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
     out = []
     for j in jobs:
         made = statuses[j.id]["ready"] + statuses[j.id]["deleted"]
-        tried = sum(statuses[j.id].values()) - statuses[j.id]["draft"]
+        # 使い切り（exhausted）は作った問題ではないので、作った数に入れない（不合格の内訳には出す）
+        tried = sum(statuses[j.id].values()) - statuses[j.id]["draft"] - codes[j.id]["exhausted"]
         out.append({
             "job": j, "made": made, "tried": tried, "old_models": models.get(j.id),
             "pass_rate": round(100 * made / tried) if tried else None,

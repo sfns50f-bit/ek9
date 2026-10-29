@@ -124,6 +124,24 @@ def letter_reference(text: str) -> bool:
     return bool(_LETTER_REF_RE.search(text or ""))
 
 
+def replace_letters(text: str, options: list[str]) -> str:
+    """選択肢を A・B の記号で呼んでいる所を、選択肢の文（「…」）に置き換える（直しを頼んでも残ったとき。
+    第 11 回のレビュー 2-2）。options は作成役が書いた順（A〜D）。"""
+    def repl(m: re.Match[str]) -> str:
+        s = m.group(0)
+        letter = re.search(r"[A-DＡ-Ｄ]", s)
+        if letter is None:
+            return s
+        i = "ABCD".index(unicodedata.normalize("NFKC", letter.group()))
+        if i >= len(options) or not options[i].strip():
+            return s
+        quoted = f"「{options[i].strip()}」"
+        if s.startswith("選択肢") or s[0] in "（(「『":
+            return quoted
+        return quoted + s[letter.end():].lstrip()
+    return _LETTER_REF_RE.sub(repl, text or "")
+
+
 def internal_words(text: str) -> list[str]:
     """アプリの内部の言葉・指示への言及（「入らない語」「与えられた」など）。"""
     return list(dict.fromkeys(m.group(0) for m in _INTERNAL_RE.finditer(text or "")))
@@ -335,6 +353,13 @@ def paragraph_numbers(text: str) -> list[int]:
         raw = unicodedata.normalize("NFKC", m.group(1) or m.group(2))
         out.append(int(raw) if raw.isdigit() else _KANJI_NUM.get(raw, 0))
     return [n for n in out if n]
+
+
+def fix_paragraph(hint: str, where: int) -> str:
+    """ヒントの「第N段落」「N段落目」を、根拠の文のある段落の番号に直す（第 11 回のレビュー 2-2）。"""
+    def repl(m: re.Match[str]) -> str:
+        return f"第{where}段落" if m.group(1) else f"{where}段落目"
+    return _PARA_RE.sub(repl, hint or "")
 
 
 def choice_issues(texts: list[str], correct: int, *, english: bool = True) -> list[str]:
