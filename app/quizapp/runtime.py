@@ -34,6 +34,10 @@ MAX_VERIFY_COUNT = 5
 ROLES = {"gen": "作成", "verify": "検証", "review": "見直し"}
 # 科目ごとの設定（kv の subject_models）で、モデルのほかに持つもの：API の 1 日の上限（金額・回数。0 は上限なし）
 DAILY_KEYS = {"api_daily_usd": "API の 1 日の上限（ドル）", "api_daily_calls": "API の 1 日の上限（呼び出しの回数）"}
+# 作り方（作る画面で選ぶ）。ローカル生成＝科目ごとの設定の役割のモデル、API 生成＝科目ごとの設定の「api:<役割>」
+# （設定のない役割はローカル生成と同じ）、手動＝作る画面で役割ごとに選ぶ
+PRESETS = {"local": "ローカル生成", "api": "API 生成", "manual": "手動で選ぶ"}
+API_PREFIX = "api:"
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,12 @@ def subject_settings(session: Session) -> dict[str, dict[str, str]]:
             if isinstance(v, dict)}
 
 
+def has_api_preset(session: Session, subject: object) -> bool:
+    """科目に API 生成の設定（どれかの役割）があるか。なければ作る画面に「API 生成」を出さない。"""
+    mine = subject_settings(session).get(getattr(subject, "id", ""), {})
+    return any(k.startswith(API_PREFIX) for k in mine)
+
+
 def save_subject_settings(session: Session, subject_id: str, values: dict[str, str]) -> None:
     """科目の上書きを保存する。values に入れなかった役割は消す（＝全体の設定に戻す）。"""
     data = subject_settings(session)
@@ -158,8 +168,11 @@ def _count(value: str, default: int) -> int:
     return max(1, min(MAX_VERIFY_COUNT, n))
 
 
-def model_plan(settings: Settings, session: Session, subject: object | None = None) -> ModelPlan:
-    """全体の設定（空の欄は .env）に、科目の上書きを重ねたもの。subject は Subject（なければ全体の設定）。"""
+def model_plan(settings: Settings, session: Session, subject: object | None = None,
+               preset: str = "local") -> ModelPlan:
+    """全体の設定（空の欄は .env）に、科目の上書きを重ねたもの。subject は Subject（なければ全体の設定）。
+
+    preset="api" は、科目の「API 生成」の設定（api:<役割>）を重ねる。設定のない役割はローカル生成と同じ。"""
     o = overrides(session)
     v2 = o["verify_model_2"]
     gen = o["gen_model"] or settings.gen_model
@@ -175,6 +188,13 @@ def model_plan(settings: Settings, session: Session, subject: object | None = No
         verify = mine.get("verify") or dflt.get("verify") or verify
         review_model = mine.get("review") or dflt.get("review") or review_model
         extra = [(role, mine[role]) for role in getattr(subject, "model_roles", {}) if mine.get(role)]
+        if preset == "api":
+            gen = mine.get(API_PREFIX + "gen") or gen
+            verify = mine.get(API_PREFIX + "verify") or verify
+            review_model = mine.get(API_PREFIX + "review") or review_model
+            # 科目だけの役割：API 生成の設定 → ローカル生成の設定 → （どちらもなければ）この作り方の作成役
+            extra = [(role, mine.get(API_PREFIX + role) or mine[role]) for role in getattr(subject, "model_roles", {})
+                     if mine.get(API_PREFIX + role) or mine.get(role)]
     return ModelPlan(
         gen_model=gen,
         verify_model=verify,

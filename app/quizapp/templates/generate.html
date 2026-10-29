@@ -29,11 +29,24 @@
     {% if current and current not in model_names %}<option value="{{ current }}" selected>{{ current }}（Ollama に見当たらない）</option>{% endif %}
   </select>
   {% endmacro %}
-  {# モデルの欄は科目ごと（初期値が科目ごとに違う）。選んだ科目の欄だけを見せる（app.js）。欄の名前の頭に m_<科目>_ #}
-  {% for sub in subjects() %}{% set plan = plans[sub.id] %}{% set p = "m_" ~ sub.id ~ "_" %}
-  <details class="models" data-subject="{{ sub.id }}">
-    <summary>モデル：{% for role, label in sub.model_roles.items() %}{{ label }} <strong>{{ plan.model_for(role) }}</strong>／{% endfor %}作成 <strong>{{ plan.gen_model }}</strong>／検証 <strong>{{ plan.verify_label }}</strong>{% if plan.review %}＋見直し {{ plan.reviewer }}{% endif %}（変える）</summary>
-    <p class="muted small">初期値は「状態 → モデルと思考モード」の{{ sub.name }}の設定です。この依頼は、ここで選んだモデルで最後まで処理します（後で設定を変えても変わりません）。</p>
+  {% macro plan_line(sub, plan) %}{% for role, label in sub.model_roles.items() %}{{ label }} {{ plan.model_for(role) }}／{% endfor %}作成 {{ plan.gen_model }}／検証 {{ plan.verify_label }}{% if plan.review %}／見直し {{ plan.reviewer }}{% endif %}{% endmacro %}
+  {# 作り方とモデルの欄は科目ごと（設定が科目ごとに違う）。選んだ科目の欄だけを見せる（app.js）。欄の名前の頭に m_<科目>_ #}
+  {% for sub in subjects() %}{% set plan = plans[sub.id] %}{% set p = "m_" ~ sub.id ~ "_" %}{% set ap = api_plans.get(sub.id) %}
+  <div class="models" data-subject="{{ sub.id }}">
+  <fieldset class="segmented">
+    <legend>作り方</legend>
+    <label><input type="radio" name="{{ p }}mode" value="local" checked><span>{{ presets.local }}</span></label>
+    {% if ap %}<label><input type="radio" name="{{ p }}mode" value="api"><span>{{ presets.api }}</span></label>{% endif %}
+    <label><input type="radio" name="{{ p }}mode" value="manual"><span>{{ presets.manual }}</span></label>
+  </fieldset>
+  <p class="muted small preset-line" data-mode="local">{{ plan_line(sub, plan) }}</p>
+  {% if plan.same_gen_verify %}<p class="notice warn preset-line" data-mode="local">作成役と検証役（または見直し役）が同じモデルです（状態 → モデルと思考モードで変えられます）。</p>{% endif %}
+  {% if ap %}<p class="muted small preset-line" data-mode="api" hidden>{{ plan_line(sub, ap) }}</p>
+  {% if ap.needs_ollama %}<p class="muted small preset-line" data-mode="api" hidden>ローカル生成と同じ（Ollama の）モデルの役割があるので、Ollama の順番待ちで進みます（デスクトップの電源が要ります）。</p>{% endif %}
+  {% if ap.same_gen_verify %}<p class="notice warn preset-line" data-mode="api" hidden>作成役と検証役（または見直し役）が同じモデルです（状態 → モデルと思考モードで変えられます）。</p>{% endif %}{% endif %}
+  {% if not ap %}<p class="muted small preset-line" data-mode="local">API 生成は「状態 → モデルと思考モード」の{{ sub.name }}の欄で API のモデルを選ぶと出ます。</p>{% endif %}
+  <div class="manual-models preset-line" data-mode="manual" hidden>
+    <p class="muted small">初期値はローカル生成（「状態 → モデルと思考モード」の{{ sub.name }}の設定）です。この依頼は、ここで選んだモデルで最後まで処理します（後で設定を変えても変わりません）。</p>
     {% for role, label in sub.model_roles.items() %}{% set current = dict(plan.extra).get(role, "") %}
     <label>{{ label }}役
       <select name="{{ p }}role_{{ role }}">
@@ -63,9 +76,10 @@
       {% endfor %}
     </details>
     {% if not model_names %}<p class="muted small">Ollama につながると、ダウンロード済みのモデルが候補に出ます。</p>{% endif %}
-    <p class="muted small">ここで変えたモデルはこのブラウザに覚えておき、画面を読み込み直しても残ります。</p>
     <button type="button" class="secondary small models-reset">{{ sub.name }}のモデルを初期値（状態の設定）に戻す</button>
-  </details>
+  </div>
+  <p class="muted small">選んだ作り方とモデルはこのブラウザに覚えておき、画面を読み込み直しても残ります。</p>
+  </div>
   {% endfor %}
   <button type="submit" class="primary big">作成を依頼する</button>
   <p class="muted small">先に全問の文章を作り、その後まとめて検証します。検証に合格した問題だけがストックに入ります。</p>

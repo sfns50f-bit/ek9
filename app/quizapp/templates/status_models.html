@@ -44,13 +44,14 @@
 </section>
 
 <section class="card" id="subject-models">
-  <h2>科目ごとのモデル</h2>
-  <p class="muted small">科目によって向くモデルが違うときに、役割ごとに全体の設定を上書きします。「全体の設定」のままの役割は上の既定値を使います。
-    科目だけの役割（英語の「本文作成」など）は、設定しなければ作成役のモデルを使います。</p>
+  <h2>科目ごとのモデル（ローカル生成・API 生成）</h2>
+  <p class="muted small">「作る」画面では、作り方を「ローカル生成」「API 生成」「手動で選ぶ」から選びます。ローカル生成と API 生成は、ここで科目ごとに決めたモデルで作ります（作る画面にモデルの欄は出ません）。
+    「全体の設定」のままの役割は上の既定値を使います。科目だけの役割（英語の「本文作成」など）は、設定しなければ作成役のモデルを使います。</p>
   {% for sub in subjects() %}{% set mine = subject_settings.get(sub.id, {}) %}{% set sp = plans[sub.id] %}
   <form method="post" action="/status/subject-models" class="subject-models" id="subject-{{ sub.id }}">
     <h3>{{ sub.name }}</h3>
     <input type="hidden" name="subject" value="{{ sub.id }}">
+    <h4>ローカル生成（ふだん）</h4>
     <p class="small">いまの設定: {% for role, label in sub.model_roles.items() %}{{ label }} <strong>{{ sp.model_for(role) }}</strong>／{% endfor %}作成 <strong>{{ sp.gen_model }}</strong>／検証 <strong>{{ sp.verify_model }}</strong>／見直し <strong>{{ sp.reviewer }}</strong></p>
     {% for role, label in sub.model_roles.items() | list + roles.items() | list %}
     {% set dflt = sub.default_models.get(role, "") %}
@@ -63,6 +64,22 @@
       </select></label>
     {% endfor %}
     <p class="notice warn same-model" {{ 'hidden' if not sp.same_gen_verify }}>作成役と検証役（または見直し役）が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+    {% set ap = api_plans[sub.id] %}
+    <div class="subject-models api-preset">
+      <h4>API 生成（たくさん急いで作るとき）</h4>
+      <p class="muted small">どれかの役割を選ぶと、作る画面に「API 生成」が出ます。選ばなかった役割はローカル生成と同じモデルを使います（Ollama のモデルが残る役割は、Ollama の順番待ちになります）。</p>
+      {% if has_api[sub.id] %}<p class="small">いまの設定: {% for role, label in sub.model_roles.items() %}{{ label }} <strong>{{ ap.model_for(role) }}</strong>／{% endfor %}作成 <strong>{{ ap.gen_model }}</strong>／検証 <strong>{{ ap.verify_model }}</strong>／見直し <strong>{{ ap.reviewer }}</strong></p>{% endif %}
+      {% for role, label in sub.model_roles.items() | list + roles.items() | list %}{% set cur = mine.get(api_prefix ~ role, "") %}
+      <label>{{ label }}役
+        <select name="{{ api_prefix }}{{ role }}" data-inherit="{{ sp.model_for(role) }}">
+          <option value="">ローカル生成と同じ（{{ sp.model_for(role) }}）</option>
+          {% for m in api.models + model_names | reject("in", api.models) | list %}<option value="{{ m }}" {{ 'selected' if cur == m }}>{{ m }}</option>{% endfor %}
+          {% if cur and cur not in model_names %}<option value="{{ cur }}" selected>{{ cur }}（見当たらない）</option>{% endif %}
+        </select></label>
+      {% endfor %}
+      <p class="notice warn same-model" {{ 'hidden' if not ap.same_gen_verify }}>作成役と検証役（または見直し役）が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+      {% if not api.configured %}<p class="muted small">API は使えるように設定されていません（下の「API（Anthropic）」）。</p>{% endif %}
+    </div>
     {% for key, spec in sub.verify_options.items() %}{% set cur = mine.get("opt_" ~ key, spec.default) %}
     <label>検証のやり方：{{ spec.label }}
       <select name="opt_{{ key }}">{% for v, text in spec.choices.items() %}<option value="{{ v }}" {{ 'selected' if cur == v }}>{{ text }}{{ "（既定）" if v == spec.default }}</option>{% endfor %}</select></label>

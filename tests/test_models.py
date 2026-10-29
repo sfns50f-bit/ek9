@@ -108,6 +108,48 @@ def test_generate_records_role_models_per_subject(client, sessions):
     assert jobs(sessions)[-1].extra_models == {} and jobs(sessions)[-1].review_model == ""
 
 
+def test_presets_local_api_and_manual(client, sessions):
+    """作り方：ローカル生成・API 生成は状態の科目ごとの設定のまま、手動のときだけモデルの欄を読む。"""
+    def english_box():
+        page = client.get("/generate").text
+        return page.split('<div class="models" data-subject="english">', 1)[1].split('<div class="models"', 1)[0]
+
+    with sessions.begin() as s:
+        runtime.save_subject_settings(s, "english", {"gen": "gemma4:12b", "verify": "gemma4:e4b"})
+    # API 生成の設定がなければ、作る画面に出さず、送っても受け付けない
+    box = english_box()
+    assert 'value="local" checked' in box and 'value="api"' not in box and 'value="manual"' in box
+    assert client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                          "m_english_mode": "api"}).status_code == 400
+    # 状態の画面で API 生成の作成役・本文作成役を選ぶ（検証役は選ばない＝ローカル生成と同じ）
+    client.post("/status/subject-models", data={"subject": "english", "gen": "gemma4:12b", "verify": "gemma4:e4b",
+                                                "api:gen": "anthropic/claude-haiku-5-5",
+                                                "api:passage": "anthropic/claude-sonnet-5-5"})
+    page = client.get("/status/models").text
+    assert 'name="api:gen"' in page and "ローカル生成と同じ（gemma4:e4b）" in page
+    box = english_box()
+    assert 'value="api"' in box and "作成 anthropic/claude-haiku-5-5" in box
+    # ローカル生成：モデルの欄を送っても使わない
+    client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                   "m_english_mode": "local", "m_english_gen_model": "qwen3.5:9b"})
+    j = jobs(sessions)[-1]
+    assert (j.gen_model, j.verify_model) == ("gemma4:12b", "gemma4:e4b") and "passage" not in j.extra_models
+    # API 生成：選んだ役割は API、選ばなかった検証役はローカル生成と同じ
+    client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                   "m_english_mode": "api", "m_english_gen_model": "qwen3.5:9b"})
+    j = jobs(sessions)[-1]
+    assert (j.gen_model, j.verify_model) == ("anthropic/claude-haiku-5-5", "gemma4:e4b")
+    assert j.extra_models == {"passage": "anthropic/claude-sonnet-5-5"}
+    # 手動：モデルの欄で選んだもの
+    client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                   "m_english_mode": "manual", "m_english_gen_model": "qwen3.5:9b"})
+    assert jobs(sessions)[-1].gen_model == "qwen3.5:9b"
+    # 数学は API 生成の設定がないので出ない
+    page = client.get("/generate").text
+    math = page.split('<div class="models" data-subject="math">', 1)[1]
+    assert 'name="m_math_mode" value="api"' not in math
+
+
 def test_role_models_are_used_for_each_step(settings, sessions, sandbox):
     """本文作成・設問の作成・本文なしの確認・検証・見直しに、それぞれの役割のモデルを使う。"""
     with sessions.begin() as s:
