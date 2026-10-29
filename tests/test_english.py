@@ -1340,3 +1340,43 @@ def test_reading_works_when_no_stored_passage_can_be_reused(settings, sessions, 
     monkeypatch.setattr(EnglishSubject, "_reusable_passage", lambda self, ctx, c: None)
     jid = run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-notice", count=1)
     assert job(sessions, jid).status == "done", job(sessions, jid).error
+
+
+def test_bracketed_judgment_lines_are_read():
+    """判定の行を「[[1: 通る — …]]」や「[[」「]]」で囲んだ返事も読む（第 10 回のレビュー 4-5。思考なしの e4b）。"""
+    from quizapp.subjects.english import prompts
+
+    got = EnglishSubject._judgments("[[1: 通らない — 理由]]\n[[2: 通る — x]]", prompts.FIT_LABELS, 2)
+    assert got == {0: ("通らない", "理由"), 1: ("通る", "x")}
+    got = EnglishSubject._judgments('[[\n1: 裏付けあり — 引用: "a" — r\n2: 本文に書かれていない — x\n]]',
+                                    prompts.CHOICE_LABELS, 2)
+    assert got[0][0] == "裏付けあり" and got[1][0] == "本文に書かれていない"
+
+
+def test_markdown_marks_are_removed_and_narrator_pronouns_are_checked(settings, sessions, sandbox):
+    """本文の Markdown の記号（**・行頭の *）は表記の直しで外す（#1114・#1130）。性別の分からない語り手を
+    he・she で呼ぶ設問は点検で引っかける（#1100。第 10 回のレビュー 4-5、第 6 回の 3-4）。"""
+    from quizapp import review as review_mod
+    from quizapp.db import Passage
+
+    assert check.normalize("**Details:**\n* **Date:** Saturday\nIt is *very* fun. 2 * 3 = 6") == \
+        "Details:\n- Date: Saturday\nIt is very fun. 2 * 3 = 6"
+    story = "I met my neighbor yesterday. I helped him with his garden, and I felt happy."
+    assert check.narrator_pronoun("How did the writer feel when he helped?", ["a", "b", "c", "d"], story)
+    assert check.narrator_pronoun("How did the writer feel?", ["He felt sad.", "He felt happy.", "c", "d"], story)
+    assert not check.narrator_pronoun("How did the writer feel?", ["The writer felt sad.", "b", "c", "d"], story)
+    # 語り手の語のあとにほかの人物を挟んだ his・he は、その人物を指す（フェーズの終わりのレビュー 5）
+    assert not check.narrator_pronoun("What did the writer learn from Mr. Tanaka about his past?", ["a", "b", "c", "d"],
+                                      story)
+    assert not check.narrator_pronoun("How did the writer feel when he helped?", ["a", "b", "c", "d"],
+                                      "I am a boy. I met my neighbor and I helped him.")
+    run_job(settings, sessions, sandbox, EnglishOracle(sessions), scope="tmpl:en-notice", count=1)
+    with sessions.begin() as s:
+        p = s.execute(select(Problem).where(Problem.status == "ready")).scalars().first()
+        p.passage.body = p.passage.body + "\n\n**Note:** bring a pen."
+        pid = p.passage.id
+    with sessions.begin() as s:
+        assert review_mod.normalize_all(s) >= 1
+    with sessions() as s:
+        row = s.get(Passage, pid)
+        assert "**" not in row.body and "Note: bring a pen." in row.body and row.log[-1]["step"] == "表記の直し"

@@ -108,6 +108,48 @@ def test_generate_records_role_models_per_subject(client, sessions):
     assert jobs(sessions)[-1].extra_models == {} and jobs(sessions)[-1].review_model == ""
 
 
+def test_presets_local_api_and_manual(client, sessions):
+    """作り方：ローカル生成・API 生成は状態の科目ごとの設定のまま、手動のときだけモデルの欄を読む。"""
+    def english_box():
+        page = client.get("/generate").text
+        return page.split('<div class="models" data-subject="english">', 1)[1].split('<div class="models"', 1)[0]
+
+    with sessions.begin() as s:
+        runtime.save_subject_settings(s, "english", {"gen": "gemma4:12b", "verify": "gemma4:e4b"})
+    # API 生成の設定がなければ、作る画面に出さず、送っても受け付けない
+    box = english_box()
+    assert 'value="local" checked' in box and 'value="api"' not in box and 'value="manual"' in box
+    assert client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                          "m_english_mode": "api"}).status_code == 400
+    # 状態の画面で API 生成の作成役・本文作成役を選ぶ（検証役は選ばない＝ローカル生成と同じ）
+    client.post("/status/subject-models", data={"subject": "english", "gen": "gemma4:12b", "verify": "gemma4:e4b",
+                                                "api:gen": "anthropic/claude-haiku-5-5",
+                                                "api:passage": "anthropic/claude-sonnet-5-5"})
+    page = client.get("/status/models").text
+    assert 'name="api:gen"' in page and "ローカル生成と同じ（gemma4:e4b）" in page
+    box = english_box()
+    assert 'value="api"' in box and "作成 anthropic/claude-haiku-5-5" in box
+    # ローカル生成：モデルの欄を送っても使わない
+    client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                   "m_english_mode": "local", "m_english_gen_model": "qwen3.5:9b"})
+    j = jobs(sessions)[-1]
+    assert (j.gen_model, j.verify_model) == ("gemma4:12b", "gemma4:e4b") and "passage" not in j.extra_models
+    # API 生成：選んだ役割は API、選ばなかった検証役はローカル生成と同じ
+    client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                   "m_english_mode": "api", "m_english_gen_model": "qwen3.5:9b"})
+    j = jobs(sessions)[-1]
+    assert (j.gen_model, j.verify_model) == ("anthropic/claude-haiku-5-5", "gemma4:e4b")
+    assert j.extra_models == {"passage": "anthropic/claude-sonnet-5-5"}
+    # 手動：モデルの欄で選んだもの
+    client.post("/generate", data={"subject": "english", "format": "choice", "count": "1",
+                                   "m_english_mode": "manual", "m_english_gen_model": "qwen3.5:9b"})
+    assert jobs(sessions)[-1].gen_model == "qwen3.5:9b"
+    # 数学は API 生成の設定がないので出ない
+    page = client.get("/generate").text
+    math = page.split('<div class="models" data-subject="math">', 1)[1]
+    assert 'name="m_math_mode" value="api"' not in math
+
+
 def test_role_models_are_used_for_each_step(settings, sessions, sandbox):
     """本文作成・設問の作成・本文なしの確認・検証・見直しに、それぞれの役割のモデルを使う。"""
     with sessions.begin() as s:
@@ -666,3 +708,25 @@ def test_export_ready_and_needs_check_together(settings, sessions, sandbox, clie
     md = client.get("/review/export.md?subject=english&status=ready_check").text
     assert all(f"#{p.id}" in md for p in held + ready)
     assert "検証の判定が割れた" in md and "× 正解が 1 つか" in md
+
+
+@pytest.mark.english_defaults
+def test_english_verifier_thinks_unless_set_on_screen(settings, sessions, client):
+    """英語の検証役 e4b は、画面で設定していなければ英語の依頼では思考あり（第 10 回のレビュー 4 章：思考なしでは
+    判定の形が崩れた）。画面で設定したものが優先。数学の依頼には効かない。"""
+    english = get_subject("english")
+    with sessions.begin() as s:
+        plan = runtime.model_plan(settings, s, english)
+        j = Job(subject="english", scope="", format="choice", count=1)
+        runtime.apply_plan(j, plan)
+        runtime.record_think(settings, s, j, plan)
+        m = Job(subject="math", scope="", format="choice", count=1, verify_model="gemma4:e4b-it-qat")
+        mplan = dataclasses.replace(runtime.model_plan(settings, s), verify_model="gemma4:e4b-it-qat")
+        runtime.record_think(settings, s, m, mplan)
+    assert j.think["gemma4:e4b-it-qat"] == "on" and j.think["gemma4:12b-it-qat"] == "off"
+    assert m.think["gemma4:e4b-it-qat"] == "off"
+    with sessions.begin() as s:
+        runtime.save_think_setting(s, "gemma4:e4b-it-qat", "off")
+        j2 = Job(subject="english", scope="", format="choice", count=1)
+        runtime.record_think(settings, s, j2, plan)
+    assert j2.think["gemma4:e4b-it-qat"] == "off"

@@ -431,12 +431,16 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             jobs = list(s.execute(select(Job).order_by(Job.id.desc()).limit(30)).scalars())
             data = picker_data(s, user_id(request))
             plans = {sub.id: runtime.model_plan(settings, s, sub) for sub in all_subjects()}
+            # API 生成の設定がある科目だけ、作る画面に「API 生成」を出す
+            api_plans = {sub.id: runtime.model_plan(settings, s, sub, "api") for sub in all_subjects()
+                         if runtime.has_api_preset(s, sub)}
             ollama = kv_json(s, "ollama", {}) or {}
             api = api_info(s)
         # 候補：Ollama にあるモデルと、API のモデル（「anthropic/…」）
         model_names = [m["name"] for m in ollama.get("models", [])] + api["models"]
-        return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plans=plans, model_names=model_names,
-                      max_verify=runtime.MAX_VERIFY_COUNT, api=api)
+        return render(request, "generate.html", jobs=jobs, data=data, msg=msg, plans=plans, api_plans=api_plans,
+                      model_names=model_names, max_verify=runtime.MAX_VERIFY_COUNT, api=api,
+                      presets=runtime.PRESETS)
 
     def no_subunit_message(sub: Subject, scope: str, fmt: str, levels: str) -> str:
         """作れる小単元がないときの説明。選んだ範囲の小単元ごとに、使える形式とレベルを並べる。
@@ -477,26 +481,37 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                     return value[:128]
             return ""
 
+        # 作り方：ローカル生成・API 生成は「状態」のその科目の設定のまま（モデルの欄は読まない）。
+        # 手動（前の版の画面のように作り方の欄がないときも）は、モデルの欄で選んだもの
+        preset = field("mode") or "manual"
+        if preset not in runtime.PRESETS:
+            raise HTTPException(400, "選び方が正しくありません")
         with sessions.begin() as s:
             # 依頼ごとにモデルを記録する（空の欄は「状態」のその科目の設定）。後で設定を変えても、この依頼はこのモデルで最後まで処理する
             plan = runtime.model_plan(settings, s, sub)
-            review_shown = field("review_shown")
-            v2 = field("verify_model_2")
-            gen_model = field("gen_model") or plan.gen_model
-            # 科目だけの役割：欄で選んだモデル → 科目の設定 → この依頼の作成役（「作成役と同じ」）
-            extra = {role: field(f"role_{role}") or dict(plan.extra).get(role) or gen_model for role in sub.model_roles}
-            verify_model = field("verify_model") or plan.verify_model
-            review_model = field("review_model") or plan.review_model
-            chosen = runtime.ModelPlan(
-                gen_model=gen_model,
-                verify_model=verify_model,
-                verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(field("verify_count"), plan.verify_count))),
-                verify_model_2="" if v2 == "-" else (v2 or plan.verify_model_2),
-                # チェックを外すと送られないので、欄を出したこと（review_shown）で見分ける
-                review=(field("review") == "on") if review_shown else plan.review,
-                review_model="" if review_model == verify_model else review_model,
-                extra=tuple(sorted((r, m) for r, m in extra.items() if m)),
-            )
+            if preset == "api" and not runtime.has_api_preset(s, sub):
+                raise HTTPException(400, f"{sub.name}の API 生成の設定がありません（状態 → モデルと思考モード）")
+            if preset != "manual":
+                chosen = runtime.model_plan(settings, s, sub, preset)
+            else:
+                review_shown = field("review_shown")
+                v2 = field("verify_model_2")
+                gen_model = field("gen_model") or plan.gen_model
+                # 科目だけの役割：欄で選んだモデル → 科目の設定 → この依頼の作成役（「作成役と同じ」）
+                extra = {role: field(f"role_{role}") or dict(plan.extra).get(role) or gen_model
+                         for role in sub.model_roles}
+                verify_model = field("verify_model") or plan.verify_model
+                review_model = field("review_model") or plan.review_model
+                chosen = runtime.ModelPlan(
+                    gen_model=gen_model,
+                    verify_model=verify_model,
+                    verify_count=max(1, min(runtime.MAX_VERIFY_COUNT, _int(field("verify_count"), plan.verify_count))),
+                    verify_model_2="" if v2 == "-" else (v2 or plan.verify_model_2),
+                    # チェックを外すと送られないので、欄を出したこと（review_shown）で見分ける
+                    review=(field("review") == "on") if review_shown else plan.review,
+                    review_model="" if review_model == verify_model else review_model,
+                    extra=tuple(sorted((r, m) for r, m in extra.items() if m)),
+                )
             job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=fmt,
                       count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))),
                       options_json=json.dumps(runtime.verify_options(s, sub)))  # 検証のやり方も依頼したときの設定で
@@ -574,6 +589,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             overrides = runtime.overrides(s)
             subject_settings = runtime.subject_settings(s)
             plans = {sub.id: runtime.model_plan(settings, s, sub) for sub in all_subjects()}
+            api_plans = {sub.id: runtime.model_plan(settings, s, sub, "api") for sub in all_subjects()}
+            has_api = {sub.id: runtime.has_api_preset(s, sub) for sub in all_subjects()}
             today = runtime.api_daily(s).get(runtime.day_key(settings), {})
             think_choices = runtime.think_settings(s)
             ollama = kv_json(s, "ollama", {}) or {}
@@ -586,11 +603,14 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         think_rows = []
         for name in ollama_names:
             effective = runtime.resolve_think(name, think_choices, settings.think)
+            by_subject = [f"{sub.name}の依頼では{runtime.THINK_CHOICES[sub.default_think[name]]}"
+                          for sub in all_subjects() if name in sub.default_think and name not in think_choices]
             think_rows.append({"model": name, "choice": "on" if effective else "off",
-                               "saved": name in think_choices})
+                               "saved": name in think_choices, "subject_note": "・".join(by_subject)})
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
-                      subject_settings=subject_settings, plans=plans, today=today, roles=runtime.ROLES,
+                      subject_settings=subject_settings, plans=plans, api_plans=api_plans, has_api=has_api, today=today,
+                      roles=runtime.ROLES, api_prefix=runtime.API_PREFIX,
                       daily_keys=runtime.DAILY_KEYS,
                       ollama=ollama, tests=tests, settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg,
                       api=api)
@@ -677,7 +697,9 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         """科目ごとの上書き（役割ごとのモデルと API の 1 日の上限）。空の欄は全体の設定。「既定値に戻す」で全部消す。"""
         form = await request.form()
         sub = subject_or_404(str(form.get("subject", "")))
-        keys = [*runtime.ROLES, *sub.model_roles, *runtime.DAILY_KEYS, *(f"opt_{k}" for k in sub.verify_options)]
+        roles = [*runtime.ROLES, *sub.model_roles]
+        keys = [*roles, *(runtime.API_PREFIX + r for r in roles), *runtime.DAILY_KEYS,
+                *(f"opt_{k}" for k in sub.verify_options)]
         values = {} if form.get("action") == "reset" else {k: str(form.get(k, "")) for k in keys}
         with sessions.begin() as s:
             runtime.save_subject_settings(s, sub.id, values)

@@ -361,3 +361,17 @@ def test_single_field_reply_without_heading_is_read():
     both = {**two, "required": ["a", "b"]}
     with pytest.raises(LLMError):
         parse_tagged("B", both)
+
+
+def test_answer_written_as_a_heading_is_read():
+    """思考なしの e4b は「[[answer]]」の代わりに「[[1]]」と答えを見出しの形で書くことがある（第 10 回のレビュー 4-5）。
+    最初の見出しより前の短い答えを、足りない項目とみなす。長い前置きは答えにしない。"""
+    from quizapp.llm import LLMError, parse_tagged
+
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}, "reason": {"type": "string"}},
+              "required": ["answer"]}
+    assert parse_tagged("[[1]]\n[[reason]]\n文脈から", schema)["answer"] == "1"
+    assert parse_tagged("[[なし]]\n[[reason]]\n合わない", schema)["answer"] == "なし"
+    assert parse_tagged("2\n[[reason]]\n合う", schema)["answer"] == "2"
+    with pytest.raises(LLMError):
+        parse_tagged("Here is my answer\n[[reason]]\nx", schema)

@@ -1509,6 +1509,90 @@
    "answer": "method",
    "hint": "最後の文字は「d」です。",
    "explanation": "訳: 英単語を効果的に覚える一つの方法は単語カードを作ることで、それが私には一番合っていました。\n\n「英単語を効果的に覚えるための具体的なやり方」を表す語として、「方法」を意味する名詞 method が入ります。文の後半で「単語カードを作ること」という具体的な手段を挙げているので、文脈から「方法」の意味がはっきり決まります。\n\n答え: method"
+  },
+  {
+   "expected": "borderline",
+   "defect_type": null,
+   "note": "「火山の構造はどう作られるか」の正解は「地表でマグマが冷える」。誤答「2 枚のプレートの衝突で作られる」も本文では火山ができる仕組みとして書かれている。「構造」と「でき方」の違いに頼った設問（第 10 回のレビュー 2-2）",
+   "id": 1104,
+   "category": "英語／読解／説明文",
+   "作成日時": "2026/10/29 00:25",
+   "レベル": "共通テスト",
+   "本文作成役": "gemma4:26b-a4b-it-qat",
+   "作成役": "gemma4:26b-a4b-it-qat",
+   "passage": "The Science Behind Volcanoes\n\nHave you ever wondered how massive mountains, known as volcanoes, are created? While they may seem like simple hills, volcanoes are actually complex openings in the Earth's surface. They are formed when molten rock, called magma, from deep inside the Earth rises to the surface. When this magma reaches the ground, it erupts and cools, eventually building up the structure of a volcano over many years.\n\nThere are several ways these geological formations can occur. One common method happens at \"subduction zones.\" This is where two tectonic plates—the large pieces of the Earth's crust—collide. As one plate is pushed down under another into the hot mantle, it melts. This melted rock, now called magma, becomes less dense than the surrounding rock and rises toward the surface. This process is responsible for many of the famous volcanic chains found along the edges of oceans.\n\nAnother way volcanoes form is at \"divergent boundaries.\" This occurs when two tectonic plates pull away from each other. As the plates move apart, they create a gap that allows magma to rise from below to fill the space. This often happens on the ocean floor, creating long chains of underwater volcanoes. In some cases, these underwater eruptions can eventually grow large enough to rise above the sea level and become new islands.\n\nUnderstanding how volcanoes form is essential for scientists. By studying the movement of tectonic plates and the behavior of magma, researchers can better understand the Earth's internal processes and prepare for potential eruptions.",
+   "question": "According to the text, how is a volcano's structure built?",
+   "options": [
+    {
+     "key": "A",
+     "text": "It is shaped by the movement of large pieces of the Earth's crust.",
+     "correct": false,
+     "mistake": "一部だけ合っている／見直しでは「本文に書かれていない」"
+    },
+    {
+     "key": "B",
+     "text": "It is developed by the melting of rocks in the hot mantle.",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    },
+    {
+     "key": "C",
+     "text": "It is formed by the collision of two tectonic plates.",
+     "correct": false,
+     "mistake": "一部だけ合っている"
+    },
+    {
+     "key": "D",
+     "text": "It is created by the cooling of magma on the Earth's surface.",
+     "correct": true,
+     "mistake": null
+    }
+   ],
+   "answer": "It is created by the cooling of magma on the Earth's surface.",
+   "hint": "第1段落の最後の一文を確認しましょう。",
+   "explanation": "本文では、マグマが地表に到達して噴出し、冷えることで、長い年月をかけて火山の構造が作られると述べられています。したがって、マグマが地表で冷えることによって火山の構造が作られるとする「マグマが地表で冷えることによって火山の構造が作られる」という選択肢が正解です。選択肢「プレートの衝突によって形成される」および「マントル中の岩石が溶けることによって発達する」は、火山の形成に関わるプロセスの一部ではありますが、火山の「構造」が作られる直接的な仕組みとしては不十分です。選択肢「地球の地殻の大きな断片の動きによって形作られる」は、プレートの動きが火山形成の要因の一つであることは示されていますが、構造がどのように作られるかという問いに対する直接的な答えにはなっていません。\n\n本文の根拠: “When this magma reaches the ground, it erupts and cools, eventually building up the structure of a volcano over many years.”"
+  },
+  {
+   "expected": "borderline",
+   "defect_type": null,
+   "note": "「スピーチコンテストに参加した理由」の正解「人前で話す恐怖を克服するため」と、誤答「人前で話す力を伸ばすため」の差が小さい（第 10 回のレビュー 2-2）",
+   "id": 1107,
+   "category": "英語／読解／物語・体験談",
+   "作成日時": "2026/10/29 00:28",
+   "レベル": "共通テスト",
+   "本文作成役": "gemma4:26b-a4b-it-qat",
+   "作成役": "gemma4:26b-a4b-it-qat",
+   "passage": "A Lesson from the Podium\n\nLast spring, I decided to participate in the school English speech contest. I had always been a shy person, and the idea of speaking in front of a large audience terrified me. However, I wanted to challenge myself and overcome my fear of public speaking.\n\nI spent several weeks preparing my speech, which was about the importance of small acts of kindness in our community. I wrote the text many times and practiced reading it aloud in my room. Even though I knew my topic well, I still felt extremely nervous as the day of the contest approached.\n\nWhen my name was finally called, my heart was racing. I walked up to the podium, and for a moment, my mind went completely blank. I looked out at the audience and saw dozens of faces waiting for me to speak. I felt a sudden urge to run off the stage, but then I remembered my practice. I took a deep breath, looked at the front row, and began to speak.\n\nAs I continued, my voice became steadier. I focused on the message I wanted to share rather than my own nervousness. When I finished, there was a moment of silence, followed by a warm round of applause. I did not win the first prize, but that was not what mattered most to me. The real victory was the feeling of accomplishment I had when I stepped down from the stage. I realized that courage is not the absence of fear, but the ability to move forward despite it.",
+   "question": "Why did the writer decide to join the English speech contest?",
+   "options": [
+    {
+     "key": "A",
+     "text": "To overcome the fear of speaking in front of others.",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "B",
+     "text": "To find a way to improve their public speaking skills.",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "To win the first prize in the school competition.",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "D",
+     "text": "To share their knowledge about community activities.",
+     "correct": false,
+     "mistake": "一部だけ合っている／見直しでは「本文に書かれていない」"
+    }
+   ],
+   "answer": "To overcome the fear of speaking in front of others.",
+   "hint": "第1段落の後半部分を確認してください。",
+   "explanation": "「恐怖を克服したい」という動機が書かれているため、多くの人の前で話すことへの恐怖を乗り越えることが目的である「overcome the fear of speaking in front of others」が正解となります。\n「win the first prize」は、第4段落で「1位になれなかった」と述べられているため、目的ではありません。\n「improve their public speaking skills」については、挑戦したいという意図はありますが、スキル向上そのものが目的であるとは書かれていません。\n「share their knowledge about community activities」は、スピーチの内容（親切な行為の重要性）についての記述であり、コンテストに参加した理由ではありません。\n\n本文の根拠: “However, I wanted to challenge myself and overcome my fear of public speaking.”"
   }
  ],
  "expected_values": {
@@ -1516,5 +1600,5 @@
   "pass": "通すべき（問題なし）",
   "borderline": "微妙（採点に含めないが、結果は表に出す）"
  },
- "updated": "2026-10-28（第 9 回のレビュー 2 章：#987 を微妙に）"
+ "updated": "2026-10-29（第 10 回のレビュー 4-4：#1104・#1107 を微妙として足す）"
 }

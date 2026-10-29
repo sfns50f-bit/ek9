@@ -20,9 +20,13 @@ function renderMath(root) {
 function setupSameModelWarning() {
   document.querySelectorAll(".models, .subject-models").forEach((box) => {
     const warn = box.querySelector(".same-model");
-    const gen = box.querySelector("select[name$=gen_model], select[name=gen]");
-    const verify = box.querySelector("select[name$=verify_model], select[name=verify]");
-    const review = box.querySelector("select[name$=review_model], select[name=review]");
+    // 状態の科目ごとの欄では、ローカル生成（gen…）と、中の API 生成の欄（api:gen…）をそれぞれ確かめる
+    const pick = (role) => box.classList.contains("api-preset")
+      ? box.querySelector(`select[name="api:${role}"]`)
+      : box.querySelector(`select[name$=${role}_model], select[name=${role}]`);
+    const gen = pick("gen");
+    const verify = pick("verify");
+    const review = pick("review");
     if (!warn || !gen || !verify) return;
     const check = () => {
       const g = gen.value || gen.dataset.inherit || "";
@@ -94,6 +98,9 @@ function setupScopeForm(form, mode) {
       const on = box.dataset.subject === subjectSel.value;
       box.hidden = !on;
       box.querySelectorAll("input, select").forEach((i) => { i.disabled = !on; });
+      // 作り方：ローカル生成・API 生成はモデルの一覧だけ、手動で選ぶときだけモデルの欄を出す
+      const mode = box.querySelector("input[name$=_mode]:checked");
+      box.querySelectorAll(".preset-line").forEach((el) => { el.hidden = !mode || el.dataset.mode !== mode.value; });
     });
     const subject = data[subjectSel.value];
     const p = picker();
@@ -175,7 +182,7 @@ function setupScopeForm(form, mode) {
   }
   // 「初期値に戻す」：その科目のモデルの欄を、画面の初期値（状態の設定）に戻す
   form.querySelectorAll(".models-reset").forEach((b) => b.addEventListener("click", () => {
-    const box = b.closest(".models");
+    const box = b.closest(".manual-models");
     box.querySelectorAll("select, input").forEach((el) => {
       if (el.type === "checkbox" || el.type === "radio") el.checked = el.defaultChecked;
       else if (el.tagName === "SELECT") el.value = defaultOf(el);

@@ -187,6 +187,8 @@ class Subject:
     verify_options: dict[str, dict[str, Any]] = {}
     # 役割ごとの既定のモデル（全体・科目の設定がないときに使う。英語の見直し役＝gemma4:12b など）
     default_models: dict[str, str] = {}
+    # モデルごとの思考モードの既定（"on" / "off"）。画面で設定していないモデルを、この科目の依頼ではこの値で呼ぶ
+    default_think: dict[str, str] = {}
 
     test_format: str = ""
 
@@ -211,6 +213,12 @@ class Subject:
         対応しない科目は None を返す（見直しをしない）。
         """
         return None
+
+    def golden_params(self, template: str, question: str, explanation: str, choices: list[dict[str, Any]],
+                      answer: str) -> dict[str, Any]:
+        """見本集のファイルの問題（書き出しから復元したもの。params がない）の params を、問題文などから組み立てる。
+        点検（text_issues）に要る値だけでよい。既定は空。"""
+        return {}
 
     def rereview(self, llm: LLM, model: str, problem: Any,
                  options: dict[str, str] | None = None) -> VerifyResult | None:

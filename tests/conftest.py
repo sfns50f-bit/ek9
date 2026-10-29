@@ -162,3 +162,4 @@ def _english_default_models(request, monkeypatch):
     from quizapp.subjects.english import EnglishSubject
 
     monkeypatch.setattr(EnglishSubject, "default_models", {})
+    monkeypatch.setattr(EnglishSubject, "default_think", {})  # 英語の検証役 e4b の思考ありも同じ
