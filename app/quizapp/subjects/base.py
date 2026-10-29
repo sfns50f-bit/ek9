@@ -127,9 +127,11 @@ REJECT_CODES = {
     "text_givens": "問題文の数値・式がテンプレートと違う",
     "text_answer": "解説に正解が入っていない",
     "choices": "選択肢が重複・正解と一致する誤答がある",
-    "solver_mismatch": "検証役の答えは読めたが、数値が正解と違う",
+    "solver_mismatch": "検証役の答えは読めたが、正解と違う",
     "solver_unreadable": "検証役の答えが読み取れなかった",
-    "duplicate": "既存の問題と同じ数値",
+    "duplicate": "既存の問題と同じ（検証には合格したが、同じ数値・同じ語・同じ題材の問題がすでにストックにある）",
+    # 作れる問題を使い切った（英語の題材・単語、数学の数値の組み合わせ）。作った問題ではないので合格率には数えない
+    "exhausted": "題材・語・数値の組み合わせを使い切った（作れる問題が残っていない。合格率には数えない）",
     "needs_check": "検証の判定が割れた（要確認。問題検証モードで確かめてストックに入れるか決める）",
     "checked_rejected": "要確認を確かめて捨てた",
 }
@@ -295,6 +297,12 @@ class Subject:
     def label_of(self, template: str) -> str:
         found = self.subunit_map().get(template)
         return f"{found[0].label}／{found[1].label}" if found else template
+
+    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str]) -> int | None:
+        """まだ作れる問題の数の目安（題材・語を使い切る科目だけ。作る画面で「残りが少ない」と知らせる。
+        第 11 回のレビュー 2-3）。existing：その小単元のストック・下書きの params_key、used_topics：本文の題材
+        （落ちた本文を除く）。None は数えない（数学など、使い切ることがまずない科目）。web から呼ぶので LLM を読まない。"""
+        return None
 
     def all_reject_codes(self) -> dict[str, str]:
         return {**REJECT_CODES, **self.reject_codes}

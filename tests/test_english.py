@@ -41,7 +41,7 @@ class EnglishOracle:
 
     def __init__(self, sessions, *, bad_evidence_once=False, bad_passage_once=False, blind_correct=(),
                  review_verdict="問題なし", passage_verdict="問題なし", bad_questions=(), judge="right",
-                 multiple_calls=None, absent="museum", awkward=False, coherence="自然"):
+                 multiple_calls=None, absent="museum", awkward=False, coherence="自然", empty_explanation=False):
         self.sessions = sessions
         self.bad_evidence_once = bad_evidence_once
         self.bad_passage_once = bad_passage_once
@@ -57,6 +57,7 @@ class EnglishOracle:
         self.absent = absent  # 読解の誤答の「違う点」に書く内容（D。空なら書かない）
         self.awkward = awkward  # 語彙の誤答を「文法的には入るが不自然」と判定する（C）
         self.coherence = coherence  # 例文の筋の確認の答え
+        self.empty_explanation = empty_explanation  # 読解の設問の解説をいつも空にする（解説だけの書き直し）
         self.n_sentences = 0
         self.calls = []
         self.label = ""
@@ -108,6 +109,10 @@ class EnglishOracle:
             multiple = self._multiple()
             pick = items[0][0] if multiple else next(n for n, t in items if t == "どれも合わない")
             return {"answer": pick, "reason": "文に合う" if multiple else "どれも合わない"}
+        if set(props) == {"explanation"}:  # 読解の解説だけの書き直し（第 11 回のレビュー 2-2）
+            self.calls.append(("explanation", model))
+            return {"explanation": "本文に図書館のことが書かれているので、図書館についての選択肢が正しい。"
+                                   "博物館・公園・駅のことは本文に書かれていない。"}
         if set(props) == {"answer"}:  # 本文なしの確認
             self.calls.append(("blind", model))
             m = re.search(r"\(part (\d+)\)", user)
@@ -208,8 +213,9 @@ class EnglishOracle:
                 "Wrong: B=not_stated, C=contradicts, D=detail",
                 f"Evidence: {evidence}",
                 "Hint: 本文の第1段落を読もう。",
-                "Explanation: 本文に図書館のことが書かれているので、図書館についての選択肢が正しい。"
-                "博物館・公園・駅のことは本文に書かれていない。",
+                "Explanation: " + ("" if self.empty_explanation else
+                                   "本文に図書館のことが書かれているので、図書館についての選択肢が正しい。"
+                                   "博物館・公園・駅のことは本文に書かれていない。"),
             ])
         return out
 
@@ -1380,3 +1386,80 @@ def test_markdown_marks_are_removed_and_narrator_pronouns_are_checked(settings, 
     with sessions() as s:
         row = s.get(Passage, pid)
         assert "**" not in row.body and "Note: bring a pen." in row.body and row.log[-1]["step"] == "表記の直し"
+
+
+# --- 第 11 回のレビュー 2 章 ----------------------------------------------------------
+
+
+def test_article_check_is_skipped_for_the_meaning_question():
+    """語の直前の a / an は、空所・スペルでは答えの手がかりになるが、語の見える意味の問題では点検しない（#1215）。"""
+    word = next(w for w in WORDS if w.word == "bold") if any(w.word == "bold" for w in WORDS) else WORDS[0]
+    fields = {"sentence": f"She made a {word.word} decision to leave her job and start a new life abroad.",
+              "translation": "彼女は仕事を辞めて海外で新しい生活を始めるという決断をした。",
+              "hint": "decision に注目しよう。", "explanation": "決断の様子を表す語なので、この意味が文に合う。"}
+    issue = f"「{word.word}」の直前に a / an がある（答えの手がかりになる）"
+    assert issue in EnglishSubject._vocab_issues(word, [], fields, "en-vocab-blank")
+    assert issue not in EnglishSubject._vocab_issues(word, [], fields, "en-vocab-meaning")
+
+
+def test_autofix_relabels_fixes_the_paragraph_and_replaces_letters():
+    from quizapp.subjects.english import _autofix, _question_issues
+
+    passage = "Library News\n\n" + " ".join(SENTENCES[:3]) + "\n\n" + " ".join(SENTENCES[3:])
+    q = {"question": "What is true according to the passage?",
+         "options": ["Tom borrowed three books about birds.", "Tom borrowed three books about birds and fish.",
+                     "The library is closed on Saturday.", "His sister painted the station."],
+         "answer": 0, "wrong": {"B": "not_stated", "C": "contradicts", "D": "detail"},
+         "evidence": SENTENCES[3], "hint": "本文の第1段落を読もう。",
+         "explanation": "第2段落に鳥の本を3冊借りたとある。選択肢Bは魚が余計で、Cの土曜日は本文と食い違う。"}
+    before = _question_issues(q, passage)
+    assert any("not_stated" in x for x in before) and any("第1段落" in x for x in before)
+    assert any("記号" in x for x in before)
+    notes = _autofix(q, passage, check_paragraph=True, final=False)  # 直しを頼む前は記号を置き換えない
+    assert q["wrong"]["B"] == "partial" and "第2段落" in q["hint"] and "選択肢B" in q["explanation"]
+    assert len(notes) == 2
+    _autofix(q, passage, check_paragraph=True, final=True)
+    assert "「Tom borrowed three books about birds and fish.」は魚" in q["explanation"]
+    assert "「The library is closed on Saturday.」の土曜日" in q["explanation"]
+    assert _question_issues(q, passage) == []
+
+
+def test_empty_explanation_is_rewritten_instead_of_dropping_the_question(settings, sessions, sandbox):
+    llm = EnglishOracle(sessions, empty_explanation=True)
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:en-expository", format="choice", count=3)
+    ps = problems(sessions)
+    assert ps and all(p.status == "ready" for p in ps)
+    assert ("explanation", "gemma4:12b-it-qat") in llm.calls or any(c[0] == "explanation" for c in llm.calls)
+    assert any(e["step"] == "解説の書き直し" and e["ok"] for e in ps[0].verification)
+
+
+def test_exhausted_topics_are_not_counted_as_passes(settings, sessions, sandbox):
+    """題材を使い切ったら exhausted（前の版は duplicate で、成績で合格に数えていた。依頼 #158）。
+    作る画面は、残りが頼んだ数より少ないと知らせる。前の版の記録は worker の起動時に直す。"""
+    from quizapp import stock
+    from quizapp.db import Passage
+
+    client = TestClient(create_app(settings, sessions, sandbox))
+    with sessions.begin() as s:  # お知らせの題材を 1 つ残して使ったことにする
+        for t in TOPICS["en-notice"][1:]:
+            s.add(Passage(subject="english", template="en-notice", topic=t, status="ok", title=t, body=t))
+    r = client.post("/generate", data={"subject": "english", "scope": "tmpl:en-notice", "format": "choice",
+                                       "count": "6", "m_english_mode": "local"}, follow_redirects=True)
+    assert "まだ作れる問題は約 2 問" in r.text
+    with sessions.begin() as s:  # 上で入れた本文（中身は題材の名前だけ）は使い回さない
+        s.execute(select(Job)).scalars().first().options_json = '{"reuse_passages": "off"}'
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).run_once()
+    codes = [p.reject_code for p in problems(sessions) if p.status == "rejected"]
+    assert "exhausted" in codes and "duplicate" not in codes
+    with sessions() as s:
+        stats = stock.verify_stats(s)
+        row = next(r for r in stock.job_stats(s) if r["job"].subject == "english")
+    ready = sum(p.status == "ready" for p in problems(sessions))
+    assert stats["total"] == ready + sum(c not in ("exhausted",) for c in codes)
+    assert row["tried"] == stats["total"] and dict(row["codes"]).get("exhausted")
+    # 前の版の記録（作る段階の duplicate。検証にかけていない）は、worker の起動時に exhausted に直す
+    with sessions.begin() as s:
+        p = next(p for p in s.execute(select(Problem).where(Problem.reject_code == "exhausted")).scalars())
+        p.reject_code = "duplicate"
+    make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).recover()
+    assert "duplicate" not in [p.reject_code for p in problems(sessions)]

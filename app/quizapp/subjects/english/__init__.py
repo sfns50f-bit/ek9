@@ -103,6 +103,38 @@ def parse_question(text: str) -> dict[str, Any]:
             "hint": fields.get("hint", ""), "explanation": fields.get("explanation", "")}
 
 
+# 解説だけを書き直させれば直る指摘（第 11 回のレビュー 2-2）
+_EXPLANATION_ONLY = {"解説が空", "解説が短すぎる"}
+
+
+def _autofix(q: dict[str, Any], passage: str, *, check_paragraph: bool, final: bool) -> list[str]:
+    """設問の機械的に直せるところを直す（第 11 回のレビュー 2-2。不合格の理由で一番多かった点検の落ち）。
+    直したことの説明の並び。final：直しを頼んだ後（記号の置き換えは、作成役に直させても残ったときだけ）。
+
+    - 誤答の種類が「本文に書かれていない」なのに中心の語が本文にある → 「一部だけ合う」に付け替える
+      （種類は生徒に見せない。検証の選択肢ごとの判定で、もう一度付け直されることもある）
+    - ヒントの「第N段落」が根拠の文の段落と違う → 根拠の文の段落の番号に直す
+    - 解説が選択肢を A・B の記号で呼ぶ → 記号を選択肢の文に置き換える"""
+    notes = []
+    if not 0 <= q["answer"] < len(q["options"]):
+        return notes
+    for i, c in enumerate(LETTERS[:len(q["options"])]):
+        if i != q["answer"] and q["wrong"].get(c) == "not_stated" and check.stated_in_passage(q["options"][i], passage):
+            q["wrong"][c] = "partial"
+            notes.append(f"誤答「{q['options'][i][:40]}」の種類を not_stated から partial に付け替えた（中心の語が本文にある）")
+    if check_paragraph and q["evidence"]:
+        where = check.paragraph_of(passage, q["evidence"])
+        said = check.paragraph_numbers(q["hint"])
+        if where and said and where not in said:
+            q["hint"] = check.fix_paragraph(q["hint"], where)
+            notes.append(f"ヒントの「第{said[0]}段落」を第{where}段落に直した（根拠の文のある段落）")
+    # 解説だけ（ヒントに選択肢の文を入れると答えが見えるので、ヒントは置き換えずに落とす）
+    if final and check.letter_reference(q["explanation"]):
+        q["explanation"] = check.replace_letters(q["explanation"], q["options"])
+        notes.append("解説の選択肢の記号を、選択肢の文に置き換えた")
+    return notes
+
+
 def _question_issues(q: dict[str, Any], passage: str, *, check_paragraph: bool = True) -> list[str]:
     """設問の点検。check_paragraph：ヒントの「第N段落」を根拠の文のある段落と照らす（お知らせ・広告は
     見出しや箇条書きで段落の数え方が決まらないので照らさない）。"""
@@ -475,7 +507,7 @@ class EnglishSubject(Subject):
             used = {p.get("topic") for p in stored if p.get("status") != "rejected"}  # 落ちた本文の題材はまた使える
             topics = [t for t in TOPICS[template] if t not in used and key(t, 1) not in existing]
             if not topics:
-                raise Rejected("duplicate", "この小単元の題材をすべて使いました（catalog.TOPICS に題材を足すと作れます）")
+                raise Rejected("exhausted", "この小単元の題材をすべて使いました（catalog.TOPICS に題材を足すと作れます）")
             topic = ctx.rng.choice(topics)
             title, passage, log = self._write_passage(ctx, spec, template, topic)
             body = f"{title}\n\n{passage}" if title else passage
@@ -650,20 +682,45 @@ class EnglishSubject(Subject):
         q_issues: list[list[str]] = []
         for round_no in range(FIX_ROUNDS + 1):
             qs = [parse_question(check.normalize(str(out.get(f"q{i}") or ""))) for i in range(1, n + 1)]
+            last = round_no == FIX_ROUNDS
+            fixed = [_autofix(q, body, check_paragraph=spec.id != "en-notice", final=last) for q in qs]
             q_issues = [_question_issues(q, body, check_paragraph=spec.id != "en-notice") for q in qs]
+            notes = [f"設問 {i}: {x}" for i, xs in enumerate(fixed, 1) for x in xs]
+            if notes:
+                log.append({"step": "設問の機械的な直し", "ok": True, "summary": "／".join(notes)})
             partial.update(question=qs[0]["question"] if qs else "", explanation=body)
             all_issues = [f"設問 {i}: {x}" for i, xs in enumerate(q_issues, 1) for x in xs]
             if not all_issues:
                 break
             summary = "／".join(dict.fromkeys(all_issues))
-            last = round_no == FIX_ROUNDS
             log.append({"step": "設問の点検", "ok": False, "summary": summary + ("" if last else "（直しを依頼します）")})
             if last:
                 break  # 落ちた設問だけを不合格にし、ほかの設問は先へ進める
             _set_label(ctx.llm, "直し")
             out = _chat(ctx, prompts.QUESTION_SYSTEM, prompts.fix_user(user, out, summary, list(schema["properties"])),
                         schema)
+        # 解説が空・短すぎるだけで落ちる設問は、設問ごと捨てずに解説だけを書き直させる（第 11 回のレビュー 2-2）
+        for i, (q, issues) in enumerate(zip(qs, q_issues)):
+            if issues and all(x in _EXPLANATION_ONLY for x in issues):
+                q_issues[i] = self._rewrite_explanation(ctx, body, q, i + 1, log, spec.id != "en-notice")
         return qs, q_issues
+
+    def _rewrite_explanation(self, ctx: GenContext, body: str, q: dict[str, Any], no: int,
+                             log: list[dict[str, Any]], check_paragraph: bool) -> list[str]:
+        from ...llm import LLMError
+
+        _set_label(ctx.llm, "直し")
+        try:
+            out = _chat(ctx, prompts.QUESTION_SYSTEM, prompts.explanation_user(body, q), prompts.EXPLANATION_SCHEMA)
+        except LLMError as exc:
+            log.append({"step": "解説の書き直し", "ok": False, "summary": f"設問 {no}: 出力を読めなかった（{exc}）"})
+            return _question_issues(q, body, check_paragraph=check_paragraph)
+        q["explanation"] = check.normalize(str(out.get("explanation") or ""))
+        _autofix(q, body, check_paragraph=check_paragraph, final=True)
+        issues = _question_issues(q, body, check_paragraph=check_paragraph)
+        log.append({"step": "解説の書き直し", "ok": not issues,
+                    "summary": f"設問 {no}: 解説だけを書き直させた" + (f"（まだ: {'／'.join(issues)}）" if issues else "")})
+        return issues
 
     @staticmethod
     def _passage_issues(spec: Any, title: str, passage: str) -> list[str]:
@@ -711,16 +768,32 @@ class EnglishSubject(Subject):
         shown = "X（本文がないと分からない）" if got is None else f"{LETTERS[got]}（不正解）"
         return True, {**entry, "ok": True, "summary": f"本文を見せずに解かせた答えは {shown}"}
 
-    def _vocab(self, ctx: GenContext, template: str, fmt: str) -> Draft:
+    @staticmethod
+    def _vocab_pool(template: str, fmt: str, existing: set[str]) -> list[Word]:
+        """まだ問題にしていない語（同じ小単元のストック・下書きにある語を除く）。"""
         spec = VOCABS[template]
-        existing = ctx.existing_keys(template)
         pool = [w for w in WORDS if w.level == spec.word_level and w.word not in JHS_WORDS
                 and (fmt != "input" or (w.word not in SPELLING_EXCLUDE and len(w.word) >= 4))]
         pool = [w for w in pool if _params_key(template, {"word": w.word, "pos": w.pos}) not in existing]
         if fmt == "input":  # 同じ最初の文字・文字数・近い意味の語がある語は出さない（答えが 2 つになる。第 7 回のレビュー H）
             pool = [w for w in pool if not spelling_rivals(w)]
+        return pool
+
+    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str]) -> int | None:
+        """読解：まだ使っていない題材 × 1 本文の設問の数。語彙・スペル：まだ問題にしていない語の数。"""
+        if template in READINGS:
+            spec = READINGS[template]
+            left = [t for t in TOPICS[template] if t not in used_topics
+                    and _params_key(template, {"topic": t, "q": 1}) not in existing]
+            return len(left) * spec.questions
+        if template in VOCABS:
+            return len(self._vocab_pool(template, fmt, existing))
+        return None
+
+    def _vocab(self, ctx: GenContext, template: str, fmt: str) -> Draft:
+        pool = self._vocab_pool(template, fmt, ctx.existing_keys(template))
         if not pool:
-            raise Rejected("duplicate", "単語リストの語をすべて使いました（words.py に語を足すと作れます）")
+            raise Rejected("exhausted", "単語リストの語をすべて使いました（words.py に語を足すと作れます）")
         word = ctx.rng.choice(pool)
         choice = template != "en-spelling"
         # 誤答の候補（同じ品詞・レベルで意味が重ならない語）を作成役に渡し、文法上は入るが意味が合わない語を 3 つ選ばせる（D-5）
@@ -829,7 +902,10 @@ class EnglishSubject(Subject):
         used = [w.word for w in others if check.count_word(sentence, w.word)]
         if used:
             out.append("例文に、選択肢に並ぶ別の語（" + ", ".join(used) + "）が使われている")
-        if re.search(rf"(?<![A-Za-z])an?\s+{re.escape(word.word)}(?![A-Za-z])", sentence, re.I):
+        # 文中の語の意味の問題は語が見えているので、a / an は手がかりにならない（作成役が冠詞を消して英文を
+        # 誤らせた。#1215。第 11 回のレビュー 2-1）
+        if template != "en-vocab-meaning" and re.search(
+                rf"(?<![A-Za-z])an?\s+{re.escape(word.word)}(?![A-Za-z])", sentence, re.I):
             out.append(f"「{word.word}」の直前に a / an がある（答えの手がかりになる）")
         out += check.japanese_issues(fields["translation"], "和訳")
         out += check.japanese_issues(fields["hint"], "ヒント")
