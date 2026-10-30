@@ -107,6 +107,10 @@ def parse_question(text: str) -> dict[str, Any]:
 _URL_RE = re.compile(r"https?://|\bwww\.|[\w.-]+@[\w-]+\.[a-z]{2,}", re.I)
 
 
+# 引用を本文と照らす判定（第 12 回のレビュー 5-1）
+QUOTED_LABELS = ("裏付けあり", "一部だけ合う")
+
+
 # 選択肢ごとの判定で、一部の選択肢しか答えなかったときの聞き直し（第 12 回のレビュー 3-2）
 _MISSING_HEAD = "\n\n前の判定には"
 
@@ -444,8 +448,10 @@ def _strict_missing(got: dict[int, tuple[str, str]], right: int, choices: list[d
 
 
 def _quote(reason: str) -> str:
-    """判定の理由の中の「引用: "…"」。なければ空。"""
-    m = re.search(r"引用\s*[:：]\s*[\"“「『]([^\"”」』]+)[\"”」』]", reason or "")
+    """判定の理由の中の「引用: "…"」。「引用:」を付けずに判定のすぐ後ろに "…" と書いた形も読む（第 12 回の
+    レビュー 5-1。#970：「3: 裏付けあり — "I boarded a train …" — 理由」を引用なしと読んでいた）。なければ空。"""
+    m = re.search(r"引用\s*[:：]\s*[\"“「『]([^\"”」』]+)[\"”」』]", reason or "") \
+        or re.match(r"^[\s—\-ー:：]*[\"“「『]([^\"”」』]{12,})[\"”」』]", reason or "")
     return m.group(1).strip() if m else ""
 
 
@@ -1275,9 +1281,12 @@ class EnglishSubject(Subject):
             new = self._judgments(str(out.get("judgments") or ""), prompts.CHOICE_LABELS, len(choices))
             # 足りない選択肢だけを聞き直したときは、前の判定と合わせる（3-2）。引用のやり直しは新しい判定を使う
             got = {**got, **new} if note.startswith(_MISSING_HEAD) else new
+            # 引用を照らすのは「裏付けあり」「一部だけ合う」だけ（正解が 2 つあるのを見つけるのに要るのはこの 2 つ。
+            # ほかの判定の引用の抜け・ずれは判定を読む妨げにしない。第 12 回のレビュー 5-1）。引用は語の 9 割が本文の
+            # 1 文と合えば同じ文とみなす（#1104 の「it erupt and cools」。本文は erupts）
             bad = [q for lb, reason in got.values() for q in [_quote(reason)]
-                   if quote and lb != "本文に書かれていない" and (q and not check.contains(passage, q)
-                                                                  or not q and lb == "裏付けあり")]
+                   if quote and lb in QUOTED_LABELS and (q and not check.near_quote(passage, q)
+                                                        or not q and lb == "裏付けあり")]
             short = _strict_missing(got, right_i, choices) if strict and len(got) >= len(choices) else []
             if len(got) >= len(choices) and not bad and (not short or asked_again):
                 break

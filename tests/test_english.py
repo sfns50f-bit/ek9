@@ -1550,3 +1550,19 @@ def test_urls_only_in_notices():
     notice = READINGS["en-notice"]
     short = "Join our cooking class on Saturday. " * 4 + "Visit www.example.org/cooking for details."
     assert not any("URL" in x for x in EnglishSubject._passage_issues(notice, "Cooking", short))
+
+
+def test_quotes_without_the_label_and_near_quotes_are_read():
+    """「引用:」を付けずに判定のすぐ後ろに書いた引用も読む（#970）。引用は語の 9 割が本文の 1 文と合えば同じ文と
+    みなす（#1104 の erupt と erupts）。引用を照らすのは「裏付けあり」「一部だけ合う」だけ（第 12 回のレビュー 5-1）。"""
+    from quizapp.subjects.english import QUOTED_LABELS, _quote
+
+    assert _quote(' — "I boarded a train with the girl and the boy." — 本文にそのまま記述がある。') == \
+        "I boarded a train with the girl and the boy."
+    assert _quote(" — 引用なし — 学校へ行きテストを受けた。") == ""
+    passage = ("When this magma reaches the ground, it erupts and cools, eventually building up the structure "
+               "of a volcano over many years. Scientists study volcanoes.")
+    assert check.near_quote(passage, "When this magma reaches the ground, it erupt and cools, eventually building up")
+    assert not check.near_quote(passage, "When the snow reaches the town, people stay home and read books all day")
+    assert not check.contains(passage, "it erupt and cools, eventually building up")  # 作成役の根拠は一字一句
+    assert QUOTED_LABELS == ("裏付けあり", "一部だけ合う")
