@@ -434,7 +434,8 @@ class GoldenLLM:
             items = _re.findall(r"^(\d+): (.*)$", user, _re.M)
             good = self.right | self.also_fit
             passage = user.split("本文:\n", 1)[1].split("\n\n設問:", 1)[0] if "本文:\n" in user else ""
-            first = _re.split(r"(?<=[.!?])\s+", passage.split("\n\n")[-1].strip())[0] if passage else ""
+            # 箇条書きの本文（#1347）でも 1 行に収まるよう、改行でも区切る
+            first = _re.split(r"(?<=[.!?])\s+|\n", passage.split("\n\n")[-1].strip())[0] if passage else ""
             lines = []
             for n, text in items:
                 fit = self._fits(text, good)

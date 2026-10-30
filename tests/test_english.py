@@ -1463,3 +1463,90 @@ def test_exhausted_topics_are_not_counted_as_passes(settings, sessions, sandbox)
         p.reject_code = "duplicate"
     make_worker(settings, sessions, sandbox, EnglishOracle(sessions)).recover()
     assert "duplicate" not in [p.reject_code for p in problems(sessions)]
+
+
+# --- 第 12 回のレビュー -------------------------------------------------------------
+
+
+class _Script:
+    """決まった出力を順に返すテスト用の LLM（受け取った user も残す）。"""
+
+    def __init__(self, *outs):
+        self.outs, self.users = list(outs), []
+
+    def chat_json(self, model, system, user, schema, *, temperature=0.7):
+        self.users.append(user)
+        return self.outs.pop(0)
+
+
+def test_quotes_around_a_word_and_multi_line_evidence_match_the_passage():
+    """引用符の違い（'waggle' と "waggle"）は同じとみなす（3-1。#1355）。箇条書きの複数行にまたがる根拠は、行ごとに
+    本文にあれば通す（3-4。#1345）。"""
+    passage = ('Furthermore, the length of the "waggle" part of the dance shows the distance.\n\n'
+               "- Date: Saturday, October 21\n- Time: 6:00 p.m.\n- Number of Guests: 4 people")
+    assert check.contains(passage, "the length of the 'waggle' part of the dance")
+    assert check.contains(passage, "the length of the ‘waggle’ part")
+    assert check.flat("don't") == "don't"
+    assert check.contains(passage, "- Date: Saturday, October 21\n- Number of Guests: 4 people")
+    assert not check.contains(passage, "- Date: Saturday, October 21\n- Number of Guests: 5 people")
+
+
+def test_pair_answer_in_heading_brackets_is_read():
+    """1 対 1 の判定の「[[answer]] [[1]] [[理由]]」の形も読む（3-3。#1346）。"""
+    from quizapp.subjects.english import read_pair
+
+    assert read_pair("[[1]]\n[[本文には、遅れる場合は電話で連絡するよう記載されている。]]") == 0
+    assert read_pair("[[両方]]") == "both"
+
+
+def test_missing_judgments_are_asked_again_and_merged():
+    """選択肢の一部しか判定しなかったら、足りない番号を示して聞き直し、前の判定と合わせる（3-2。#1386）。"""
+    sub = EnglishSubject()
+    choices = [{"text": t, "correct": i == 2} for i, t in enumerate(["修理する", "かき混ぜる", "めったに〜ない", "隠す"])]
+    llm = _Script({"judgments": "3: 通る — 適切な訳"},
+                  {"judgments": "1: 通らない — 違う\n2: 通らない — 違う\n4: 通らない — 違う"})
+    checks, raws = [], []
+    fit = sub._judge_fit(llm, "m", "system", "user", choices, "語の意味の選択肢", checks, raws)
+    assert "選択肢 1・2・4 の判定がありませんでした" in llm.users[1]
+    assert fit == {0: "no", 1: "no", 2: "natural", 3: "no"}
+    assert [ok for _n, ok, _t in checks] == [True, True]
+
+
+def test_none_fit_conflict_becomes_needs_check_only_when_chosen():
+    """正解を抜いた判定で選んだ語を、選択肢ごとの判定では「通らない」としていたら、検証のやり方が「要確認」の
+    ときだけ要確認にする（2 章。#1376・#1377。既定は今までどおり不合格）。"""
+    from quizapp.subjects.english import CONFLICT_CHECK, _soften_conflict
+
+    choices = [{"text": "intention"}, {"text": "strategy"}, {"text": "atmosphere"}, {"text": "context", "correct": True}]
+    fit = {0: "no", 1: "no", 2: "no", 3: "natural"}
+    checks = [("正解が 1 つか", True, "ほかの選択肢は合わない"),
+              ("正解を抜いた判定", False, "正解を抜くと「atmosphere」を選んだ（正解が 2 つの疑い）")]
+    assert EnglishSubject._verdict_of("m", list(checks), []).code == "en_verify_multiple"
+    soft = list(checks)
+    _soften_conflict(soft, choices, fit, 2)
+    assert soft[1][0] == CONFLICT_CHECK
+    assert EnglishSubject._verdict_of("m", soft, []).code == "needs_check"
+    # 選択肢ごとの判定でも「通る」としていた語なら、そのまま不合格
+    natural = list(checks)
+    _soften_conflict(natural, choices, {**fit, 2: "natural"}, 2)
+    assert natural[1][0] == "正解を抜いた判定"
+    assert "nonefit_conflict" in EnglishSubject.verify_options
+    assert EnglishSubject.verify_options["nonefit_conflict"]["default"] == "reject"
+
+
+def test_hint_side_of_the_blank_is_checked():
+    """ヒントの「空所の後ろにある building」が、例文では空所の前にあれば直させる（3-5。#1373）。"""
+    sentence = "The old building will be [ demolished ] next month to make room for a park."
+    assert check.blank_side_issue(sentence, "demolished", "空所の後ろにある building に注目しよう。")
+    assert check.blank_side_issue(sentence, "demolished", "空所の前にある building に注目しよう。") is None
+    assert check.blank_side_issue(sentence, "demolished", "空所の後ろの next month に注目しよう。") is None
+    assert check.blank_side_issue(sentence, "demolished", "文全体を読もう。") is None
+
+
+def test_urls_only_in_notices():
+    """URL・メールアドレスは、お知らせ・広告・メールの本文だけに書かせる（1 章。#1353）。"""
+    text = "Vaccines help the body fight germs. " * 30 + "For more information, visit www.example.org."
+    assert any("URL" in x for x in EnglishSubject._passage_issues(READINGS["en-expository"], "Vaccines", text))
+    notice = READINGS["en-notice"]
+    short = "Join our cooking class on Saturday. " * 4 + "Visit www.example.org/cooking for details."
+    assert not any("URL" in x for x in EnglishSubject._passage_issues(notice, "Cooking", short))

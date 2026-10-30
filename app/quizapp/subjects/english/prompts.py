@@ -31,12 +31,15 @@ PASSAGE_SCHEMA: dict[str, Any] = {
 }
 
 
-def passage_user(genre: str, topic: str, words: tuple[int, int]) -> str:
-    return "\n".join([
+def passage_user(genre: str, topic: str, words: tuple[int, int], *, urls: bool = True) -> str:
+    lines = [
         f"本文の種類: {genre}",
         f"題材: {topic}",
         f"本文の長さ: {words[0]}〜{words[1]} 語",
-    ])
+    ]
+    if not urls:  # URL・メールアドレスはお知らせ・広告・メールだけ（第 12 回のレビュー 1 章。#1353）
+        lines.append("この本文には URL・メールアドレスを書かない（お知らせ・広告・メールではないため）")
+    return "\n".join(lines)
 
 
 PASSAGE_REVIEW_SYSTEM = """あなたは日本の高校の英語の先生です。生徒に読ませる前に、英語の本文を点検します。
