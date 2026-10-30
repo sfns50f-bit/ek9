@@ -50,13 +50,24 @@ def word_count(text: str) -> int:
 def flat(text: str) -> str:
     """比べるための形：全角を半角に、引用符をそろえ、小文字にして、英数字以外を 1 つの空白にする。"""
     t = unicodedata.normalize("NFKC", text or "").translate(_QUOTES).lower()
-    return " ".join(re.findall(r"[a-z0-9']+", t))
+    # 語の中のアポストロフィ（don't）だけを残し、語を囲む引用符（'waggle'）は外す（本文の "waggle" と同じにする。
+    # 第 12 回のレビュー 3-1。#1355）
+    return " ".join(re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)*", t))
 
 
 def contains(passage: str, quote: str) -> bool:
     """根拠の文が本文にそのまま入っているか（大文字・小文字、空白、記号の違いは無視する）。"""
     q = flat(quote)
-    return bool(q) and f" {q} " in f" {flat(passage)} "
+    if not q:
+        return False
+    body = f" {flat(passage)} "
+    if f" {q} " in body:
+        return True
+    # 箇条書きの複数行にまたがる根拠（「- Date: …」「- Number of Guests: …」）は、行ごとに本文にあれば通す
+    # （第 12 回のレビュー 3-4。#1345）
+    lines = [flat(line) for line in (quote or "").splitlines()]
+    lines = [x for x in lines if x]
+    return len(lines) > 1 and all(f" {x} " in body for x in lines)
 
 
 def count_word(sentence: str, word: str) -> int:
@@ -353,6 +364,30 @@ def paragraph_numbers(text: str) -> list[int]:
         raw = unicodedata.normalize("NFKC", m.group(1) or m.group(2))
         out.append(int(raw) if raw.isdigit() else _KANJI_NUM.get(raw, 0))
     return [n for n in out if n]
+
+
+# ヒントの「空所の後ろにある building」「空所の直前の a」（第 12 回のレビュー 3-5。#1373）
+_SIDE_RE = re.compile(r"空所の(直前|前|直後|後ろ|後)(?:にある|に続く|の)?\s*[「『“\"]?([A-Za-z][A-Za-z'’-]*)")
+
+
+def blank_side_issue(sentence: str, answer: str, hint: str) -> str | None:
+    """ヒントが空所の前・後ろと書いた語が、例文では反対の側にあれば、その指摘。確かめられなければ None。"""
+    tokens = [w.lower() for w in words(sentence)]
+    if answer.lower() not in tokens:
+        return None
+    at = tokens.index(answer.lower())
+    for m in _SIDE_RE.finditer(hint or ""):
+        side, word = m.group(1), m.group(2).lower().replace("’", "'")
+        where = [i for i, t in enumerate(tokens) if t == word and i != at]
+        if not where or (min(where) < at < max(where)):
+            continue  # 例文にない・両側にある語は確かめない
+        before = where[0] < at
+        if side.startswith("直前") or side == "前":
+            if not before:
+                return f"ヒントは「{word}」を空所の前と書いているが、例文では空所の後ろにある"
+        elif before:
+            return f"ヒントは「{word}」を空所の後ろと書いているが、例文では空所の前にある"
+    return None
 
 
 def fix_paragraph(hint: str, where: int) -> str:

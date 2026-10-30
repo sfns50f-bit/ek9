@@ -1593,6 +1593,48 @@
    "answer": "To overcome the fear of speaking in front of others.",
    "hint": "第1段落の後半部分を確認してください。",
    "explanation": "「恐怖を克服したい」という動機が書かれているため、多くの人の前で話すことへの恐怖を乗り越えることが目的である「overcome the fear of speaking in front of others」が正解となります。\n「win the first prize」は、第4段落で「1位になれなかった」と述べられているため、目的ではありません。\n「improve their public speaking skills」については、挑戦したいという意図はありますが、スキル向上そのものが目的であるとは書かれていません。\n「share their knowledge about community activities」は、スピーチの内容（親切な行為の重要性）についての記述であり、コンテストに参加した理由ではありません。\n\n本文の根拠: “However, I wanted to challenge myself and overcome my fear of public speaking.”"
+  },
+  {
+   "expected": "borderline",
+   "defect_type": null,
+   "note": "「参加するためにしなければならないこと」の正解は「事前に登録する」。誤答「10 時に北門へ行く」も、本文の「Meet at the North Gate」から参加者がすることと読める（10 時に集合とは書いていない）。正解の方がはっきり required なので正解は 1 つに決まるが、境界の問題（第 12 回のレビュー 1 章）",
+   "id": 1347,
+   "category": "英語／読解／お知らせ・広告・メール",
+   "作成日時": "2026/10/29 23:35",
+   "レベル": "高校基礎",
+   "本文作成役": "gemma4:26b-a4b-it-qat",
+   "作成役": "gemma4:26b-a4b-it-qat",
+   "passage": "Spring Open Campus at Green Valley Institute\n\nGreen Valley Institute is pleased to announce our annual Spring Open Campus day! This event is a wonderful opportunity for prospective students to experience our campus life and learn about our programs.\n\nDate and Time:\nSaturday, May 20th, 10:00 a.m. – 4:00 p.m.\n\nLocation:\nGreen Valley Institute Main Campus (Meet at the North Gate)\n\nSchedule:\n- 10:00: Welcome Speech\n- 11:00: Campus Tour (30 minutes)\n- 13:00: Departmental Workshops\n- 15:00: Q&A Session with Teachers\n\nImportant Information:\n- Admission is free, but prior registration is required.\n- Please register by May 10th via our website: www.greenvalley-inst.example.org/events\n- For more details, contact us at info@greenvalley-inst.example.org",
+   "question": "What must prospective students do to attend the event?",
+   "options": [
+    {
+     "key": "A",
+     "text": "Pay an entrance fee",
+     "correct": false,
+     "mistake": "本文と食い違う"
+    },
+    {
+     "key": "B",
+     "text": "Join the Q&A Session",
+     "correct": false,
+     "mistake": "本文に書かれていない"
+    },
+    {
+     "key": "C",
+     "text": "Register in advance",
+     "correct": true,
+     "mistake": null
+    },
+    {
+     "key": "D",
+     "text": "Visit the North Gate at 10:00 a.m.",
+     "correct": false,
+     "mistake": "一部だけ合っている／見直しでは「数・日時・人などの取り違え」"
+    }
+   ],
+   "answer": "Register in advance",
+   "hint": "「Important Information」の項目を確認してください。",
+   "explanation": "本文には、入場は無料（Admission is free）ですが、事前の登録が必要である（prior registration is required）と書かれているため、「事前に登録する」という選択肢が正解です。入場料を支払う必要はなく、北門に集まることは集合場所についての記述であり、Q&Aセッションへの参加はイベント内容の一部であって、参加するための条件（しなければならないこと）ではありません。\n\n本文の根拠: “Admission is free, but prior registration is required.”"
   }
  ],
  "expected_values": {
@@ -1600,5 +1642,5 @@
   "pass": "通すべき（問題なし）",
   "borderline": "微妙（採点に含めないが、結果は表に出す）"
  },
- "updated": "2026-10-29（第 10 回のレビュー 4-4：#1104・#1107 を微妙として足す）"
+ "updated": "2026-10-30（第 12 回のレビュー 1 章：#1347 を微妙として足す）。2026-10-29（第 10 回のレビュー 4-4：#1104・#1107 を微妙として足す）"
 }
