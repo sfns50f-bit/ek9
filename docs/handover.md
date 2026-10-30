@@ -69,6 +69,7 @@
 - [第 9 回（英語の最終調整と最終確認）](reviews/09_english.md)：#130（既定）がほぼ目標どおり。残る「誤答も本文で裏付けられる」型（#860・#796）に読解の 1 対 1 の判定を足した。#987 を微妙に。測定の書き出しは [golden_english_2026-10-28.md](reviews/golden_english_2026-10-28.md)。対応は docs/english.md の 5-8 章。最終確認で合格なら英語を締める
 - [第 10 回（英語の最終確認の結果と締め）](reviews/10_english.md)：**英語は締めてよい**。最終確認の 45 問（[trial_english_2026-10-29.md](reviews/trial_english_2026-10-29.md)）に致命的な欠陥 0 問、見本集（[golden_english_2026-10-29.md](reviews/golden_english_2026-10-29.md)）は 26／28 を止め通すべきを止めたのは 1〜2／16。締めの作業は docs/english.md の 0 章と 5-9 章
 - [第 11 回（英語の締めの判定）](reviews/11_english.md)：合格した問題に致命的な欠陥 0 問・要確認 13%。合格率はレビューの 52% は集計の誤りで、本当は 43%（題材の使い切りを合格に数えていた）。2 章の改善候補は直した。検証の成績は [quality_english_2026-10-29.md](reviews/quality_english_2026-10-29.md)、作った 88 問は [trial_english_2026-10-29b.md](reviews/trial_english_2026-10-29b.md)。2 章の改善候補は上の 0 章の「英語の残り」と docs/english.md の 5-10 章
+- [第 12 回（英語。締めの後の改善の確認）](reviews/12_english.md)：合格率 58%・要確認 15%・致命的な欠陥 0 問。3 章の直しなどは docs/english.md の 5-11 章
 
 第 1 回・第 2 回とも数値・正解はすべて正しかった。指摘ごとの対応は [docs/math.md](math.md) にある（5〜7 章、11 章）。第 2 回の 6 章（前の版の古い問題）は、問題検証モードでの手入れ（開発者の作業）が残っている。
 
