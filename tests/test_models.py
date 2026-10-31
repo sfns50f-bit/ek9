@@ -634,6 +634,15 @@ def test_verify_options_are_saved_recorded_and_compared(settings, sessions, sand
     assert jb.kind == "golden" and jb.options.items() >= {"fit3": "on", "reading_strict": "off",
                                                           "reading_think": "model"}.items()
     assert "語彙の判定：3 段階" in golden.config_label(jb) and "読解の誤答の根拠：書かせない" in golden.config_label(jb)
+    # 後から足したやり方（食い違うとき・1 対 1 の判定など）も画面で選んだものを使う（前の版は 3 つしか読まず、
+    # 「要確認」を選んでも科目の設定の「不合格」で測っていた。見本集の #166）
+    client.post("/review/golden", data={"subject": "english", "verify_model": "gemma4:e4b", "verify_count": "1",
+                                        "opt_nonefit_conflict": "check", "opt_pair_check": "off",
+                                        "opt_pair_threshold": "0.9"})  # 選択肢にない値は科目の設定のまま
+    jb = jobs(sessions)[-1]
+    assert jb.options["nonefit_conflict"] == "check" and jb.options["pair_check"] == "off"
+    assert jb.options["pair_threshold"] == "0.5"
+    assert "要確認（選んだ語を" in golden.config_label(jb)
 
 
 def test_golden_borderline_and_stopped_score():

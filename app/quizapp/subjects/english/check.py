@@ -70,6 +70,27 @@ def contains(passage: str, quote: str) -> bool:
     return len(lines) > 1 and all(f" {x} " in body for x in lines)
 
 
+def near_quote(passage: str, quote: str, ratio: float = 0.9) -> bool:
+    """検証役の引用が本文にあるか。そのまま入っているか、語の 9 割以上が本文の 1 文と同じ並びで合えば同じ文と
+    みなす（語形の 1 語違い「it erupt and cools」など。第 12 回のレビュー 5-1）。作成役の根拠の文は contains で
+    一字一句照らす（こちらは使わない）。"""
+    if contains(passage, quote):
+        return True
+    q = flat(quote).split()
+    if len(q) < 6:
+        return False
+    for sent in _sentences(passage):
+        s = flat(sent).split()
+        if not s:
+            continue
+        sm = difflib.SequenceMatcher(None, q, s, autojunk=False)
+        same = sum(b.size for b in sm.get_matching_blocks())
+        # 引用が本文の文の一部（前半だけなど）のこともあるので、引用の語の数に対して数える
+        if same >= ratio * len(q) and len(q) <= len(s) + 2:
+            return True
+    return False
+
+
 def count_word(sentence: str, word: str) -> int:
     return sum(1 for w in words(sentence) if w.lower() == word.lower())
 
