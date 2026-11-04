@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import math, mark, report_form %}
+{% from "_macros.html" import math, mark, report_form, passage_source %}
 {% block content %}
 <div class="{{ nomath(problem.subject) }}">
 {% if msg == "reported" %}<p class="notice">報告しました。この問題は今後出ず、集計からも外れます。</p>{% endif %}
@@ -8,7 +8,7 @@
   <p class="muted small">{{ subject.label_of(problem.template) if subject else problem.template }}・{{ FORMATS.get(problem.format, problem.format) }}
     {% if problem.status != "ready" %}・<strong>{{ {"rejected": "検証で不合格", "draft": "検証待ち", "test": "検証のテスト用"}.get(problem.status, problem.status) }}</strong>{% endif %}
     {% if problem.reported %}・<strong>報告済み</strong>{% endif %}</p>
-  {% if problem.passage %}<details class="passage-review"><summary>本文を見る</summary>{{ math(problem.passage.body, "passage") }}</details>{% endif %}
+  {% if problem.passage %}<details class="passage-review"><summary>本文を見る</summary>{{ math(problem.passage.body, "passage") }}{{ passage_source(problem.passage) }}</details>{% endif %}
   {{ math(problem.question, "question") }}
   {% if problem.choices %}
   <ul class="choice-review">

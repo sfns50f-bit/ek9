@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import choicejudge
+
 # --- 読解の作成（2 段階：本文作成役が本文を書く → 作成役が確定した本文に設問を書く） ---------------
 
 PASSAGE_SYSTEM = """あなたは日本の大学入学共通テスト（英語リーディング）の問題を作る編集者です。
@@ -210,14 +212,7 @@ def explanation_user(body: str, q: dict[str, Any]) -> str:
 
 # --- 直し ---------------------------------------------------------------------
 
-def fix_user(original: str, previous: dict[str, Any], issues: str, keys: list[str]) -> str:
-    """前回の出力を同じ見出しの形で見せて、指摘した点だけを直させる。"""
-    shown = "\n".join(f"[[{k}]]\n{str(previous.get(k) or '').strip()}" for k in keys)
-    return "\n".join([
-        original, "", "前回の出力:", shown, "",
-        "直してほしい点: " + issues,
-        "指摘した点だけを直し、ほかはできるだけそのままにして、同じ見出しの形ですべて書き直してください。",
-    ])
+fix_user = choicejudge.fix_user  # 前回の出力を同じ見出しの形で見せて、指摘した点だけを直させる
 
 
 # --- 本文なしの確認（作成役のモデルで、作成のときに） ---------------------------
@@ -251,11 +246,7 @@ def solve_user(question: str, choices: list[str], passage: str = "", title: str 
 # --- 見直し（見直し役。問いを絞って聞く：第 4 回のレビュー C） -------------------------------
 # 小さいモデルは「誤りはあるか」とまとめて聞くとほとんど「問題なし」と答えるので、1 つずつ具体的に聞く。
 
-JUDGMENTS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {"judgments": {"type": "string", "description": "番号ごとの判定（1 行に 1 つ。「番号: 判定 — 理由」）"}},
-    "required": ["judgments"],
-}
+JUDGMENTS_SCHEMA = choicejudge.JUDGMENTS_SCHEMA
 
 # 読解：選択肢ごとに、本文で裏付けられるかを判定させる（どれが正解かは教えない）
 CHOICE_LABELS = {"裏付けあり": "", "本文と食い違う": "contradicts", "本文に書かれていない": "not_stated",
@@ -431,14 +422,7 @@ REVIEW_SYSTEM = """あなたは日本の高校の英語の先生です。生徒�
 
 verdict の 1 行目には「問題なし」か「問題あり」のどちらかだけを書く。"""
 
-REVIEW_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "description": "「問題なし」または「問題あり」"},
-        "issues": {"type": "string", "description": "問題があればその内容（なければ「なし」）"},
-    },
-    "required": ["verdict"],
-}
+REVIEW_SCHEMA = choicejudge.REVIEW_SCHEMA
 
 
 def review_user(question: str, choices: list[tuple[str, bool]], answer: str, explanation: str, hint: str,

@@ -21,6 +21,10 @@
     <tr><th>データ</th><td>{{ settings.database_path }}</td></tr>
     <tr><th>バックアップ</th><td>{{ backup_count }} 個（最新 {{ backup_last or "なし" }}）
       {% if backup_info and not backup_info.ok %}<div class="notice warn">前回失敗: {{ backup_info.error }}</div>{% endif %}</td></tr>
+    <tr><th>資料の鮮度の調査</th><td>{% if source_check_days <= 0 %}しない（SOURCE_CHECK_DAYS=0）{% elif not source_check.at %}まだ調べていない（{{ source_check_days }} 日ごと）
+      {% else %}{{ source_check.at | isolocal }}：{{ source_check.checked }} 件を調べた。いま資料が変わった {{ source_check.changed or 0 }} 件・見つからない {{ source_check.missing or 0 }} 件（取ってきた資料 {{ source_check.total or 0 }} 件のうち。{{ source_check_days }} 日ごとに調べる。調べる時期の資料 {{ source_check.due }} 件）
+      {% if source_check.errors %}<div class="notice warn small">つながらなかった: {{ source_check.errors[0] }}</div>{% endif %}
+      {% if source_check.changed or source_check.missing %}<div class="small"><a href="/review?status=source_changed">出典の資料が変わった問題を見る</a></div>{% endif %}{% endif %}</td></tr>
   </table>
 </section>
 

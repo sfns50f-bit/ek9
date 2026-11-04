@@ -67,6 +67,8 @@ class Settings:
 
     backup_keep: int = field(default_factory=lambda: _int("BACKUP_KEEP", 14))
     backup_interval_hours: int = field(default_factory=lambda: _int("BACKUP_INTERVAL_HOURS", 24))
+    # 資料の鮮度の調査（公共）：取ってきた資料を、何日ごとに今の資料と照らし直すか。0 は調べない
+    source_check_days: int = field(default_factory=lambda: _int("SOURCE_CHECK_DAYS", 30))
 
     # 科目ごと・端末ごとの未出題ストックがこれ未満なら「残りが少ない」と表示する
     low_stock: int = field(default_factory=lambda: _int("LOW_STOCK", 40))

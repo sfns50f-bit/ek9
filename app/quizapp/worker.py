@@ -16,6 +16,7 @@ import logging
 import random
 import threading
 import time
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -77,6 +78,8 @@ PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
 _KV_LOCK = threading.Lock()
 # 順番待ちの分け方：ollama＝作成役・検証役のどれかが Ollama のモデル、api＝全部 API のモデル、None＝両方（テスト用）
 LANES = ("ollama", "api")
+SOURCE_CHECK_SECONDS = 3600  # 資料の鮮度の調査を見に行く間隔
+SOURCE_CHECK_BATCH = 20  # 1 回に調べる本文の数（資料の先に負担をかけない）
 TEST_ATTEMPTS = 3  # 検証のテストで、検証の段階まで届く下書きを作るまでに試す回数
 
 
@@ -98,6 +101,8 @@ class Worker:
         self.unavailable_until = 0.0
         self.last_ollama_check = -1e9
         self.last_backup_check = -1e9
+        self.last_source_check = -1e9
+        self._source_check_written = False  # この起動で鮮度の調査の結果を一度は書いたか
         self._last_status: tuple[str, int | None] | None = None
         self._last_status_at = -1e9
 
@@ -151,6 +156,61 @@ class Worker:
         info["at"] = utcnow().isoformat()
         with self.sessions.begin() as s:
             kv_set(s, "backup", dumps(info))
+
+    def maybe_check_sources(self, limit: int = SOURCE_CHECK_BATCH) -> None:
+        """取ってきた資料（公共）の鮮度の調査。SOURCE_CHECK_DAYS 日より前に調べた（まだ調べていない）本文を、
+        1 時間に limit 件まで、古いものから今の資料と照らし直して passages.source_info に結果を書く。
+        科目の check_source が None を返す本文（英語など）は調べない。結果は kv の source_check にも残す。
+        変わった資料の問題は消さずに残し、問題検証モードの「出典が更新された問題」に出す（どうするかは開発者が決める）。"""
+        days = self.settings.source_check_days
+        now = time.monotonic()
+        if days <= 0 or now - self.last_source_check < SOURCE_CHECK_SECONDS:
+            return
+        self.last_source_check = now
+        cutoff = (utcnow() - timedelta(days=days)).isoformat()
+        with self.sessions() as s:
+            rows = list(s.execute(select(Passage).where(Passage.source_info_json != "{}")
+                                  .order_by(Passage.id)).scalars())
+        due = [r for r in rows if get_subject(r.subject) is not None
+               and str(r.source_info.get("checked_at") or r.source_info.get("fetched_at") or "") < cutoff]
+        due.sort(key=lambda r: str(r.source_info.get("checked_at") or ""))
+        result = {"at": utcnow().isoformat(), "checked": 0, "changed": 0, "missing": 0, "errors": [], "due": len(due)}
+        for row in due[:limit]:
+            sub = get_subject(row.subject)
+            try:
+                res = sub.check_source(row.source_info, row.body) if sub is not None else None
+            except Exception as exc:  # つながらない：次の回にまた調べる
+                result["errors"].append(f"#{row.id}: {exc}"[:200])
+                if isinstance(exc, ConnectionError):
+                    break
+                continue
+            if res is None:
+                continue
+            with self.sessions.begin() as s:
+                p = s.get(Passage, row.id)
+                info = p.source_info
+                if res.get("check") == "unknown":  # 断られた・読めない：前の結果を残し、次の回にまた調べる
+                    info["last_error"] = str(res.get("detail", ""))[:300]
+                    result["errors"].append(f"#{row.id}: {res.get('detail', '')}"[:200])
+                else:
+                    was = info.get("check")
+                    info.update(res, checked_at=utcnow().isoformat())
+                    info.pop("last_error", None)
+                    if res.get("check") in ("changed", "missing") and was not in ("changed", "missing"):
+                        info["changed_at"] = info["checked_at"]
+                    result["checked"] += 1
+                p.source_info_json = dumps(info)
+        if not due[:limit] and self._source_check_written:
+            return  # 調べる資料がなければ書かない（前の回の結果を残す）
+        # 変わった・見つからない資料の数は、毎回すべての本文から数え直す（前の回の知らせが消えないように）
+        with self.sessions() as s:
+            infos = [r.source_info for r in s.execute(select(Passage).where(Passage.source_info_json != "{}")).scalars()]
+        result["changed"] = sum(1 for i in infos if i.get("check") == "changed")
+        result["missing"] = sum(1 for i in infos if i.get("check") == "missing")
+        result["total"] = len(infos)
+        with self.sessions.begin() as s:
+            kv_set(s, "source_check", dumps(result))
+        self._source_check_written = True
 
     def _label(self, text: str) -> None:
         if hasattr(self.llm, "label"):
@@ -320,7 +380,8 @@ class Worker:
                     by[model] = by.get(model, 0) + 1
             return [{"id": r.id, "title": r.title, "body": r.body, "topic": r.topic, "status": r.status,
                      "gen_model": r.gen_model, "questions": questions.get(r.id, []), "rejected": rejected.get(r.id, 0),
-                     "rejected_by": rejected_by.get(r.id, {}), "log": r.log} for r in rows]
+                     "rejected_by": rejected_by.get(r.id, {}), "log": r.log, "source_title": r.source_title,
+                     "source_info": r.source_info} for r in rows]
 
     def update_passage(self, passage_id: int, changes: dict[str, Any]) -> None:
         """本文の状態を変え、記録を足す（使い回す前の見直しの結果など）。"""
@@ -348,7 +409,8 @@ class Worker:
                               source_title=str(p.get("source_title", "")), source_url=str(p.get("source_url", "")),
                               template=str(p.get("template", "")), topic=str(p.get("topic", "")),
                               status=str(p.get("status", "")), gen_model=str(p.get("gen_model", "")),
-                              think=job.think.get(str(p.get("gen_model", "")), ""), log_json=dumps(p.get("log", [])))
+                              think=job.think.get(str(p.get("gen_model", "")), ""), log_json=dumps(p.get("log", [])),
+                              source_info_json=dumps(p.get("source_info") or {}))
             s.add(passage)
         cache[id(p)] = passage
         return passage
@@ -797,8 +859,9 @@ class Worker:
             # API が混み合っている・sandbox が止まっているときは、待ち時間が過ぎるまで次の依頼に手をつけない
             # （すぐに取りかかると、料金のかかる呼び出しを繰り返してしまう）
             return False
-        if self.lane != "api":  # API の順番待ちは Ollama の状態を見ない。バックアップも Ollama 側でだけ取る
+        if self.lane != "api":  # API の順番待ちは Ollama の状態を見ない。バックアップと資料の鮮度の調査も Ollama 側でだけ
             self.maybe_backup()
+            self.maybe_check_sources()
         job_id = self.next_job_id(self.check_ollama() if self.lane != "api" else True)
         if job_id is None:
             return False

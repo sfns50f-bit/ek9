@@ -2,6 +2,16 @@
 <div class="mathtext {{ cls }}">{{ text }}</div>
 {%- endmacro %}
 
+{# 本文の出典（公共の資料：e-Gov・Wikipedia）。LLM が書いた本文（英語）は URL がないので出さない。
+   review=True（問題検証モード）では鮮度の調査の結果も出す #}
+{% macro passage_source(passage, review=False) -%}
+{% if passage and passage.source_url %}{% set info = passage.source_info %}
+<p class="small muted source">出典：<a href="{{ passage.source_url }}" target="_blank" rel="noopener noreferrer">{{ passage.source_title or passage.source_url }}</a>{% if info.fetched_at %}（{{ info.fetched_at | isodate }} 取得{% if info.clipped %}・一部を抜粋{% endif %}）{% endif %}{% if info.license %}。ライセンス：<a href="{{ info.license_url }}" target="_blank" rel="noopener noreferrer">{{ info.license }}</a>{% endif %}
+{% if review %}<br>鮮度の調査：{% if not info.checked_at %}まだ調べていない{% else %}{{ info.checked_at | isodate }}
+{{ {"same": "変わっていない", "changed": "資料が変わった", "missing": "資料が見つからない", "unknown": "調べられない"}.get(info.check, info.check) }}{% if info.detail %}（{{ info.detail }}）{% endif %}{% if info.changed_at %}。変わったと分かった日 {{ info.changed_at | isodate }}{% endif %}{% endif %}{% if info.last_error %}（前の回は調べられなかった：{{ info.last_error }}）{% endif %}{% endif %}</p>
+{% endif %}
+{%- endmacro %}
+
 {% macro mark(ok) -%}
 <span class="mark {{ 'ok' if ok else 'ng' }}">{{ '○' if ok else '×' }}</span>
 {%- endmacro %}

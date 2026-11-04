@@ -24,6 +24,7 @@ STATUSES = {"ready": "ストック（検証に合格）", "issues": "ストッ�
             "reflagged": "ストックのうち見直しのやり直しで誤りを指摘された問題",
             "needs_check": "要確認（検証の判定が割れた問題。確かめてストックに入れるか決める）",
             "ready_check": "ストックと要確認（新しく作った問題の点検用。要確認は判定が割れた理由も）",
+            "source_changed": "ストックと要確認のうち出典の資料が変わった・見つからない問題（資料の鮮度の調査）",
             "deleted": "削除した問題", "rejected": "検証で不合格"}
 REREVIEW_STEP = "見直しのやり直し"  # worker.REREVIEW_STEP と同じ（web は worker を読み込まない）
 PASSAGE_REREVIEW_STEP = "本文の見直しのやり直し"
@@ -50,6 +51,10 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
     status = status if status in STATUSES else "ready"
     if status == "needs_check":
         q = select(Problem).where(Problem.status == "rejected", Problem.reject_code == "needs_check")
+    elif status == "source_changed":  # ストックと要確認（要確認を通す前に、資料が変わったことに気づけるように）
+        q = select(Problem).where(Problem.passage_id.is_not(None),
+                                  or_(Problem.status == "ready",
+                                      (Problem.status == "rejected") & (Problem.reject_code == "needs_check")))
     elif status == "ready_check":  # 第 8 回のレビュー 4-2：作った問題の合格と要確認をまとめて書き出す
         q = select(Problem).where(or_(Problem.status == "ready",
                                       (Problem.status == "rejected") & (Problem.reject_code == "needs_check")))
@@ -74,11 +79,17 @@ def query(s: Session, *, subject: str = "", unit: str = "", level: str = "", gen
     if gen_model:
         q = q.where(Problem.gen_model == gen_model)
     q = q.order_by(Problem.id.desc())
-    if status in ("issues", "reflagged"):  # 表記の点検・記録の中身は Python で見るので、全部読んでから絞る
-        check = text_issues if status == "issues" else reflagged
+    if status in ("issues", "reflagged", "source_changed"):  # 表記の点検・記録の中身は Python で見るので、全部読んでから絞る
+        check = {"issues": text_issues, "reflagged": reflagged, "source_changed": source_changed}[status]
         hits = [p for p in s.execute(q).scalars() if check(p)]
         return hits[offset:offset + limit]
     return list(s.execute(q.offset(offset).limit(limit)).scalars())
+
+
+def source_changed(problem: Problem) -> bool:
+    """出典の資料が、取ってきた後で変わった・見つからなくなった（資料の鮮度の調査。公共）。"""
+    p = problem.passage
+    return p is not None and p.source_info.get("check") in ("changed", "missing")
 
 
 def verify_runs(problem: Problem) -> list[dict[str, Any]]:
@@ -143,9 +154,10 @@ def normalize_all(s: Session) -> int:
             for f, v in new.items():
                 setattr(p, f, v)
             changed += 1
-        # 本文（英語の読解）も直す（Markdown の記号など。第 10 回のレビュー 4-5）。直す前の本文は本文の記録に残す
+        # 本文（英語の読解）も直す（Markdown の記号など。第 10 回のレビュー 4-5）。直す前の本文は本文の記録に残す。
+        # 取ってきた資料（公共。出典の URL がある本文）は書き換えない（資料のとおりに見せ、鮮度の調査で照らすため）
         passage = p.passage
-        if passage is not None and passage.body:
+        if passage is not None and passage.body and not passage.source_url:
             body = sub.normalize_text(passage.body)
             if body != passage.body:
                 passage.log_json = dumps(passage.log + [{"step": "表記の直し", "ok": True,
@@ -279,6 +291,13 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
                   f"- 思考モード：{think_text(p)}", ""]
         if p.passage is not None and p.passage.body:
             lines += ["### 本文", "", p.passage.body.strip(), ""]
+            if p.passage.source_url:  # 取ってきた資料（公共）は出典と鮮度の調査の結果も
+                info = p.passage.source_info
+                fresh = {"same": "変わっていない", "changed": "資料が変わった", "missing": "資料が見つからない"}.get(
+                    str(info.get("check")), "まだ調べていない")
+                lines += [f"- 出典：{p.passage.source_title}（{p.passage.source_url}、"
+                          f"{when(datetime.fromisoformat(info['fetched_at'])) if info.get('fetched_at') else '—'} 取得）"
+                          f"／鮮度の調査：{fresh}", ""]
         question = p.question.strip() or "（作成の途中で不合格になったので、問題文はありません。下の記録に作成役の出力があります）"
         lines += ["### 問題文", "", question, ""]
         if p.choices:

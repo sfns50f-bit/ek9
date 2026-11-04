@@ -6,13 +6,14 @@
 - **数学の作り方の詳細**：[docs/math.md](docs/math.md)（テンプレート、文章の確認、表記の直しと点検、答えの読み取り、プロンプト、実機とレビューの記録）。数学の問題を直すときはそこだけ見ればよい。このファイルには科目によらない決めごとを書く
 - **生成問題のレビュー結果**（開発者が AI に点検させた原文）：[docs/reviews/](docs/reviews/)（`01_math.md`・`02_math.md`・`03_english.md`・`04_english.md`・`05_english.md`・`06_english.md`・`07_english.md`・`08_english.md`・`09_english.md`・`10_english.md`・`11_english.md`・`12_english.md`。最終確認で作った問題の書き出しは `trial_<科目>_<日付>.md`（同じ日の 2 つめは `…b.md`）、検証の成績の書き出しは `quality_<科目>_<日付>.md`。新しいものは「番号_科目.md」で足す。見本集での測定の書き出しは `golden_<科目>_<日付>.md`。**見本集** `golden_set_<科目>.json`＝検証・見直しの検出力を測るテスト用の問題集。docker では `/app/golden` に読み取り専用でバインド）
 - **英語の作り方の詳細**：[docs/english.md](docs/english.md)（小単元、読解の作り方と根拠の確認、本文なしの確認、単語リスト、英語だけの検証のルール、画面）
+- **公共の作り方の詳細**：[docs/civics.md](docs/civics.md)（単元、資料の取得（e-Gov・Wikipedia）と抜き出し、設問の点検、事実としての判定、出典の表示、資料の鮮度の調査、決めていないこと）
 
 ## 構成
 
 | コンテナ | 中身 | ネットワーク | メモリ上限 |
 |---|---|---|---|
 | web | FastAPI の画面（`app/quizapp/web.py`）。**LLM を呼ばない** | default（:8000 公開）＋ sandbox | 256MB |
-| worker | 作成依頼の処理・検証（`worker.py`）、Ollama の状態確認、毎日のバックアップ（`backup.py`） | default（Ollama へ）＋ sandbox | 256MB |
+| worker | 作成依頼の処理・検証（`worker.py`）、Ollama の状態確認、毎日のバックアップ（`backup.py`）、公共の資料の取得と鮮度の調査 | default（Ollama・API・laws.e-gov.go.jp・ja.wikipedia.org へ）＋ sandbox | 256MB |
 | sandbox | 答えの文字列の読み取りと sympy の同値判定（`sandbox/sandbox_service`）。LLM のコードは実行しない | sandbox（`internal: true`）のみ。データのボリュームなし、root 以外、read_only | 512MB（1 回の計算 384MB・10〜20 秒） |
 
 - 動かす場所：NAS の Raspberry Pi 4（arm64、OMV・Open WebUI と共用。8080 と 3030 は使用中、8000 は空き）。将来 x86 のミニPC へ移す（`python:3.12-slim` をその場でビルドするだけ）
@@ -26,6 +27,8 @@
 | `subjects/base.py` | **科目の窓口**（`Subject`：units / generate / verify / review / grade / text_issues / normalize_text、`math_text`、`model_roles`。作成のときに渡す `GenContext`：役割ごとのモデル `models`・見直しをするか `review`・本文の一覧 `passages`）。中心部分はここだけを使う |
 | `subjects/__init__.py` | 科目の登録（`REGISTRY`）。科目を足すときはここに 1 行 |
 | `subjects/math/` | 数学（詳細は [docs/math.md](docs/math.md)）。`catalog.py`（単元・間違いの種類と、`templates.py` の `@template(...)` を **ast で読む** `template_info()`。sympy なし＝web 用）、`templates.py`（20 テンプレート。sympy。単元・小単元名・レベル・関連する単元は `@template` に書く）、`prompts.py`、`__init__.py`（MathSubject） |
+| `subjects/choicejudge.py` | **本文つきの選択式で共通の部品**（フェーズ3で英語から切り出した）：作成役・見直し役の呼び出し（読めなければ 1 回呼び直す）、設問の欄の読み取り（`parse_question`）、選択肢ごとの判定の読み取り（`parse_judgments`）・引用（`quote_of`）・足りない判定の聞き直し（`missing_note`）、見直しの「問題なし／問題あり」（`verdict_line`）、直しの文章（`fix_user`） |
+| `subjects/civics/` | 公共（詳細は [docs/civics.md](docs/civics.md)）。`catalog.py`（単元・資料の一覧 `SOURCES`。web 用）、`sources.py`（e-Gov 法令 API・Wikipedia からの取得と抜き出し・鮮度の調査。**worker だけ**。取りに行く先は `ALLOWED_HOSTS` の 2 つだけ）、`check.py`（設問の点検）、`prompts.py`、`__init__.py`（CivicsSubject） |
 | `subjects/english/` | 英語（詳細は [docs/english.md](docs/english.md)）。`catalog.py`（単元・小単元・誤答の種類・読解の題材）、`words.py`（単語リスト 1543 語。意味は「／」で複数）、`jhs_words.py`（中学の語。問題に使わない）、`check.py`（英文の点検）、`prompts.py`、`__init__.py`（EnglishSubject） |
 | `worker.py` | 依頼の処理。**作成フェーズ（全問の文章）→ 検証フェーズ（まとめて）** の順。Ollama につながらなければ `waiting` にして再試行。**順番待ちは 2 つ**（`lane`：ollama＝どれかが Ollama のモデル、api＝全部 API のモデル）を別スレッドで同時に処理。直前と同じ科目の依頼を先にする。本文の保存と使い回し（`passages_for` / `_passage_row`） |
 | `stock.py` | ストック数、解き始めのセットの組み方（間違えた問題を 30% まで混ぜる。小単元を均等に・続けない。同じ本文の設問はまとめて続けて出す）、/status の集計（期間・依頼番号での絞り込み、作成役ごと、依頼ごとの比較） |
@@ -37,13 +40,13 @@
 | `llm_anthropic.py` | Anthropic（Claude）の API のクライアント（`AnthropicClient`。worker だけが読む）。ストリーミング、取り消し、プロンプトキャッシュ、effort、断られたときの fallbacks、呼び出しごとの料金（`cost_usd`）、上限の確認（`budget_check`） |
 | `golden.py` | 見本集での測定（科目によらない。科目ごとの値は `Subject.golden_params`）：見本集のファイル＋`to_add_from_db` のうちデータベースに残る問題を `Sample`（Problem と同じ属性）にする、比べる表の Markdown、見本集の JSON の書き出し。web からも読む（LLM なし） |
 | `datadir.py` | 目印ファイル `.ai-quiz-data` がなければ何も書かずに終了（HDD マウント前の起動対策） |
-| `db.py` | テーブル：users / passages（英語の本文。公共の資料も入れる）/ jobs / problems / study_sessions / attempts / kv |
+| `db.py` | テーブル：users / passages（英語の本文・公共の資料。資料の記録と鮮度の調査の結果は `source_info`）/ jobs / problems / study_sessions / attempts / kv |
 
 ## 守るルール
 
 1. **子供が操作する画面（web）では LLM を一切呼ばない**。web のプロセスでは Ollama のクライアント（`quizapp.llm`）も sympy も読み込まれない（`tests/test_web.py::test_web_process_does_not_load_the_llm_client`。科目の部品も web から読まれるので、`llm` を import するのは関数の中だけにする）。Ollama の状態は worker が kv に書いたものを表示するだけ
 2. **検証を通った問題だけをストック（status=ready）に入れる**。検証役には正解も選択肢も見せずに問題文だけで解かせ、設定回数すべて一致したものだけ合格。**英語の選択式だけは例外**：選択肢は見せ（正解は見せない。順番は毎回入れ替える）、解かせずに**選択肢を 1 つずつ判定させて正解が 1 つに決まるかを確かめる**（読解は本文の引用つき、語彙は正解を抜いた判定も。スペルは条件に合う語をすべて挙げさせる。第 6 回のレビュー 2 章。docs/english.md の 4 章）。英語は判定が割れたら要確認（`needs_check`）
-3. **科目を足しても中心部分（worker / web / stock / db）を触らない**。`subjects/<科目>/` を作り `Subject` を実装して `REGISTRY` に登録する。本文（英文・資料）は `Draft.passage`（dict）に入れれば worker が `passages` 表に保存して問題と結び付ける。1 つの本文に複数の設問をつけるときは、`generate()` が同じ dict を持つ `Draft` のリストを返す（`tests/test_worker.py::test_passages_from_a_subject_are_saved_and_shared`）。検証役は `problem.passage` を読める。出典は `problems.source` と `passages.source_*`。検証のテスト（正解をずらす）に対応する科目は `test_format` を設定し、`ctx.is_test` のときに正解をずらす。**本文つきの科目のためにフェーズ2で中心部分に足したもの**（開発者と合意。英語に特有の処理は入れていない）：同じ本文の設問をセットでまとめて続けて出す（`stock.build_session`）、同じ本文の設問のうち作成の段階で使えないものを `Draft.rejected` で返すと worker が不合格として残す、`$` を数式に使わない科目の `Subject.math_text = False`（画面に `nomath` の class）、問題検証モードの点検と直しは `Subject.text_issues` / `normalize_text`。**第 3 回のレビューの対応で足したもの**：科目だけの役割（`Subject.model_roles`。モデルは `ctx.model(役割)`）、本文の使い回し（`GenContext.passages(小単元)` で本文の一覧を受け取り、`Draft.passage = {"id": …}` で既存の本文に設問を足す。本文の表に `template` `topic` `status` `gen_model` `log`）、不合格の設問も本文に結び付けて残す
+3. **科目を足しても中心部分（worker / web / stock / db）を触らない**。`subjects/<科目>/` を作り `Subject` を実装して `REGISTRY` に登録する。本文（英文・資料）は `Draft.passage`（dict）に入れれば worker が `passages` 表に保存して問題と結び付ける。1 つの本文に複数の設問をつけるときは、`generate()` が同じ dict を持つ `Draft` のリストを返す（`tests/test_worker.py::test_passages_from_a_subject_are_saved_and_shared`）。検証役は `problem.passage` を読める。出典は `problems.source` と `passages.source_*`。検証のテスト（正解をずらす）に対応する科目は `test_format` を設定し、`ctx.is_test` のときに正解をずらす。**本文つきの科目のためにフェーズ2で中心部分に足したもの**（開発者と合意。英語に特有の処理は入れていない）：同じ本文の設問をセットでまとめて続けて出す（`stock.build_session`）、同じ本文の設問のうち作成の段階で使えないものを `Draft.rejected` で返すと worker が不合格として残す、`$` を数式に使わない科目の `Subject.math_text = False`（画面に `nomath` の class）、問題検証モードの点検と直しは `Subject.text_issues` / `normalize_text`。**フェーズ3（公共）で足したもの**（開発者と合意）：取ってきた資料の記録 `passages.source_info`（`Draft.passage["source_info"]` を worker が保存。`passages_for` も返す）、資料の鮮度の調査（`Subject.check_source`。worker が `maybe_check_sources` で定期的に呼ぶ。`SOURCE_CHECK_DAYS`）、出典の表示（`_macros.html` の `passage_source`。出典の URL のある本文だけ）、問題検証モードの状態「出典の資料が変わった・見つからない問題」と書き出しの出典、「表記をまとめて直す」で出典の URL のある本文を書き換えない。**第 3 回のレビューの対応で足したもの**：科目だけの役割（`Subject.model_roles`。モデルは `ctx.model(役割)`）、本文の使い回し（`GenContext.passages(小単元)` で本文の一覧を受け取り、`Draft.passage = {"id": …}` で既存の本文に設問を足す。本文の表に `template` `topic` `status` `gen_model` `log`）、不合格の設問も本文に結び付けて残す
 4. 検証役や子供に答えが見えないようにする：キーボード入力の答え方の例（`input_hint`）や検証役のプロンプトに具体的な値を書かない。問題文・ヒントに正解が書かれていたら弾く（数学は `answer_leak`、英語はヒントに正解の選択肢・語があれば直させる）。数学の採点・検証では「sin(5π/6)」のように式を書き写しただけの答えを受け付けない（`mathcheck._check_functions`）
 5. 数学：数値・正解・誤答は Python（sympy）で作る。LLM は問題文・解説・ヒントだけ。誤答には `catalog.MISTAKES` の印を付ける。新しいテンプレートを足したら `tests/test_math_templates.py` の `CHECKS` に**別の計算方法での確認**を必ず足す（手順は docs/math.md の 9 章）
 6. 正解の裏付けを機械的に確認する。数学は問題文にテンプレートの式・値がそのまま、解説に正解が入っているか（`textcheck`）、英語の読解は正解の根拠の文が本文にそのまま入っているか（`english/check.contains`）
@@ -160,18 +163,19 @@
 
 - [x] フェーズ1「新しい土台＋数学」（PR #2〜#9。実機で運用中。API での作成も動作確認済み：Haiku で 20 問 0.03 ドル。開発者の判断で「使用上の問題なし」としてフェーズ2へ）
 - [x] フェーズ2 英語（共通テストレベルの読解・語彙）：**第 10 回のレビューで締め、第 11 回（[docs/reviews/11_english.md](docs/reviews/11_english.md)）で判定した**（合格した問題に致命的な欠陥 0 問・要確認 13%。合格率はレビューの 52% は集計の誤りで本当は 43%）。改善候補 3 つを直した後の第 12 回（[docs/reviews/12_english.md](docs/reviews/12_english.md)）で**合格率 58%・要確認 15%・致命的な欠陥 0 問**となり、第 9 回の条件を満たした（3 章の直しは docs/english.md の 5-11 章。今の仕組み・既定・限界は 0 章）。フェーズの最後のルール 10 のレビューは受けて指摘を直した（docs/english.md の 5-9 章）。これまで：実装済み（PR #12：読解 3・語彙 2・スペル 1 の小単元、本文なしの確認、検証に選択肢を見せる英語のルール、本文のタブ表示、同じ本文の設問をまとめて出す）。実機で試した結果のレビューに対応中：第 3 回（[docs/reviews/03_english.md](docs/reviews/03_english.md)）の 4 章（科目 × 役割のモデル設定）と 3 章 G・E（読解を本文 → 設問の 2 段階に、本文の見直し、本文の使い回し）、第 4 回（[docs/reviews/04_english.md](docs/reviews/04_english.md)）の A・B（点検とプロンプト）・C（問いを絞った見直し）・D（語彙・スペル）・E（記録と書き出し）、思考モードの「あり／なし」、見直しだけをやり直す依頼、第 5 回（[docs/reviews/05_english.md](docs/reviews/05_english.md)）の 3 章 A〜E（見直しの読めない出力は不合格、本文の見直しで落ちた本文は使わない、誤答の種類の付け直しを絞る、点検の追加、検証の成績・見直しの比較表の書き出し）は済み
-- [ ] フェーズ3 公共（資料を取得して作る。worker からインターネットへ出る。sandbox は出さない）
+- [ ] フェーズ3 公共（資料を取得して作る。worker からインターネットへ出る。sandbox は出さない）：**実装した**（2026-11-04。依頼文なし。資料は Wikipedia と e-Gov の法令だけ・そのまま抜き出す・英語の判定の部品を共通に・単元は使用者本人に確認済み・鮮度は定期的に調べる。docs/civics.md の 0 章）。次は実機で作ってレビュー
 - [ ] フェーズ4 作り方を増やす（キーワード指定、子供からのリクエスト、類題、時事問題。同じ jobs の順番待ちで処理）
 - [ ] フェーズ5 学習機能（集計、間隔をあけた再出題、テストモードなど）
 - [ ] フェーズ6 その他の科目（プログラミングは最後）
 
 ## 次にやること
 
-1. **英語は締めた**（第 12 回のレビュー：合格率 58%・要確認 15%・致命的な欠陥 0 問）。第 12 回の 3 章の直しの後の見本集（#165・#166）でも止めるべき問題を止める数は下がっていない（27・25／28）。`nonefit_conflict` を「要確認」にした見本集（#167）では得がなかったので、既定は「不合格」のまま（docs/english.md の 5-11 章）。5-1 の直しで通すべき問題を止める数は 0／16 になった。**次はフェーズ3（公共）**。第 11 回の改善候補（a / an の点検、機械的な点検で落ちる問題を直す、題材の使い切りと残りの数、言い回し）は直した（5-10 章）。以下は英語の経緯：第 10 回のレビュー（[docs/reviews/10_english.md](docs/reviews/10_english.md)）の締めの作業は済み（docs/english.md の 0 章・5-9 章、handover の 0 章）。フェーズ2の最後のルール 10 のレビューは受けて、指摘 7 件を直した（docs/english.md の 5-9 章）。第 9 回のレビュー（[docs/reviews/09_english.md](docs/reviews/09_english.md)）の 1 章（読解の 1 対 1 の判定）・2 章（#987 を微妙に）と、3-2 用の本文の使い回しの切り替えは済み（docs/english.md の 5-8 章）。第 8 回のレビュー（[docs/reviews/08_english.md](docs/reviews/08_english.md)）の 1〜3 章と 4 章の測定の補助はコードの分は済み（docs/english.md の 5-7 章。英語の既定を #129 の形に、作り直した D、例文の筋の確認、所要時間、ストックと要確認の書き出し）。開発者が PC の空いたときに 4-1 の 4 構成を見本集で流し、続けて 4-2（既定で 30〜50 問作って点検）。第 7 回のレビュー（[docs/reviews/07_english.md](docs/reviews/07_english.md)）の A〜H は済み（5-6 章）。第 6 回のレビュー（[docs/reviews/06_english.md](docs/reviews/06_english.md)）：5-1 の見本集（docs/reviews/golden_set_english.json）と 5-2 の測定の仕組み（docs/english.md の 5-5 章）、2 章の検証の作り直し（選択肢ごとの判定・正解を抜いた判定・スペルの判定・要確認。4 章）と 4-3（見直しを解説の点検に絞る）は済み。次は開発者が 5-3 の構成を見本集で流す → 4-2・3-1・3-2 → 3-3・3-4・1-2。第 5 回のレビュー（[docs/reviews/05_english.md](docs/reviews/05_english.md)）の 3 章はコードの分は済み（docs/english.md の 5-4 章）。4 章の推奨設定（見直し役を Haiku に など）と 5 章の問題の直し・削除は開発者が画面で行う（`[[ ]]` の残った語彙の問題は「表記をまとめて直す」で直る）。第 4 回のレビュー（[docs/reviews/04_english.md](docs/reviews/04_english.md)）への対応もコードの分は済み。開発者が実機で作り、「見直しだけをやり直す」で Haiku・e4b・12b を同じ問題で比べて見直し役を決める。1 章の推奨設定と 3 章の問題の削除は開発者が画面で行う。第 3 回の残り（C の根拠の文を複数に、5 章の比べる書き出し）は第 4 回の E-3 などと合わせて行う。既存の問題の削除・設定（見直し役を Haiku に）は開発者が行う。残りは docs/english.md の 6 章にも書いた
-2. フェーズ2の最後のルール 10 のレビューは済み（2026-10-29。指摘 7 件を直した）。次のフェーズでも、最後に 1 回受ける
-3. 仕様書（docs/spec.md）はフェーズ1で決めたことを反映済み（2026-10-23）。原本は開発者が手で合わせる。次のフェーズで更新版が来たら差し替える
-4. 数学で残っていること（急がない）は [docs/math.md](docs/math.md) の 12 章と、[docs/handover.md](docs/handover.md) の残課題、第 3 回のレビューの付録（数学の未対応分）
-5. 開発者が実機でローカル・API とも作り、問題検証モードで「作った日」「管理番号」で絞って書き出して点検してもらう。「検証の成績」の不合格の内訳で弾きすぎを見る（見直しで弾きすぎなら切る、検証役 e4b で弾きすぎなら 12b にする）
+1. **フェーズ3（公共）**：実装済み（docs/civics.md）。開発者が実機で作る（README の「公共を初めて作るとき」）→ 書き出しを AI に点検させて `docs/reviews/13_civics.md` に → 直す → 見本集 `golden_set_civics.json` を作って既定のモデル・検証のやり方を決める。**決めていないこと**：資料が変わった問題の扱い（残す・古い問題の印・出題しない。半年・1 年たった資料も。docs/civics.md の 4 章）。Wikipedia の記事名は実機で確かめる（開発の環境からは Wikipedia の本文の API が使えなかった）。フェーズの最後のルール 10 のレビューはこの実装の分は済み（2026-11-04。中 3・軽微 3 を直した。docs/civics.md の 4 章。実機の結果を直したあと、必要ならもう一度）
+2. **英語は締めた**（第 12 回のレビュー：合格率 58%・要確認 15%・致命的な欠陥 0 問）。第 12 回の 3 章の直しの後の見本集（#165・#166）でも止めるべき問題を止める数は下がっていない（27・25／28）。`nonefit_conflict` を「要確認」にした見本集（#167）では得がなかったので、既定は「不合格」のまま（docs/english.md の 5-11 章）。5-1 の直しで通すべき問題を止める数は 0／16 になった。**次はフェーズ3（公共）**。第 11 回の改善候補（a / an の点検、機械的な点検で落ちる問題を直す、題材の使い切りと残りの数、言い回し）は直した（5-10 章）。以下は英語の経緯：第 10 回のレビュー（[docs/reviews/10_english.md](docs/reviews/10_english.md)）の締めの作業は済み（docs/english.md の 0 章・5-9 章、handover の 0 章）。フェーズ2の最後のルール 10 のレビューは受けて、指摘 7 件を直した（docs/english.md の 5-9 章）。第 9 回のレビュー（[docs/reviews/09_english.md](docs/reviews/09_english.md)）の 1 章（読解の 1 対 1 の判定）・2 章（#987 を微妙に）と、3-2 用の本文の使い回しの切り替えは済み（docs/english.md の 5-8 章）。第 8 回のレビュー（[docs/reviews/08_english.md](docs/reviews/08_english.md)）の 1〜3 章と 4 章の測定の補助はコードの分は済み（docs/english.md の 5-7 章。英語の既定を #129 の形に、作り直した D、例文の筋の確認、所要時間、ストックと要確認の書き出し）。開発者が PC の空いたときに 4-1 の 4 構成を見本集で流し、続けて 4-2（既定で 30〜50 問作って点検）。第 7 回のレビュー（[docs/reviews/07_english.md](docs/reviews/07_english.md)）の A〜H は済み（5-6 章）。第 6 回のレビュー（[docs/reviews/06_english.md](docs/reviews/06_english.md)）：5-1 の見本集（docs/reviews/golden_set_english.json）と 5-2 の測定の仕組み（docs/english.md の 5-5 章）、2 章の検証の作り直し（選択肢ごとの判定・正解を抜いた判定・スペルの判定・要確認。4 章）と 4-3（見直しを解説の点検に絞る）は済み。次は開発者が 5-3 の構成を見本集で流す → 4-2・3-1・3-2 → 3-3・3-4・1-2。第 5 回のレビュー（[docs/reviews/05_english.md](docs/reviews/05_english.md)）の 3 章はコードの分は済み（docs/english.md の 5-4 章）。4 章の推奨設定（見直し役を Haiku に など）と 5 章の問題の直し・削除は開発者が画面で行う（`[[ ]]` の残った語彙の問題は「表記をまとめて直す」で直る）。第 4 回のレビュー（[docs/reviews/04_english.md](docs/reviews/04_english.md)）への対応もコードの分は済み。開発者が実機で作り、「見直しだけをやり直す」で Haiku・e4b・12b を同じ問題で比べて見直し役を決める。1 章の推奨設定と 3 章の問題の削除は開発者が画面で行う。第 3 回の残り（C の根拠の文を複数に、5 章の比べる書き出し）は第 4 回の E-3 などと合わせて行う。既存の問題の削除・設定（見直し役を Haiku に）は開発者が行う。残りは docs/english.md の 6 章にも書いた
+3. フェーズ2の最後のルール 10 のレビューは済み（2026-10-29。指摘 7 件を直した）。次のフェーズでも、最後に 1 回受ける
+4. 仕様書（docs/spec.md）はフェーズ1で決めたことを反映済み（2026-10-23）。原本は開発者が手で合わせる。次のフェーズで更新版が来たら差し替える
+5. 数学で残っていること（急がない）は [docs/math.md](docs/math.md) の 12 章と、[docs/handover.md](docs/handover.md) の残課題、第 3 回のレビューの付録（数学の未対応分）
+6. 開発者が実機でローカル・API とも作り、問題検証モードで「作った日」「管理番号」で絞って書き出して点検してもらう。「検証の成績」の不合格の内訳で弾きすぎを見る（見直しで弾きすぎなら切る、検証役 e4b で弾きすぎなら 12b にする）
 
 ## テスト
 
@@ -186,5 +190,6 @@ python -m pytest
 - `tests/test_llm.py`：Ollama のクライアント（偽の HTTP サーバー）。ストリーミング、取り消しで数秒以内に接続を切る、出力の上限、JSON スキーマを送らず見出しの平文で受け取る、JSON の修復。Anthropic のクライアント（偽の API サーバー。本物と同じストリーミングの形）：キャッシュの印・effort・fallbacks・料金・上限・取り消し
 - `tests/test_latexfix.py`：数学の表記の直しと点検（docs/math.md の 5 章）
 - `tests/test_english.py`：英語の作成・検証・採点・出題・画面（docs/english.md の 7 章）。テスト用の LLM は `EnglishOracle`
+- `tests/test_civics.py`：公共の資料の取得（偽の HTTP `FakeWeb`）・作成・検証・見直し・鮮度の調査・画面（docs/civics.md の 5 章）。テスト用の LLM は `CivicsOracle`
 - `tests/test_models.py`：見直しだけをやり直す依頼（記録に足すだけ・続きから・絞り込み・書き出し・数学でも・本文の見直しも・比較表）、検証の成績の書き出し、見本集での測定（ファイルの全問が読める・データベースから加える・弾いた／通した・続きから・書き出し・微妙と止めた数）、要確認の一覧と通す・捨てる、検証のやり方の保存と記録、英語の見直し役の既定、科目ごと・役割ごとのモデルの設定（全体の既定値への上書き・前の版の設定・状態の画面での保存と既定値に戻す・作成役と検証役が同じときの注意・作る画面の欄・依頼への記録・役割ごとのモデルで処理・同じ科目の依頼を続ける・科目ごとの API の 1 日の上限）
 - テストの LLM（`tests/conftest.py::OracleLLM`）は、作成役は式をそのまま書き写し、検証役は seed からテンプレートを作り直して本当の正解を答える

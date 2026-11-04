@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import math, report_form %}
+{% from "_macros.html" import math, report_form, passage_source %}
 {% block content %}
 {% if msg == "reported" %}<p class="notice">報告しました。ありがとう。</p>{% endif %}
 <div class="progress">
@@ -11,7 +11,7 @@
   <p class="muted small">かかった時間 {{ attempt.duration_ms | seconds }}</p>
 </section>
 <section class="card {{ nomath(problem.subject) }}">
-  {% if problem.passage %}<details class="passage-review"><summary>本文を見る</summary>{{ math(problem.passage.body, "passage") }}</details>{% endif %}
+  {% if problem.passage %}<details class="passage-review"><summary>本文を見る</summary>{{ math(problem.passage.body, "passage") }}{{ passage_source(problem.passage) }}</details>{% endif %}
   {{ math(problem.question, "question") }}
   {% if problem.format == "choice" %}
   <ul class="choice-review">

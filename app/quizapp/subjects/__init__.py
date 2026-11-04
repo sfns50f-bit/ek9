@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from .base import Subject
+from .civics import CivicsSubject
 from .english import EnglishSubject
 from .math import MathSubject
 
-REGISTRY: dict[str, Subject] = {s.id: s for s in (MathSubject(), EnglishSubject())}
+REGISTRY: dict[str, Subject] = {s.id: s for s in (MathSubject(), EnglishSubject(), CivicsSubject())}
 
 
 def get_subject(subject_id: str) -> Subject | None:

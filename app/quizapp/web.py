@@ -118,6 +118,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     templates.env.filters["epochlocal"] = lambda t: localtime(
         datetime.fromtimestamp(t, tz=timezone.utc).replace(tzinfo=None), "%m/%d %H:%M:%S") if t else ""
     templates.env.filters["isolocal"] = lambda text: localtime(datetime.fromisoformat(text)) if text else ""
+    # 日付だけ（日本時間）。資料を取った日など（UTC で保存した ISO 形式の文字列）
+    templates.env.filters["isodate"] = lambda text: localtime(datetime.fromisoformat(text), "%Y/%m/%d") if text else ""
     templates.env.globals.update(FORMATS=FORMATS, DEVICES=DEVICES, LEVELS=LEVELS, subjects=all_subjects,
                                  get_subject=get_subject, JOB_STATUS=JOB_STATUS, failure=_failure, nomath=_nomath)
 
@@ -577,6 +579,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             "backup_last": localtime(last_backup, "%Y/%m/%d %H:%M") if last_backup else None,
             "backup_count": len(backup.list_backups(settings.backup_dir)),
             "backup_info": kv_json(s, "backup", {}) or {},
+            "source_check": kv_json(s, "source_check", {}) or {},
+            "source_check_days": settings.source_check_days,
             "api": api_info(s),
         }
 

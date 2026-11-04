@@ -232,6 +232,12 @@ class Subject:
         対応しない科目は None。"""
         return None
 
+    def check_source(self, info: dict[str, Any], body: str) -> dict[str, Any] | None:
+        """資料の鮮度の調査（任意。worker が定期的に呼ぶ。資料を取ってくる科目＝公共だけ）。info は passages.source_info。
+        前に取った本文が今の資料と同じかを {"check": "same" / "changed" / "missing", "detail", …} で返す。
+        調べない本文は None。つながらなければ ConnectionError（次の回にまた調べる）。"""
+        return None
+
     def grade(self, sandbox: Sandbox | None, problem: Any, response: str) -> Grade:
         if problem.format == "choice":
             return grade_choice(problem, response)
