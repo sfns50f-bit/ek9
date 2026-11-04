@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import math, status_nav %}
+{% from "_macros.html" import math, status_nav, passage_source %}
 {% block title %}問題検証モード - AI問題集{% endblock %}
 {% block content %}
 {{ status_nav(page) }}
@@ -122,6 +122,7 @@
       {% for ln in e.lines %}<br>　{{ ln }}{% endfor %}{% endfor %}</div>
   {% endif %}
   {% if p.passage and p.passage.body %}<details><summary>本文</summary>{{ math(p.passage.body) }}</details>{% endif %}
+  {% if p.passage %}{{ passage_source(p.passage, True) }}{% endif %}
   {{ math(p.question, "question") }}
   {% if p.choices %}
   <ul class="choice-review">

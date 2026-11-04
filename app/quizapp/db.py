@@ -86,6 +86,15 @@ class Passage(Base):
 
     log_json: Mapped[str] = mapped_column("log", Text, default="[]")  # 本文の作成・点検・見直しの記録
 
+    @property
+    def source_info(self) -> dict[str, Any]:
+        return _loads(self.source_info_json, {})
+
+    # 取ってきた資料の記録（公共。フェーズ3）：{"kind", "key", "revision", "fetched_at", "license", …} と、
+    # 鮮度の調査の結果 {"checked_at", "check": same/changed/missing, "changed_at", "detail", "current_revision"}。
+    # LLM が書いた本文（英語）は空
+    source_info_json: Mapped[str] = mapped_column("source_info", Text, default="{}")
+
 
 class Job(Base):
     """作成依頼。

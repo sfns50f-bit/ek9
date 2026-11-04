@@ -23,6 +23,7 @@ import re
 import unicodedata
 from typing import Any
 
+from .. import choicejudge
 from ..base import LLM, Draft, GenContext, Grade, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import check, prompts
 from .catalog import MISTAKES, READING_MISTAKES, READINGS, TOPICS, UNITS, VOCABS
@@ -57,51 +58,17 @@ def _units() -> list[Unit]:
 
 def _chat(ctx: GenContext, system: str, user: str, schema: dict[str, Any], model: str = "") -> dict[str, Any]:
     """作成役（model を渡せばそのモデル）を呼ぶ。出力が読めなかったときは、作り直しの回数を使わずに 1 回だけ呼び直す。"""
-    from ...llm import LLMError
-
-    model = model or ctx.gen_model
-    try:
-        return ctx.llm.chat_json(model, system, user, schema, temperature=0.8)
-    except LLMError:
-        return ctx.llm.chat_json(model, system, user, schema, temperature=0.8)
+    return choicejudge.chat_retry(ctx.llm, model or ctx.gen_model, system, user, schema)
 
 
-def _verdict(out: dict[str, Any]) -> tuple[str, str]:
-    """見直しの結果（1 行目が「問題なし／問題あり」で始まるか。指示を書き写したときに誤って弾かない）。"""
-    verdict = next((ln.strip(" 　。.*「」") for ln in str(out.get("verdict") or "").splitlines() if ln.strip()), "")
-    return verdict, str(out.get("issues") or "").strip()
-
-
-def _set_label(llm: Any, label: str) -> None:
-    if hasattr(llm, "label"):
-        llm.label = label
-
+_verdict = choicejudge.verdict_line
+_set_label = choicejudge.set_label
 
 # --- 読解の設問の欄を読む ---------------------------------------------------------
 
-_FIELD_RE = re.compile(r"^\s*[*_#>-]*\s*\(?(Question|Answer|Wrong|Evidence|Hint|Explanation|[A-D])(?:\s*\d+)?\)?"
-                       r"\s*[*_]*\s*[:：.)]\s*[*_]*\s*(.*)$", re.I)
-
-
 def parse_question(text: str) -> dict[str, Any]:
     """[[q1]] の中身（Question: … / A: … / Answer: … の各行）を読む。Explanation より後は全部解説。"""
-    fields: dict[str, str] = {}
-    current = ""
-    for line in (text or "").splitlines():
-        m = _FIELD_RE.match(line) if current != "explanation" else None
-        if m:
-            name = m.group(1)
-            current = name.upper() if len(name) == 1 else name.lower()
-            fields[current] = m.group(2).strip()
-        elif current:
-            fields[current] = (fields[current] + "\n" + line).strip()
-    answer = re.search(r"[A-D]", fields.get("answer", "").upper())
-    wrong = {k.upper(): v.lower() for k, v in re.findall(r"([A-Da-d])\s*[=:：]\s*([a-z_]+)", fields.get("wrong", ""))}
-    evidence = check.strip_quotes(fields.get("evidence", ""))
-    return {"question": fields.get("question", ""), "options": [fields.get(c, "") for c in LETTERS],
-            "answer": LETTERS.index(answer.group()) if answer else -1, "wrong": wrong, "evidence": evidence,
-            "hint": fields.get("hint", ""), "explanation": fields.get("explanation", "")}
-
+    return choicejudge.parse_question(text, check.strip_quotes)
 
 # URL・メールアドレス（お知らせ以外の本文には書かせない。第 12 回のレビュー 1 章）
 _URL_RE = re.compile(r"https?://|\bwww\.|[\w.-]+@[\w-]+\.[a-z]{2,}", re.I)
@@ -112,13 +79,8 @@ QUOTED_LABELS = ("裏付けあり", "一部だけ合う")
 
 
 # 選択肢ごとの判定で、一部の選択肢しか答えなかったときの聞き直し（第 12 回のレビュー 3-2）
-_MISSING_HEAD = "\n\n前の判定には"
-
-
-def _missing_note(got: dict[int, Any], n: int) -> str:
-    missing = [str(i + 1) for i in range(n) if i not in got]
-    return (f"{_MISSING_HEAD}選択肢 {'・'.join(missing)} の判定がありませんでした。"
-            f"1〜{n} のすべての選択肢について、1 行ずつ「番号: 判定 — 理由」の形で書いてください。")
+_MISSING_HEAD = choicejudge.MISSING_HEAD
+_missing_note = choicejudge.missing_note
 
 
 def _soften_conflict(checks: list[tuple[str, bool | None, str]], choices: list[dict[str, Any]],
@@ -448,11 +410,8 @@ def _strict_missing(got: dict[int, tuple[str, str]], right: int, choices: list[d
 
 
 def _quote(reason: str) -> str:
-    """判定の理由の中の「引用: "…"」。「引用:」を付けずに判定のすぐ後ろに "…" と書いた形も読む（第 12 回の
-    レビュー 5-1。#970：「3: 裏付けあり — "I boarded a train …" — 理由」を引用なしと読んでいた）。なければ空。"""
-    m = re.search(r"引用\s*[:：]\s*[\"“「『]([^\"”」』]+)[\"”」』]", reason or "") \
-        or re.match(r"^[\s—\-ー:：]*[\"“「『]([^\"”」』]{12,})[\"”」』]", reason or "")
-    return m.group(1).strip() if m else ""
+    """判定の理由の中の「引用: "…"」（choicejudge.quote_of）。なければ空。"""
+    return choicejudge.quote_of(reason)
 
 
 class EnglishSubject(Subject):
@@ -1226,40 +1185,8 @@ class EnglishSubject(Subject):
         return VerifyResult(True, "／".join(r.summary for _n, r in parts if r is not None)[:500], detail, raw=raw,
                             updates=updates)
 
-    @staticmethod
-    def _ask(llm: LLM, model: str, system: str, user: str, schema: dict[str, Any]) -> tuple[dict[str, Any], str]:
-        """見直し役を呼ぶ（読めなければ 1 回だけ呼び直す）。(出力, 生の出力)。読めなければ ({}, 理由)。"""
-        from ...llm import LLMError
-
-        last = ""
-        for _ in range(2):
-            try:
-                out = llm.chat_json(model, system, user, schema, temperature=0.2)
-                return out, "\n".join(f"[[{k}]]\n{v}" for k, v in out.items())
-            except LLMError as exc:
-                last = f"読めない出力（{exc}）\n{getattr(exc, 'raw', '')}"
-        return {}, last
-
-    @staticmethod
-    def _judgments(text: str, labels: dict[str, Any], n: int) -> dict[int, tuple[str, str]]:
-        """「番号: 判定 — 理由」の行を読む。{番号（0 から）: (判定, 理由)}。長いラベルから先に照らす。"""
-        names = sorted(labels, key=len, reverse=True)
-        out: dict[int, tuple[str, str]] = {}
-        for line in (text or "").splitlines():
-            # 思考なしの e4b は行を「[[1: 通る — …]]」や「[[」「]]」で囲むことがある（第 10 回のレビュー 4-5。#136）
-            line = re.sub(r"\s*\]\]\s*$", "", re.sub(r"^\s*\[\[\s*", "", line))
-            m = re.match(r"^\s*[*#-]*\s*\(?([0-9０-９]+)\)?\s*[:：.)、]\s*[*「]*(.*)$", line)
-            if not m:
-                continue
-            k = int(unicodedata.normalize("NFKC", m.group(1))) - 1
-            rest = m.group(2)
-            label = next((name for name in names if rest.startswith(name) or rest.lstrip("*「 ").startswith(name)), None)
-            if label is None:
-                label = next((name for name in names if name in rest[:12]), None)
-            if 0 <= k < n and label is not None and k not in out:
-                reason = re.sub(r"^[\s—\-ー:：、。*」]+", "", rest.split(label, 1)[1]) if label in rest else ""
-                out[k] = (label, reason.strip())
-        return out
+    _ask = staticmethod(choicejudge.ask)  # 見直し役を呼ぶ（読めなければ 1 回だけ呼び直す）
+    _judgments = staticmethod(choicejudge.parse_judgments)  # 「番号: 判定 — 理由」の行を読む
 
     def _judge_choices(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
                        checks: list[tuple[str, bool | None, str]], raws: list[str], updates: dict[str, Any],

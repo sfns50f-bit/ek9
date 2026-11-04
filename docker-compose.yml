@@ -26,6 +26,8 @@ x-app-env: &app-env
   OLLAMA_RETRY_SECONDS: ${OLLAMA_RETRY_SECONDS:-60}
   BACKUP_KEEP: ${BACKUP_KEEP:-14}
   BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+  # 公共の資料（e-Gov・Wikipedia）の鮮度の調査：何日ごとに今の資料と照らし直すか（0 は調べない）。画面にも出すので web にも渡す
+  SOURCE_CHECK_DAYS: ${SOURCE_CHECK_DAYS:-30}
   LOW_STOCK: ${LOW_STOCK:-40}
   RETRY_PERCENT: ${RETRY_PERCENT:-30}
   DISPLAY_TZ: ${DISPLAY_TZ:-Asia/Tokyo}
@@ -91,7 +93,7 @@ services:
       ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-low}
       ANTHROPIC_MAX_TOKENS: ${ANTHROPIC_MAX_TOKENS:-16000}
     networks:
-      - default   # Ollama（デスクトップPC）と Anthropic の API へ。後のフェーズで公共の資料取得にも使う
+      - default   # Ollama（デスクトップPC）と Anthropic の API、公共の資料（laws.e-gov.go.jp・ja.wikipedia.org）へ
       - sandbox
     mem_limit: 256m
     memswap_limit: 256m

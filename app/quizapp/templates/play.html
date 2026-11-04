@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import math, report_form %}
+{% from "_macros.html" import math, report_form, passage_source %}
 {% block title %}{{ pos }}/{{ total }} - AI問題集{% endblock %}
 {% block content %}
 {% if msg == "reported" %}<p class="notice">報告しました。この問題は飛ばします。</p>{% endif %}
@@ -17,6 +17,7 @@
   </div>
   <section class="card pane passage-pane" data-pane-name="passage">
     {{ math(problem.passage.body, "passage") }}
+    {{ passage_source(problem.passage) }}
     <button type="button" class="primary tab-go" data-pane="question">設問へ</button>
   </section>
 {% endif %}

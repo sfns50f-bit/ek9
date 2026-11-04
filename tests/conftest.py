@@ -163,3 +163,7 @@ def _english_default_models(request, monkeypatch):
 
     monkeypatch.setattr(EnglishSubject, "default_models", {})
     monkeypatch.setattr(EnglishSubject, "default_think", {})  # 英語の検証役 e4b の思考ありも同じ
+    from quizapp.subjects.civics import CivicsSubject  # 公共も英語と同じ既定から始めたので、同じく外す
+
+    monkeypatch.setattr(CivicsSubject, "default_models", {})
+    monkeypatch.setattr(CivicsSubject, "default_think", {})

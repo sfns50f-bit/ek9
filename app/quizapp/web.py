@@ -577,6 +577,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             "backup_last": localtime(last_backup, "%Y/%m/%d %H:%M") if last_backup else None,
             "backup_count": len(backup.list_backups(settings.backup_dir)),
             "backup_info": kv_json(s, "backup", {}) or {},
+            "source_check": kv_json(s, "source_check", {}) or {},
+            "source_check_days": settings.source_check_days,
             "api": api_info(s),
         }
 
