@@ -433,7 +433,11 @@ def test_source_check_marks_changed_sources_and_review_lists_them(settings, sess
     assert r.status_code == 200 and "資料が変わった" in r.text and "鮮度の調査" in r.text
     assert re.search(r'href="/problems/\d+\?review=1"', r.text)
     r = client.get("/status")
-    assert "資料の鮮度の調査" in r.text and "変わった 1 件" in r.text
+    assert "資料の鮮度の調査" in r.text and "資料が変わった 1 件" in r.text
+    # 調べる資料がない次の回でも、変わった資料の知らせは消えない（ルール 10 のレビュー 2）
+    w.last_source_check = -1e9
+    w.maybe_check_sources()
+    assert "資料が変わった 1 件" in client.get("/status").text
 
 
 def test_law_revision_change_with_same_articles_is_same(sessions, web):
@@ -510,3 +514,67 @@ def test_bulk_normalize_does_not_rewrite_fetched_source(settings, sessions, sand
         review.normalize_all(s)
     with sessions() as s:
         assert "**強調**" in s.execute(select(Passage)).scalar_one().body
+
+
+def test_http_errors_are_sorted_for_fetch_and_freshness():
+    from quizapp.subjects.civics.sources import SourceRefused, check as source_check
+
+    with pytest.raises(SourceUnavailable):  # Wikimedia が一時的に 403 で断る
+        Fetcher(lambda url: (403, "forbidden"), min_interval=0).json("https://ja.wikipedia.org/w/api.php?x=1")
+    with pytest.raises(SourceRefused):
+        Fetcher(lambda url: (400, "bad"), min_interval=0).json("https://laws.e-gov.go.jp/api/2/laws")
+    info = {"kind": "law", "key": KENPO, "parts": ["25"], "revision": "R0"}
+    res = source_check(Fetcher(lambda url: (400, "bad"), min_interval=0), info, "本文")
+    assert res["check"] == "unknown"  # 断られただけでは「見つからない」にしない
+    fake = FakeWeb()
+    fake.law_text[(KENPO, "25")] = "<Article><壊れた"
+    with pytest.raises(SourceMissing):  # 壊れた XML はこの資料を飛ばす（依頼全体を失敗にしない）
+        fetch(Fetcher(fake, min_interval=0), Source("law", KENPO, ("25",)))
+
+
+def test_unknown_check_keeps_previous_result(settings, sessions, sandbox, web):
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1)
+    with sessions.begin() as s:
+        p = s.execute(select(Passage)).scalar_one()
+        p.source_info_json = dumps({**p.source_info, "check": "changed", "changed_at": "2026-01-01T00:00:00",
+                                    "checked_at": "2020-01-01T00:00:00"})
+    get_subject("civics").fetcher = Fetcher(lambda url: (400, "bad"), min_interval=0)
+    w = make_worker(settings, sessions, sandbox, CivicsOracle())
+    w.maybe_check_sources()
+    with sessions() as s:
+        info = s.execute(select(Passage)).scalar_one().source_info
+    assert info["check"] == "changed" and info["checked_at"] == "2020-01-01T00:00:00" and "400" in info["last_error"]
+
+
+def test_changed_source_is_fetched_again_as_a_new_version(settings, sessions, sandbox, web, monkeypatch):
+    from quizapp.subjects.civics import catalog
+
+    only = [Source("law", KENPO, ("25",), law_title="日本国憲法")]
+    monkeypatch.setitem(catalog.SOURCES, "cv-welfare", only)
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
+    assert len(problems(sessions, status="ready")) == 2
+    # 資料を使い切ったので、もう作れない
+    jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1)
+    assert "exhausted" in {r.reject_code for r in problems(sessions, job_id=jid)}
+    # 法改正で条文が変わった → 新しい版の資料を取ってきて作れる（古い問題は残す）
+    web.law_rev[KENPO] = "R2"
+    web.law_text[(KENPO, "25")] = ARTICLE_XML.format(n="25", title="第二十五条", law="改正後の憲法")
+    with sessions.begin() as s:
+        p = s.execute(select(Passage)).scalar_one()
+        p.source_info_json = dumps({**p.source_info, "check": "changed"})
+    jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
+    assert job(sessions, jid).status == "done"
+    with sessions() as s:
+        ps = list(s.execute(select(Passage).order_by(Passage.id)).scalars())
+    assert len(ps) == 2 and ps[1].source_info["revision"] == "R2" and "改正後の憲法" in ps[1].body
+    assert len(problems(sessions, status="ready")) == 4  # 古い版の問題も消さない（扱いは未定）
+
+
+def test_source_changed_list_includes_needs_check(settings, sessions, sandbox, web):
+    run_job(settings, sessions, sandbox, CivicsOracle(fact="true_wrong"), scope="tmpl:cv-welfare", count=1)
+    with sessions.begin() as s:
+        for p in s.execute(select(Passage)).scalars():  # 作り直しで資料が複数になることがある
+            p.source_info_json = dumps({**p.source_info, "check": "changed", "checked_at": "2026-11-03T20:00:00",
+                                        "fetched_at": "2026-11-03T20:00:00"})
+    r = TestClient(create_app(settings, sessions, sandbox)).get("/review", params={"status": "source_changed"})
+    assert re.search(r'href="/problems/\d+\?review=1"', r.text) and "2026/11/04" in r.text  # 日付は日本時間

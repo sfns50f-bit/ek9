@@ -102,6 +102,7 @@ class Worker:
         self.last_ollama_check = -1e9
         self.last_backup_check = -1e9
         self.last_source_check = -1e9
+        self._source_check_written = False  # この起動で鮮度の調査の結果を一度は書いたか
         self._last_status: tuple[str, int | None] | None = None
         self._last_status_at = -1e9
 
@@ -188,15 +189,28 @@ class Worker:
             with self.sessions.begin() as s:
                 p = s.get(Passage, row.id)
                 info = p.source_info
-                was = info.get("check")
-                info.update({k: v for k, v in res.items()}, checked_at=utcnow().isoformat())
-                if res.get("check") in ("changed", "missing") and was not in ("changed", "missing"):
-                    info["changed_at"] = info["checked_at"]
+                if res.get("check") == "unknown":  # 断られた・読めない：前の結果を残し、次の回にまた調べる
+                    info["last_error"] = str(res.get("detail", ""))[:300]
+                    result["errors"].append(f"#{row.id}: {res.get('detail', '')}"[:200])
+                else:
+                    was = info.get("check")
+                    info.update(res, checked_at=utcnow().isoformat())
+                    info.pop("last_error", None)
+                    if res.get("check") in ("changed", "missing") and was not in ("changed", "missing"):
+                        info["changed_at"] = info["checked_at"]
+                    result["checked"] += 1
                 p.source_info_json = dumps(info)
-            result["checked"] += 1
-            result[res.get("check", "")] = result.get(res.get("check", ""), 0) + 1
+        if not due[:limit] and self._source_check_written:
+            return  # 調べる資料がなければ書かない（前の回の結果を残す）
+        # 変わった・見つからない資料の数は、毎回すべての本文から数え直す（前の回の知らせが消えないように）
+        with self.sessions() as s:
+            infos = [r.source_info for r in s.execute(select(Passage).where(Passage.source_info_json != "{}")).scalars()]
+        result["changed"] = sum(1 for i in infos if i.get("check") == "changed")
+        result["missing"] = sum(1 for i in infos if i.get("check") == "missing")
+        result["total"] = len(infos)
         with self.sessions.begin() as s:
             kv_set(s, "source_check", dumps(result))
+        self._source_check_written = True
 
     def _label(self, text: str) -> None:
         if hasattr(self.llm, "label"):

@@ -38,8 +38,14 @@ def _params_key(template: str, params: dict[str, Any]) -> str:
     return template + ":" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
-def _key(template: str, topic: str, i: int) -> str:
-    return _params_key(template, {"topic": topic, "q": i})
+def _key(template: str, topic: str, i: int, revision: str = "") -> str:
+    """同じ問題の印（params_key）。資料の版を含める（改正・書き換えのあとの新しい版では、同じ資料からまた作れる）。"""
+    return _params_key(template, {"topic": topic, "q": i, "rev": revision})
+
+
+def _stale(p: dict[str, Any]) -> bool:
+    """鮮度の調査で資料が変わったと分かった本文（設問を足さない。同じ資料の新しい版を取ってきてよい）。"""
+    return (p.get("source_info") or {}).get("check") == "changed"
 
 
 @functools.cache
@@ -116,9 +122,8 @@ class CivicsSubject(Subject):
     # --- 作成 ---------------------------------------------------------------
 
     def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str]) -> int | None:
-        """まだ使っていない資料 × 2 問（短い条文の設問の数。長い資料は 3 問になる）。"""
-        left = [s for s in SOURCES.get(template, []) if s.id not in used_topics
-                and _key(template, s.id, 1) not in existing]
+        """まだ使っていない資料 × 2 問（短い条文の設問の数。長い資料は 3 問になる）。資料が変わって取り直せるものは数えない。"""
+        left = [s for s in SOURCES.get(template, []) if s.id not in used_topics]
         return len(left) * 2
 
     def generate(self, ctx: GenContext, template: str, fmt: str) -> list[Draft]:
@@ -136,6 +141,7 @@ class CivicsSubject(Subject):
             topic, title, body, have = src["topic"], src["title"], src["body"], list(src["questions"])
             passage: dict[str, Any] = {"id": src["id"]}
             source_title = src.get("source_title", "")
+            revision = str((src.get("source_info") or {}).get("revision", ""))
             log.append({"step": "資料", "ok": True,
                         "summary": f"前に取った資料 #{src['id']}「{title}」に設問を足す（今 {len(have)} 問）"})
             start = len(have) + src.get("rejected", 0) + 1
@@ -143,6 +149,7 @@ class CivicsSubject(Subject):
             fetched, src_spec, log = self._fetch_new(ctx, template, stored, existing)
             topic, title, body, have = src_spec.id, fetched.title, fetched.body, []
             source_title = fetched.source_title
+            revision = str(fetched.info.get("revision", ""))
             passage = {"title": title, "body": body, "source_title": fetched.source_title,
                        "source_url": fetched.source_url, "template": template, "topic": topic, "status": "ok",
                        "gen_model": "", "source_info": fetched.info, "log": list(log)}
@@ -178,7 +185,8 @@ class CivicsSubject(Subject):
                 unit=_unit_of(template), template=template, format="choice", question=q["question"],
                 answer={"kind": "choice"}, answer_display=correct["text"], explanation=explanation, hint=q["hint"],
                 choices=choices, source=f"資料 {source_title}・設問 {ctx.gen_model}。正解の根拠の文は資料と照合済み",
-                params={**params, "q": i, "evidence": q["evidence"]}, params_key=_key(template, topic, i), log=qlog,
+                params={**params, "q": i, "evidence": q["evidence"], "revision": revision},
+                params_key=_key(template, topic, i, revision), log=qlog,
                 passage=passage,
             ))
         return drafts
@@ -189,8 +197,9 @@ class CivicsSubject(Subject):
         from ...llm import LLMUnavailable
         from .sources import SourceMissing, SourceUnavailable, fetch
 
-        used = {p.get("topic") for p in stored if p.get("status") != "rejected"}
-        left = [s for s in SOURCES.get(template, []) if s.id not in used and _key(template, s.id, 1) not in existing]
+        # 使った資料（落ちた本文と、鮮度の調査で変わったと分かった本文の資料は、また取ってきてよい。新しい版で作る）
+        used = {p.get("topic") for p in stored if p.get("status") != "rejected" and not _stale(p)}
+        left = [s for s in SOURCES.get(template, []) if s.id not in used]
         if not left:
             raise Rejected("exhausted", "この小単元の資料をすべて使いました（catalog.SOURCES に資料を足すと作れます）")
         ctx.rng.shuffle(left)

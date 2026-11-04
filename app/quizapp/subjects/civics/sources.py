@@ -49,6 +49,11 @@ class SourceMissing(Exception):
     """記事・法令・条がない、本文が短すぎるなど。この題材は使えない（別の題材を選ぶ）。"""
 
 
+class SourceRefused(SourceMissing):
+    """404・403・429 以外の 4xx（要求の形の誤りなど）、応答の XML が壊れているなど。作成ではこの資料を飛ばすが、
+    鮮度の調査では「資料が見つからない」とせず「調べられない」にする（第 3 フェーズのルール 10 のレビュー 3・4）。"""
+
+
 @dataclass
 class Fetched:
     """取ってきた本文。info は passages.source_info に入れる（鮮度の調査に使う）。"""
@@ -90,10 +95,10 @@ class Fetcher:
             raise SourceUnavailable(f"{host} につながりません（{type(exc).__name__}: {exc}）") from exc
         if status == 404:
             raise SourceMissing(f"{host} にありません（404）")
-        if status == 429 or status >= 500:
-            raise SourceUnavailable(f"{host} が混み合っています（{status}）")
+        if status in (403, 429) or status >= 500:  # 403：Wikimedia が一時的に断る（名乗り・利用の制限）
+            raise SourceUnavailable(f"{host} が混み合っている・一時的に断られました（{status}）")
         if status >= 400:
-            raise SourceMissing(f"{host} が断りました（{status}）: {text[:200]}")
+            raise SourceRefused(f"{host} が断りました（{status}）: {text[:200]}")
         try:
             return json.loads(text)
         except ValueError as exc:
@@ -179,7 +184,10 @@ def article_text(xml: str) -> tuple[str, str]:
     """条の XML を、e-Gov の表示に近い文章にする。(見出し「第二十五条（見出し）」, 本文)。
 
     項が 2 つ以上なら 2 項目から「２　」を付ける（古い法令は XML に項の番号がない。設問で「第 2 項」と呼べるように）。"""
-    root = ET.fromstring(xml)
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError as exc:
+        raise SourceRefused(f"条文の XML を読めません（{exc}）") from exc
     art = root if root.tag == "Article" else root.find(".//Article")
     if art is None:
         raise SourceMissing("条文が見つかりません")
@@ -203,17 +211,21 @@ def fetch_law(f: Fetcher, src: Source) -> Fetched:
     for num in src.parts:
         d = f.json(f"{EGOV_API}/law_data/{quote(src.key)}?law_full_text_format=xml"
                    f"&elm=MainProvision-Article_{quote(num)}")
+        if not isinstance(d, dict):
+            raise SourceRefused(f"{src.label} の応答の形が違います")
         rev = d.get("revision_info") or {}
         if (rev.get("repeal_status") or "None") not in ("None", ""):
             raise SourceMissing(f"{src.label} は廃止されています（{rev.get('repeal_status')}）")
         info_rev = rev.get("law_revision_id") or info_rev
         law_title = src.law_title or rev.get("law_title") or law_title
         enforced = rev.get("amendment_enforcement_date") or enforced
-        raw = d.get("law_full_text") or ""
+        raw = d.get("law_full_text") if isinstance(d, dict) else None
+        if not isinstance(raw, str) or not raw:
+            raise SourceRefused(f"{src.label} の条文が応答にありません")
         try:
             xml = base64.b64decode(raw).decode("utf-8") if not raw.lstrip().startswith("<") else raw
         except (ValueError, UnicodeDecodeError) as exc:
-            raise SourceMissing(f"{src.label} の条文を読めません") from exc
+            raise SourceRefused(f"{src.label} の条文を読めません") from exc
         head, text = article_text(xml)
         if not text:
             raise SourceMissing(f"{src.label} の{article_label(num)}が空です")
@@ -360,6 +372,8 @@ def check(f: Fetcher, info: dict[str, Any], body: str) -> dict[str, Any]:
             kept = all(flat(p) in now for p in body.replace("（以下略）", "").split("\n") if flat(p))
             return {"check": "same" if kept else "changed", "current_revision": rev,
                     "detail": "記事は編集されたが、使った部分は同じ" if kept else "使った部分の文章が今の記事にない（書き換えられた）"}
+    except SourceRefused as exc:  # 断られた・読めない：見つからないとは言えないので、次の回にまた調べる
+        return {"check": "unknown", "detail": str(exc)}
     except SourceMissing as exc:
         return {"check": "missing", "detail": str(exc)}
     return {"check": "unknown", "detail": f"知らない資料の種類: {kind}"}
