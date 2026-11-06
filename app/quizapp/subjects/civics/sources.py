@@ -274,9 +274,26 @@ def wiki_sections(extract: str) -> list[tuple[str, str]]:
     return [(name, "\n".join(lines)) for name, lines in out if lines]
 
 
+LEAD_ENOUGH = 400  # 導入がこの字数以上なら導入だけを本文にする（後の節は導入の言い直しが多い。第 13 回のレビュー）
+_SENTENCE_END = ("。", "」", "）", ")", "！", "？", "』")
+
+
+def drop_trailing_headings(text: str) -> str:
+    """末尾の、文で終わらない行（見出し・定義の語だけの行）を落とす（第 13 回のレビュー：本文が見出し
+    「付随的違憲審査制（司法裁判所型、アメリカ型）」で終わっていた。括弧で終わる見出しも、短い行は落とす）。"""
+    lines = text.rstrip().split("\n")
+    while lines and (not lines[-1].rstrip().endswith(_SENTENCE_END) or
+                     ("。" not in lines[-1] and len(lines[-1].strip()) <= 40)):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
 def wiki_excerpt(extract: str, section: str = "") -> str:
-    """本文にする部分：section を指定すればその節から、なければ導入から、末尾の節（脚注など）の手前まで。"""
+    """本文にする部分：section を指定すればその節から、なければ導入から、末尾の節（脚注など）の手前まで。
+    導入だけで LEAD_ENOUGH 字以上あれば導入だけ。"""
     secs = wiki_sections(extract)
+    if not section and secs and secs[0][0] == "" and len(secs[0][1]) >= LEAD_ENOUGH:
+        return secs[0][1]
     start = 0
     if section:
         start = next((i for i, (name, _t) in enumerate(secs) if name == section), -1)
@@ -312,6 +329,7 @@ def fetch_wiki(f: Fetcher, src: Source) -> Fetched:
     revid = str(revs[0].get("revid") or "")
     text = wiki_excerpt(page.get("extract") or "", src.section)
     body, cut = clip(text)
+    body = drop_trailing_headings(body)
     if len(body) < MIN_CHARS:
         raise SourceMissing(f"Wikipedia「{title}」の本文が短すぎます（{len(body)} 字）")
     where = f"「{title}」" + (f"の節「{src.section}」" if src.section else "")

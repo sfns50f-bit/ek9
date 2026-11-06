@@ -102,10 +102,11 @@ class CivicsOracle:
     見直し役：review_verdict
     """
 
-    def __init__(self, *, judge="right", fact="right", review_verdict="問題なし", bad_evidence_once=False,
+    def __init__(self, *, judge="right", fact="right", review_verdict="問題なし", bad_evidence_once=False, bad_questions=(),
                  question="資料の内容に合うものを、次のうちから一つ選べ。", empty_explanation=False):
         self.judge, self.fact, self.review_verdict = judge, fact, review_verdict
         self.bad_evidence_once = bad_evidence_once
+        self.bad_questions = set(bad_questions)  # この番号の設問は、根拠の文をいつも資料にないものにする
         self.question = question
         self.empty_explanation = empty_explanation
         self.calls = []
@@ -126,7 +127,7 @@ class CivicsOracle:
             for k in range(1, len([p for p in props if p.startswith("q")]) + 1):
                 i = start + k
                 evidence = sents[(i - 1) % len(sents)]
-                if self.bad_evidence_once:
+                if self.bad_evidence_once or k in self.bad_questions:
                     evidence = "資料にはない架空の文が根拠として書かれている。"
                 out[f"q{k}"] = "\n".join([
                     f"Question: {self.question}（{i}）",
@@ -578,3 +579,60 @@ def test_source_changed_list_includes_needs_check(settings, sessions, sandbox, w
                                         "fetched_at": "2026-11-03T20:00:00"})
     r = TestClient(create_app(settings, sessions, sandbox)).get("/review", params={"status": "source_changed"})
     assert re.search(r'href="/problems/\d+\?review=1"', r.text) and "2026/11/04" in r.text  # 日付は日本時間
+
+
+
+# --- 第 13 回のレビュー -----------------------------------------------------------------
+
+def test_records_are_split_per_question(settings, sessions, sandbox, web):
+    run_job(settings, sessions, sandbox, CivicsOracle(bad_questions={1}), scope="tmpl:cv-welfare", count=1)
+    ready = problems(sessions, status="ready")
+    rejected = [p for p in problems(sessions, status="rejected") if p.reject_code == "cv_text"]
+    assert ready and rejected
+    for p in ready:  # 合格した設問の記録に、落ちた設問 1 の指摘が載らない
+        assert not any("設問 1:" in str(e.get("summary", "")) for e in p.verification), p.verification
+    assert any("設問 1:" in str(e.get("summary", "")) for e in rejected[0].verification)
+
+
+def test_wrong_choice_label_is_fixed_when_the_verifier_quotes_the_passage(settings, sessions, sandbox, web):
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1)
+    p = problems(sessions, status="ready")[0]
+    by_text = {c["text"].split(" ")[0]: c for c in p.choices}
+    # 作成役は「一部だけ合う」（partial）としたが、検証役が資料の文を引用して「資料と食い違う」とした → 付け直す
+    assert by_text["条件を取り違えた内容"]["mistake"] == "contradicts"
+    # 「細部の取り違え」（detail）→「資料と食い違う」は付け直さず、判定が分かれた印だけ残す
+    assert by_text["主体を取り違えた内容"]["mistake"] == "detail"
+    assert by_text["主体を取り違えた内容"]["label_doubt"] == "contradicts"
+    assert any("付け直した" in str(e.get("detail", "")) for e in p.verification)
+
+
+def test_hint_with_answer_terms_is_caught():
+    opts = ["ナチズムの反省から戦後に広まった", "議会立法が発展した", "議会中心主義が強まった", "当初から広く受け入れられた"]
+    assert check.answer_terms_in_hint("資料の内容に合うものを選べ。", opts, 0, "ナチズムの台頭を確認しよう。") == ["ナチズム"]
+    assert check.answer_terms_in_hint("資料の内容に合うものを選べ。", opts, 0, "第一次大戦後から第二次大戦後にかけての変化に注目。") == []
+
+
+def test_wiki_excerpt_uses_long_lead_and_drops_trailing_headings():
+    from quizapp.subjects.civics.sources import LEAD_ENOUGH, drop_trailing_headings
+
+    lead = "導入の文である。" * (LEAD_ENOUGH // 8 + 1)
+    assert wiki_excerpt(lead + "\n\n== 歴史 ==\n歴史の文。") == lead  # 導入が長ければ導入だけ
+    text = "違憲審査制は大別される。\n付随的違憲審査制（司法裁判所型、アメリカ型）"
+    assert drop_trailing_headings(text) == "違憲審査制は大別される。"
+    assert drop_trailing_headings("文の終わり。\n（注）") == "文の終わり。"
+
+
+def test_common_level_asks_for_combining_two_places():
+    assert prompts.COMBINE in prompts.question_user("t", "b", 2, "f", [], "common")
+    assert prompts.COMBINE not in prompts.question_user("t", "b", 2, "f", [], "basic")
+
+
+def test_quality_export_skips_test_jobs_and_shows_each_run(settings, sessions, sandbox, web):
+    from quizapp import stock
+
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1, is_test=True)
+    with sessions() as s:
+        assert stock.recent_rejected(s, 0) == []  # 検証のテストは集計にも一覧にも入れない
+    run_job(settings, sessions, sandbox, CivicsOracle(judge="multiple"), scope="tmpl:cv-welfare", count=1)
+    md = TestClient(create_app(settings, sessions, sandbox)).get("/status/quality/export.md", params={"days": "0"}).text
+    assert "検証 1 回目" in md and "検証 2 回目" in md and "【選択肢の判定】" in md

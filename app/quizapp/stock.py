@@ -319,9 +319,12 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
 
 
 def recent_rejected(s: Session, days: int = 30, from_job: int = 0, limit: int = 30) -> list[Problem]:
-    # 同じ数値の問題がストックにある（duplicate）ものは、ストックの問題の答えが見えるので出さない
+    # 同じ数値の問題がストックにある（duplicate）ものは、ストックの問題の答えが見えるので出さない。
+    # 検証のテスト（正解をずらした問題）は集計に入れないので、一覧にも出さない（第 13 回のレビュー：集計と一覧が合わなかった）
     return list(s.execute(select(Problem).where(*_period(days, from_job), Problem.status == "rejected",
-                                                Problem.reject_code != "duplicate")
+                                                Problem.reject_code != "duplicate",
+                                                or_(Problem.job_id.is_(None),
+                                                    Problem.job_id.not_in(select(Job.id).where(Job.is_test.is_(True)))))
                           .order_by(Problem.id.desc()).limit(limit)).scalars())
 
 

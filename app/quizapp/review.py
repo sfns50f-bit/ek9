@@ -344,14 +344,22 @@ def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], reje
                    + ("、".join(f"{label(c)} {n}" for c, n in r["codes"]) or "—") + " |")
     out += ["", "## 不合格の一覧", ""]
     for p in rejected:
-        fail = next((e for e in reversed(p.verification) if not e.get("ok")), {})
+        fails = [e for e in p.verification if not e.get("ok")]
+        fail = fails[-1] if fails else {}
         out += [f"### #{p.id} {label(p.reject_code or '')}（{when(p.created_at) if p.created_at else '—'}）", "",
                 f"- 作成役：{p.gen_model or '—'}／落ちた段階：{fail.get('step', '—')}（{fail.get('model', '—')}）",
                 f"- 理由：{(p.reject_reason or '').strip()[:400]}"]
         if p.question:
             out.append(f"- 問題文：{p.question.strip()[:300]}")
-        if fail.get("raw"):
-            out += ["", "```", str(fail["raw"])[:1500], "```"]
+        # 検証を何回かかけたときは、回ごとに理由と生の出力を並べる（第 13 回のレビュー：理由と生の出力が別の回の
+        # ものだった）。生の出力のない段階（作成の点検など）は最後のものだけ
+        runs = [e for e in fails if e.get("raw")] or ([fail] if fail else [])
+        for e in runs[-3:]:
+            if len(runs) > 1 or e is not fail or e.get("run"):
+                out += ["", f"- {e.get('step', '—')}" + (f" {e['run']} 回目" if e.get("run") else "")
+                        + f"（{e.get('model', '—')}）：{str(e.get('summary', '')).strip()[:300]}"]
+            if e.get("raw"):
+                out += ["", "```", str(e["raw"])[:1500], "```"]
         out.append("")
     return "\n".join(out)
 
