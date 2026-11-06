@@ -18,6 +18,7 @@ import functools
 import hashlib
 import json
 import random
+import re
 from typing import Any
 
 from .. import choicejudge
@@ -66,6 +67,26 @@ def _passage_title(problem: Any) -> str:
 def _passage_body(problem: Any) -> str:
     p = getattr(problem, "passage", None)
     return getattr(p, "body", "") if p is not None else ""
+
+
+_NO_RE = re.compile(r"設問 \d+: ")
+_ASKED = "（直しを依頼します）"
+
+
+def _own_log(log: list[dict[str, Any]], k: int) -> list[dict[str, Any]]:
+    """同じ資料の設問をまとめて点検した記録（「設問 1: …／設問 2: …」）から、k 番目の設問の分だけを残す
+    （第 13 回のレビュー：合格した問題に、落ちたほかの設問の指摘が載って見えた）。"""
+    out = []
+    for e in log:
+        text = str(e.get("summary", ""))
+        if not _NO_RE.search(text):
+            out.append(e)
+            continue
+        tail = _ASKED if text.endswith(_ASKED) else ""
+        parts = [p for p in text.removesuffix(tail).split("／") if p.startswith(f"設問 {k}: ")]
+        if parts:
+            out.append({**e, "summary": "／".join(parts) + tail})
+    return out
 
 
 def _tamper(choices: list[dict[str, Any]], rng: random.Random) -> None:
@@ -161,7 +182,7 @@ class CivicsSubject(Subject):
         qs, q_issues = self._write_questions(ctx, spec, title, body, have, n, log, partial)
         drafts = []
         for i, (q, problems) in enumerate(zip(qs, q_issues), start):
-            qlog = list(log)
+            qlog = _own_log(log, i - start + 1)
             choices = []
             if 0 <= q["answer"] < len(q["options"]):
                 choices = [{"text": t, "correct": j == q["answer"],
@@ -225,7 +246,7 @@ class CivicsSubject(Subject):
     def _write_questions(self, ctx: GenContext, spec: Any, title: str, body: str, have: list[str], n: int,
                          log: list[dict[str, Any]], partial: dict[str, Any]) -> tuple[list[dict[str, Any]], list[list[str]]]:
         schema = prompts.question_schema(n)
-        user = prompts.question_user(title, body, n, spec.focus, have)
+        user = prompts.question_user(title, body, n, spec.focus, have, spec.level)
         log.append({"step": "設問の作成", "ok": True, "model": ctx.gen_model,
                     "summary": f"作成役 {ctx.gen_model} が設問を {n} 問書く",
                     "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.QUESTION_SYSTEM})
@@ -289,16 +310,18 @@ class CivicsSubject(Subject):
         opts = {k: spec["default"] for k, spec in self.verify_options.items()} | (options or {})
         checks: list[tuple[str, bool | None, str]] = []
         raws: list[str] = []
+        updates: dict[str, Any] = {}
         choices = list(problem.choices)
         random.shuffle(choices)  # 毎回並べ替える（記号の位置で決まらないように）
-        self._judge_choices(llm, model, problem, choices, checks, raws)
+        self._judge_choices(llm, model, problem, choices, checks, raws, updates)
         if opts.get("fact_check") == "on":
             choicejudge.set_label(llm, "検証（事実）")
             self._judge_facts(llm, model, problem, choices, checks, raws)
-        return self._verdict_of(model, checks, raws)
+        return self._verdict_of(model, checks, raws, updates)
 
     @staticmethod
-    def _verdict_of(model: str, checks: list[tuple[str, bool | None, str]], raws: list[str]) -> VerifyResult:
+    def _verdict_of(model: str, checks: list[tuple[str, bool | None, str]], raws: list[str],
+                    updates: dict[str, Any] | None = None) -> VerifyResult:
         detail, raw = choicejudge.check_lines(checks), "\n\n".join(raws)[:4000]
         failed = [(name, text) for name, ok, text in checks if ok is False]
         if failed:
@@ -310,10 +333,13 @@ class CivicsSubject(Subject):
         if unread:
             return VerifyResult(False, f"{model}: 判定を読めなかった（{'／'.join(unread)}）", detail,
                                 "solver_unreadable", raw=raw)
-        return VerifyResult(True, f"{model}: 正解は 1 つに決まる（{len(checks)} つの確認）", detail, raw=raw)
+        relabel = "。誤答の種類を付け直した" if updates else ""
+        return VerifyResult(True, f"{model}: 正解は 1 つに決まる（{len(checks)} つの確認）{relabel}", detail, raw=raw,
+                            updates=updates or {})
 
     def _judge_choices(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
-                       checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:
+                       checks: list[tuple[str, bool | None, str]], raws: list[str],
+                       updates: dict[str, Any] | None = None) -> None:
         passage = _passage_body(problem)
         choicejudge.set_label(llm, "検証")
         user = prompts.choice_judge_user(_passage_title(problem), passage, problem.question,
@@ -353,6 +379,36 @@ class CivicsSubject(Subject):
         checks.append(("正解が 1 つか", not also,
                        "ほかに裏付けのある選択肢はない" if not also
                        else "「" + "」「".join(choices[i]["text"][:60] for i in also) + "」も資料で裏付けられる（正解が複数）"))
+        if updates is not None and not also and label == "裏付けあり":
+            self._relabel(passage, choices, got, checks, updates)
+
+    @staticmethod
+    def _relabel(passage: str, choices: list[dict[str, Any]], got: dict[int, tuple[str, str]],
+                 checks: list[tuple[str, bool | None, str]], updates: dict[str, Any]) -> None:
+        """誤答の種類の付け直し（第 13 回のレビュー：作成役が「一部だけ合う」「資料に書かれていない」とした誤答が、
+        実は資料と食い違っていた）。検証役が「資料と食い違う」とし、食い違う資料の文を引用していて、その引用が資料に
+        あるときだけ付け直す（判定はモデルごとにばらつくので、引用で裏付けられるときだけ。英語の第 5 回のレビュー C-1 と
+        同じ考え方）。それ以外の食い違いは記録に残すだけ（label_doubt。問題検証モードの書き出しに出る）。"""
+        fixed, doubts, new = [], [], []
+        for i, c in enumerate(choices):
+            code = prompts.CHOICE_LABELS.get(got[i][0], "")
+            mine = c.get("mistake")
+            if c.get("correct") or not code or code == mine:
+                new.append({k: v for k, v in c.items() if k != "label_doubt"})
+                continue
+            quote = choicejudge.quote_of(got[i][1], 8)
+            if code == "contradicts" and mine in ("partial", "not_stated") and quote and check.near_quote(passage, quote):
+                fixed.append(f"「{c['text'][:40]}」{MISTAKES.get(str(mine), mine)}→{MISTAKES[code]}（引用「{quote[:40]}」）")
+                c = {k: v for k, v in c.items() if k != "label_doubt"} | {"mistake": code}
+            else:
+                doubts.append(f"「{c['text'][:40]}」作成役 {MISTAKES.get(str(mine), mine)}／検証役 {MISTAKES[code]}")
+                c = {**c, "label_doubt": code}
+            new.append(c)
+        if fixed or doubts:
+            updates["choices"] = new
+            checks.append(("誤答の種類", True, "／".join(x for x in (
+                "付け直した：" + "、".join(fixed) if fixed else "",
+                "判定が分かれた（そのまま）：" + "、".join(doubts) if doubts else "") if x)))
 
     def _judge_facts(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
                      checks: list[tuple[str, bool | None, str]], raws: list[str]) -> None:

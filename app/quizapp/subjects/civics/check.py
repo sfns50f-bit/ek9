@@ -52,6 +52,19 @@ def near_quote(passage: str, quote: str, ratio: float = 0.9) -> bool:
     return False
 
 
+# 語句として見る字の並び（漢字・カタカナ 3 字以上）
+_TERM_RE = re.compile(r"[\u4e00-\u9fffー\u30a0-\u30ff]{3,}")
+
+
+def answer_terms_in_hint(question: str, options: list[str], answer: int, hint: str) -> list[str]:
+    """正解の選択肢にだけある語句（設問・誤答にない漢字・カタカナ 3 字以上）のうち、ヒントに書かれているもの
+    （第 13 回のレビュー：ヒントが「ナチズムの台頭と…を確認」と正解の語句を指していた）。"""
+    others = flat(question) + "".join(flat(o) for i, o in enumerate(options) if i != answer)
+    terms = {t for t in _TERM_RE.findall(unicodedata.normalize("NFKC", options[answer])) if t not in others}
+    h = flat(hint)
+    return sorted(t for t in terms if t in h)
+
+
 def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
     out = []
     body = (text or "").strip()
@@ -118,6 +131,9 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str]) -
     right = flat(opts[q["answer"]])
     if right and len(right) >= 6 and right in flat(q["hint"]):
         out.append("ヒントに正解の選択肢がそのまま書かれている")
+    leaked = answer_terms_in_hint(q["question"], opts, q["answer"], q["hint"])
+    if leaked:
+        out.append(f"ヒントに正解の選択肢だけにある語句（{'・'.join(leaked[:3])}）がある（読む場所だけを示す）")
     if _LETTER_REF_RE.search(q["hint"]) or _LETTER_REF_RE.search(q["explanation"]):
         out.append("ヒント・解説が選択肢を記号（A・B など）で呼んでいる（画面で並べ替えるので、中身で呼ぶ）")
     return out
