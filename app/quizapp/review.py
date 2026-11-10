@@ -314,6 +314,15 @@ def to_markdown(problems: list[Problem], filters: dict[str, str],
     return "\n".join(lines)
 
 
+def cut_sentence(text: str, n: int) -> str:
+    """n 字までで、文の切れ目（。・／・）で切る（途中の語で切らない）。切ったら「…（全文は下）」。"""
+    if len(text) <= n:
+        return text
+    head = text[:n]
+    cut = max(head.rfind("。"), head.rfind("／"), head.rfind("）"))
+    return (head[:cut + 1] if cut > n // 3 else head) + "…（全文は下）"
+
+
 def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], rejected: list[Problem],
                      codes: dict[str, str], period: str,
                      when: Callable[[datetime], str] = lambda dt: dt.strftime("%Y/%m/%d %H:%M")) -> str:
@@ -326,7 +335,9 @@ def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], reje
            "## 作成役のモデルごと", "", "| 作成役 | 作った数 | 合格 | 不合格の内訳 |", "|---|---|---|---|"]
     out += [f"| {g['model']} | {g['total']} | {g['passed']}（{g['rate']}%） | "
             + ("、".join(f"{label(c)} {n}" for c, n in g["codes"]) or "—") + " |" for g in stats["by_gen"]]
-    out += ["", "## 検証役のモデルごと", "", "| 検証役 | 検証した数 | 弾いた数 | 弾いた割合 |", "|---|---|---|---|"]
+    out += ["", "## 検証役のモデルごと", "",
+            "数は問題で数える（検証の回数ではない）。弾いた＝そのモデルの検証で 1 回でも不合格になった問題（要確認を含む）。", "",
+            "| 検証役 | 検証した問題 | 弾いた問題 | 弾いた割合 |", "|---|---|---|---|"]
     out += [f"| {m['model']} | {m['reached']} | {m['rejected']} | {m['rate']}% |" for m in stats["by_model"]]
     out += ["", "## 不合格の理由", "", "| 理由 | 数 |", "|---|---|"]
     out += [f"| {label(c)} | {n} |" for c, n in stats["by_code"]]
@@ -342,13 +353,29 @@ def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], reje
                    f"| {r['verify_per'] if r['verify_per'] is not None else '—'} | {r['load_s']} | "
                    f"{'%.3f' % j.api_cost_usd if j.api_cost_usd else '—'} | "
                    + ("、".join(f"{label(c)} {n}" for c, n in r["codes"]) or "—") + " |")
+    out += ["", "## 依頼ごとの詳しい数", "",
+            "修復＝見直しの指摘を受けて理由・ヒントを作り直して合格した数。要確認（事実だけ）＝検証の判定が割れた問題のうち、"
+            "事実の判定だけで割れたもの。検証の時間＝1 問あたり（全回の合計）の中央値と最大値（中央値の 3 倍を超えた問題の数）。", "",
+            "| 依頼 | 作成日時 | 作成役 | 検証役 | 見直し役 | 段階ごとの不合格 | 修復で合格 | 要確認（事実だけ） | 検証の時間（秒） |",
+            "|---|---|---|---|---|---|---|---|---|"]
+    for r in job_rows:
+        j = r["job"]
+        times = (f"中央値 {r['verify_median']}・最大 {r['verify_max']}" + (f"（遅い {r['verify_slow']}）" if r.get("verify_slow") else "")
+                 if r.get("verify_median") is not None else "—")
+        out.append(f"| #{j.id} | {when(j.created_at) if j.created_at else '—'} | {j.gen_model or '—'} | "
+                   f"{j.verify_model or '—'}{' ×' + str(j.verify_count) if j.verify_count else ''} | "
+                   f"{(j.review_model or j.verify_model or '—') if j.explanation_review else 'しない'} | "
+                   + ("、".join(f"{k} {n}" for k, n in r.get("stages", [])) or "—")
+                   + f" | {r.get('repaired', 0)} | {r.get('needs_check', 0)}（{r.get('needs_check_fact', 0)}） | {times} |")
     out += ["", "## 不合格の一覧", ""]
     for p in rejected:
         fails = [e for e in p.verification if not e.get("ok")]
         fail = fails[-1] if fails else {}
         out += [f"### #{p.id} {label(p.reject_code or '')}（{when(p.created_at) if p.created_at else '—'}）", "",
                 f"- 作成役：{p.gen_model or '—'}／落ちた段階：{fail.get('step', '—')}（{fail.get('model', '—')}）",
-                f"- 理由：{(p.reject_reason or '').strip()[:400]}"]
+                f"- 理由：{cut_sentence((p.reject_reason or '').strip(), 400)}"]
+        if len((p.reject_reason or "").strip()) > 400:  # 途中で切ったときは全文を折りたたみで（第 14 回のレビュー 4-4）
+            out += ["", "<details><summary>理由の全文</summary>", "", (p.reject_reason or "").strip(), "", "</details>"]
         if p.question:
             out.append(f"- 問題文：{p.question.strip()[:300]}")
         # 検証を何回かかけたときは、回ごとに理由と生の出力を並べる（第 13 回のレビュー：理由と生の出力が別の回の

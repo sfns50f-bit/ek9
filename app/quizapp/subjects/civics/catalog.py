@@ -96,10 +96,11 @@ UNITS: list[tuple[str, str, list[Spec]]] = [
 
 SPECS: dict[str, Spec] = {s.id: s for _u, _l, specs in UNITS for s in specs}
 
-# 小単元ごとの資料（2026-11 に e-Gov の法令 ID と条を確かめた。Wikipedia の記事名は実機の取得で確かめる）
+# 小単元ごとの資料（2026-11 に e-Gov の法令 ID と条を確かめた。Wikipedia の記事名は実機の取得で確かめる）。
+# 人物の記事は、導入が生い立ちになりやすいので、考え方を説明した記事・節を選ぶ（人物の記事を足すなら節を指定する）
 SOURCES: dict[str, list[Source]] = {
     "cv-self": [wiki("青年期"), wiki("アイデンティティ"), wiki("自己実現理論"), wiki("防衛機制"), wiki("通過儀礼"),
-                wiki("マージナル・マン"), wiki("エリク・H・エリクソン"), wiki("欲求")],
+                wiki("マージナル・マン"), wiki("欲求")],  # 人物の記事（エリクソン）は生い立ちが選ばれたので外した（第 14 回 A-3）
     "cv-ethics": [wiki("功利主義"), wiki("義務論"), wiki("社会契約"), wiki("公共の福祉"), wiki("ジョン・ロールズ"),
                   wiki("正義論"), wiki("自由主義"), wiki("ジョン・スチュアート・ミル")],
     "cv-rights": [kenpo("11", "12", "13"), kenpo("14"), kenpo("19", "20", "21"), kenpo("22", "29"), kenpo("25", "26"),

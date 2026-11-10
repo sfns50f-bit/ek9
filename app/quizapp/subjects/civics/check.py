@@ -56,13 +56,76 @@ def near_quote(passage: str, quote: str, ratio: float = 0.9) -> bool:
 _TERM_RE = re.compile(r"[\u4e00-\u9fffー\u30a0-\u30ff]{3,}")
 
 
+# 年・数値・順位（正解を決める値。第 14 回のレビュー 3 章 C-2・C-3）
+_NUM_RE = re.compile(r"\d{4}年|\d+(?:\.\d+)?(?:%|位|倍|か国|ヵ国|カ国|歳|人|円|社)")
+
+
+def numbers(text: str) -> list[str]:
+    return list(dict.fromkeys(_NUM_RE.findall(flat(text))))
+
+
 def answer_terms_in_hint(question: str, options: list[str], answer: int, hint: str) -> list[str]:
-    """正解の選択肢にだけある語句（設問・誤答にない漢字・カタカナ 3 字以上）のうち、ヒントに書かれているもの
+    """正解の選択肢にだけある語句（設問・誤答にない漢字・カタカナ 3 字以上と、年・数値）のうち、ヒントに書かれているもの
     （第 13 回のレビュー：ヒントが「ナチズムの台頭と…を確認」と正解の語句を指していた）。"""
     others = flat(question) + "".join(flat(o) for i, o in enumerate(options) if i != answer)
     terms = {t for t in _TERM_RE.findall(unicodedata.normalize("NFKC", options[answer])) if t not in others}
+    terms |= {t for t in numbers(options[answer]) if t not in others}
     h = flat(hint)
     return sorted(t for t in terms if t in h)
+
+
+def best_sentence(passage: str, quote: str, ratio: float = 0.9) -> str:
+    """引用に最も近い資料の 1 文（9 割以上の字が同じ並びで合うもの）。なければ空。"""
+    q = flat(quote)
+    if len(q) < 10:
+        return ""
+    best, score = "", 0.0
+    for s in sentences(passage):
+        fs = flat(s)
+        sm = difflib.SequenceMatcher(None, q, fs, autojunk=False)
+        hit = sum(b.size for b in sm.get_matching_blocks())
+        rate = min(hit / len(q), hit / max(len(fs), 1))  # 引用と文の両方の 9 割が合う（一部だけの文を選ばない）
+        if rate > score:
+            best, score = s.strip(), rate
+    return best if score >= ratio else ""
+
+
+def fix_evidence(q: dict[str, Any], passage: str) -> str:
+    """根拠の文が資料にそのまま入っていないとき、9 割以上合う資料の文があれば、根拠をその原文に差し替える
+    （第 14 回のレビュー 3 章 C-1：かぎかっこ 1 字の欠けなどで落ちていた）。直したことの説明（なければ空）。"""
+    ev = q.get("evidence") or ""
+    if not ev or contains(passage, ev):
+        return ""
+    best = best_sentence(passage, ev)
+    if not best:
+        return ""
+    q["evidence"] = best
+    return f"根拠の文を資料の原文に差し替えた（「{ev[:30]}…」→「{best[:30]}…」）"
+
+
+def similar(a: str, b: str, ratio: float = 0.85) -> bool:
+    fa, fb = flat(a), flat(b)
+    return bool(fa and fb) and difflib.SequenceMatcher(None, fa, fb, autojunk=False).ratio() >= ratio
+
+
+def same_wrongs(mine: list[str], other: list[str]) -> list[str]:
+    """2 つの設問の誤答のうち、ほぼ同じもの（第 14 回のレビュー 3 章 C-4：#1443 と #1445）。"""
+    return [a for a in mine if any(similar(a, b) for b in other)]
+
+
+def build_explanation(choices: list[dict[str, Any]], evidence: str) -> str:
+    """選択肢ごとの理由（choices[*]["why"]）から解説を組み立てる（第 14 回のレビュー 3 章 B）。正解の理由 → 資料の根拠
+    → 誤答の理由（選択肢の並びの順。選択肢の文を見出しにする）。"""
+    right = next((c for c in choices if c.get("correct")), None)
+    lines = []
+    if right is not None:
+        lines += [f"正解：「{right['text']}」", str(right.get("why", "")).strip()]
+    if evidence:
+        lines.append(f"資料の根拠：「{evidence}」")
+    wrong = [c for c in choices if not c.get("correct")]
+    if wrong:
+        lines += ["", "ほかの選択肢："] + [f"・「{c['text']}」：{str(c.get('why', '')).strip()}" for c in wrong]
+    return "\n".join(x for x in lines if x is not None).strip()
 
 
 def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
@@ -96,8 +159,9 @@ def normalize(text: str) -> str:
     return t.strip()
 
 
-def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str]) -> list[str]:
-    """設問 1 つの点検。q は choicejudge.parse_question の形。"""
+def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *, why: bool = False) -> list[str]:
+    """設問 1 つの点検。q は choicejudge.parse_question の形。why=True（作成のとき）は選択肢ごとの理由（Why A〜D）を
+    点検する。False のときも理由があれば理由を、なければ解説（前の版の問題）を点検する。"""
     out = []
     opts = [o.strip() for o in q["options"]]
     if not q["question"].strip():
@@ -126,14 +190,29 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str]) -
         out.append("根拠の文が資料にそのまま入っていない（資料から一字一句写す）")
     elif flat(opts[q["answer"]]) and flat(opts[q["answer"]]) == flat(q["evidence"]):
         out.append("正解の選択肢が根拠の文の丸写し（言い換える）")
+    else:
+        missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])]
+        if missing:
+            out.append(f"正解の「{'・'.join(missing[:3])}」が根拠の文にない（正解を裏付ける、その年・数値の書かれた文を Evidence に写す）")
     out += japanese_issues(q["hint"], "ヒント")
-    out += japanese_issues(q["explanation"], "解説", min_len=30)
+    whys = q.get("why") or {}
+    if why or whys:
+        for i, c in enumerate("ABCD"[:len(opts)]):
+            text = whys.get(c, "")
+            if not text.strip():
+                out.append(f"選択肢 {c} の理由（Why {c}）がない")
+                continue
+            out += japanese_issues(text, f"選択肢 {c} の理由", min_len=15 if i == q["answer"] else 8)
+            if _LETTER_REF_RE.search(text):
+                out.append(f"選択肢 {c} の理由が選択肢を記号（A・B など）で呼んでいる（中身で呼ぶ）")
+    else:
+        out += japanese_issues(q["explanation"], "解説", min_len=30)
     right = flat(opts[q["answer"]])
     if right and len(right) >= 6 and right in flat(q["hint"]):
         out.append("ヒントに正解の選択肢がそのまま書かれている")
     leaked = answer_terms_in_hint(q["question"], opts, q["answer"], q["hint"])
     if leaked:
         out.append(f"ヒントに正解の選択肢だけにある語句（{'・'.join(leaked[:3])}）がある（読む場所だけを示す）")
-    if _LETTER_REF_RE.search(q["hint"]) or _LETTER_REF_RE.search(q["explanation"]):
+    if _LETTER_REF_RE.search(q["hint"]) or (not (why or whys) and _LETTER_REF_RE.search(q["explanation"])):
         out.append("ヒント・解説が選択肢を記号（A・B など）で呼んでいる（画面で並べ替えるので、中身で呼ぶ）")
     return out

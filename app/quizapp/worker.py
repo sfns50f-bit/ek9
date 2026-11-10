@@ -12,6 +12,7 @@ Ollama につながらないときは落ちずに待ち、OLLAMA_RETRY_SECONDS �
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import threading
@@ -369,11 +370,17 @@ class Worker:
             questions: dict[int, list[str]] = {}
             rejected: dict[int, int] = {}
             rejected_by: dict[int, dict[str, int]] = {}  # 不合格の設問の数（設問を作ったモデルごと。E-5）
-            for pid, q, status, model in s.execute(
-                    select(Problem.passage_id, Problem.question, Problem.status, Problem.gen_model).where(
-                        Problem.passage_id.in_([r.id for r in rows]))):
+            details: dict[int, list[dict[str, Any]]] = {}  # 設問と選択肢の文（公共：同じ誤答を作らない。第 14 回 C-4）
+            for pid, q, status, model, cjson in s.execute(
+                    select(Problem.passage_id, Problem.question, Problem.status, Problem.gen_model,
+                           Problem.choices_json).where(Problem.passage_id.in_([r.id for r in rows]))):
                 if status in ("ready", "draft"):
                     questions.setdefault(pid, []).append(q)
+                    try:
+                        texts = [str(c.get("text", "")) for c in json.loads(cjson or "[]")]
+                    except (ValueError, AttributeError):
+                        texts = []
+                    details.setdefault(pid, []).append({"question": q, "choices": texts})
                 elif status == "rejected":
                     rejected[pid] = rejected.get(pid, 0) + 1
                     by = rejected_by.setdefault(pid, {})
@@ -381,6 +388,7 @@ class Worker:
             return [{"id": r.id, "title": r.title, "body": r.body, "topic": r.topic, "status": r.status,
                      "gen_model": r.gen_model, "questions": questions.get(r.id, []), "rejected": rejected.get(r.id, 0),
                      "rejected_by": rejected_by.get(r.id, {}), "log": r.log, "source_title": r.source_title,
+                     "details": details.get(r.id, []),
                      "source_info": r.source_info} for r in rows]
 
     def update_passage(self, passage_id: int, changes: dict[str, Any]) -> None:
@@ -791,6 +799,7 @@ class Worker:
                     self._update_job(job.id, progress=text)
                     self.set_status(f"{label} — {text}", job.id)
                     self._label("見直し" if step == REVIEW_STEP else "検証")
+                    started = time.monotonic()
                     try:
                         if step == REVIEW_STEP:
                             res = subject.review(self.llm, model, problem) or VerifyResult(True, "見直しなし")
@@ -800,17 +809,23 @@ class Worker:
                                                  **_opts(subject, {**job.options, "_run": str(r)}))
                         ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
                         if res.updates:
-                            updates[pid] = res.updates
+                            updates[pid] = _merge_updates(updates.get(pid, {}), res.updates)
                     except LLMError as exc:
                         ok, summary, detail, code = False, f"{model}: 出力を読めません（{exc}）", "", "llm_output"
                         raw = getattr(exc, "raw", "")
                     finally:
                         self._save_llm_calls(job.id)
-                    logs[pid].append({"step": step, "ok": ok, "summary": summary, "detail": detail,
-                                      "model": model, "run": r, "code": "" if ok else code, "raw": raw[:4000]})
+                    entry = {"step": step, "ok": ok, "summary": summary, "detail": detail, "model": model, "run": r,
+                             "code": "" if ok else code, "raw": raw[:4000], "secs": round(time.monotonic() - started, 1)}
+                    if ok and updates.get(pid, {}).get("repaired") and step == REVIEW_STEP:
+                        entry["repaired"] = True  # 見直しで指摘された解説を作り直して合格（検証の成績で数える）
+                    logs[pid].append(entry)
                     done[pid] += 1
                     if not ok and split and step == VERIFY_STEP:
-                        vfail.setdefault(pid, (code, summary))
+                        if code in subject.verify_overrides:  # 科目が「これが出たらこの理由」と決めたもの
+                            vfail[pid] = (code, summary)
+                        else:
+                            vfail.setdefault(pid, (code, summary))
                     elif not ok:
                         failed[pid] = (code, summary)
                         del alive[pid]
@@ -837,8 +852,13 @@ class Worker:
                 row = s.get(Problem, d.id)
                 row.verification_json = dumps(logs[d.id])
                 row.verify_models = plan.verify_label
-                if passed and "choices" in (updates or {}).get(d.id, {}):
-                    row.choices_json = dumps(updates[d.id]["choices"])  # 見直しで誤答の種類を付け直した
+                upd = (updates or {}).get(d.id, {}) if passed else {}
+                if "choices" in upd:
+                    row.choices_json = dumps(upd["choices"])  # 見直しで誤答の種類を付け直した・理由を作り直した
+                if "explanation" in upd:  # 見直しで指摘された解説・ヒントを作り直した（公共。第 14 回のレビュー 3 章 F）
+                    row.explanation = str(upd["explanation"])
+                if "hint" in upd:
+                    row.hint = str(upd["hint"])
                 row.verified_at = utcnow()
                 if d.id in failed:
                     row.status = "rejected"
@@ -954,6 +974,17 @@ class Worker:
                 else:
                     self.set_status("待機中（依頼なし）")
                 time.sleep(3)
+
+
+def _merge_updates(prev: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """検証と見直しの両方が問題を直すとき（公共：検証で誤答の種類を付け直し、見直しで理由・解説を作り直す）。
+    選択肢は同じ文どうしで合わせ、誤答の種類（mistake・label_doubt）は先の付け直し（検証）を残す。"""
+    out = {**prev, **new}
+    if "choices" in prev and "choices" in new:
+        before = {c.get("text"): c for c in prev["choices"]}
+        out["choices"] = [{**c, **{k: before[c.get("text")][k] for k in ("mistake", "label_doubt")
+                                   if k in before.get(c.get("text"), {})}} for c in new["choices"]]
+    return out
 
 
 def make_llm(settings: Settings) -> LLMRouter:

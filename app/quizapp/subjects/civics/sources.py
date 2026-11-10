@@ -3,7 +3,8 @@
 取りに行く先はここに書いた 2 つだけ（`ALLOWED_HOSTS`）。sandbox は外に出さない（CLAUDE.md のルール 7）。
 - e-Gov 法令 API（v2）：条文ごとに取る（`/law_data/{法令ID}?law_full_text_format=xml&elm=MainProvision-Article_{条}`）。
   応答は JSON で、条文は法令標準 XML を base64 にしたもの。版は `revision_info.law_revision_id`
-- Wikipedia 日本語版：本文は MediaWiki の API の TextExtracts（`prop=extracts&explaintext=1`）。版は `revisions[0].revid`。
+- Wikipedia 日本語版：記事の HTML（MediaWiki の API の `action=parse`）を受け取り、表・脚注・注記を除いて文章にする
+  （小見出しは「【見出し】」の行で残す。第 14 回のレビュー 3 章 A）。版は `revid`
   鮮度の調査では本文を取り直して、前に取った抜き出しが今の記事にそのまま残っているかを見る
 
 本文は取ってきた文章を「手を加えずに」抜き出す（LLM に書き直させない。正解の根拠の文が本文にそのまま
@@ -258,14 +259,109 @@ def law_revision(f: Fetcher, law_id: str) -> str:
 
 
 # --- Wikipedia ----------------------------------------------------------------------
+# 記事は HTML（action=parse）で受け取り、ここで文章にする（第 14 回のレビュー 3 章 A：本文だけの API
+# （TextExtracts）では表のセルが見出しなしの文として混ざり、主語のない文ができて正解の取り違えを招いた）。
+# 表・脚注・注記・画像・目次は入れない。小見出し（h3 以下）と定義の語（dt）は「【見出し】」の行で残す。
 
 _HEAD_RE = re.compile(r"^(=+)\s*(.+?)\s*\1\s*$")
+_VOID = {"br", "img", "hr", "meta", "link", "wbr", "input", "area", "col", "source", "track", "embed", "param"}
+_SKIP_TAGS = {"table", "style", "script", "figure", "noscript", "math", "svg", "audio", "video", "map", "caption"}
+_SKIP_CLASSES = {"reference", "references", "reflist", "mw-references-wrap", "mw-editsection", "mw-cite-backlink",
+                 "hatnote", "dablink", "rellink", "toc", "navbox", "vertical-navbox", "noprint", "metadata", "infobox",
+                 "thumb", "mw-empty-elt", "ambox", "mbox-small", "sistersitebox", "shortdescription", "gallery",
+                 "mw-kartographer-maplink", "mwe-math-element", "plainlinks"}
+_BLOCK = {"p", "div", "li", "dd", "dt", "ul", "ol", "dl", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "section",
+          "pre", "center"}
 
 
-def wiki_sections(extract: str) -> list[tuple[str, str]]:
-    """explaintext の記事を (節の名前, 文章) に分ける。最初の節（導入）の名前は ""。"""
+class _HTMLText:
+    """MediaWiki の記事の HTML を、節の見出し（「== 見出し ==」の行）・小見出し（「【見出し】」）・段落の行にする。"""
+
+    def __init__(self) -> None:
+        from html.parser import HTMLParser
+
+        outer = self
+
+        class P(HTMLParser):
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                outer.start(tag, dict(attrs))
+
+            def handle_endtag(self, tag: str) -> None:
+                outer.end(tag)
+
+            def handle_data(self, data: str) -> None:
+                outer.data(data)
+
+        self.parser = P(convert_charrefs=True)
+        self.lines: list[str] = []
+        self.buf: list[str] = []
+        self.skip: list[str] = []  # 飛ばしている要素のタグ（入れ子を数える）
+        self.kind = ""  # 今の行の種類（h2 / h3〜h6 / li / dt）
+
+    def flush(self) -> None:
+        text = re.sub(r"\s+", " ", "".join(self.buf)).strip()
+        self.buf = []
+        kind, self.kind = self.kind, ""
+        if not text:
+            return
+        if kind == "h2":
+            self.lines.append(f"== {text} ==")
+        elif kind in ("h3", "h4", "h5", "h6", "dt"):
+            self.lines.append(f"【{text}】")
+        elif kind == "li":
+            self.lines.append("・" + text)
+        else:
+            self.lines.append(text)
+
+    def start(self, tag: str, attrs: dict[str, str | None]) -> None:
+        if tag in _VOID:
+            if tag == "br" and not self.skip:
+                self.buf.append(" ")
+            return
+        if self.skip:
+            self.skip.append(tag)
+            return
+        classes = set((attrs.get("class") or "").split())
+        if tag in _SKIP_TAGS or classes & _SKIP_CLASSES or (attrs.get("role") == "navigation") \
+                or (tag == "sup" and "reference" in (attrs.get("class") or "")) \
+                or "display:none" in (attrs.get("style") or "").replace(" ", ""):
+            self.skip.append(tag)
+            return
+        if tag in _BLOCK:
+            self.flush()
+            if tag in ("h2", "h3", "h4", "h5", "h6", "li", "dt"):
+                self.kind = tag
+
+    def end(self, tag: str) -> None:
+        if self.skip:
+            if tag == self.skip[-1]:
+                self.skip.pop()
+            elif tag in self.skip:  # 閉じ忘れのある HTML
+                while self.skip and self.skip.pop() != tag:
+                    pass
+            return
+        if tag in _BLOCK:
+            self.flush()
+
+    def data(self, data: str) -> None:
+        if not self.skip:
+            self.buf.append(data)
+
+    def text(self, html: str) -> str:
+        self.parser.feed(html or "")
+        self.parser.close()
+        self.flush()
+        return "\n".join(self.lines)
+
+
+def html_to_text(html: str) -> str:
+    return _HTMLText().text(html)
+
+
+def wiki_sections(text: str) -> list[tuple[str, str]]:
+    """記事の文章（html_to_text の出力）を (節の名前, 文章) に分ける。最初の節（導入）の名前は ""。"""
     out: list[tuple[str, list[str]]] = [("", [])]
-    for line in (extract or "").splitlines():
+    for line in (text or "").splitlines():
         m = _HEAD_RE.match(line.strip())
         if m:
             out.append((m.group(2).strip(), []))
@@ -288,10 +384,10 @@ def drop_trailing_headings(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def wiki_excerpt(extract: str, section: str = "") -> str:
+def wiki_excerpt(text: str, section: str = "") -> str:
     """本文にする部分：section を指定すればその節から、なければ導入から、末尾の節（脚注など）の手前まで。
-    導入だけで LEAD_ENOUGH 字以上あれば導入だけ。"""
-    secs = wiki_sections(extract)
+    導入だけで LEAD_ENOUGH 字以上あれば導入だけ。続けて入れる節には「【節の名前】」の行を付ける（見出しを落とさない）。"""
+    secs = wiki_sections(text)
     if not section and secs and secs[0][0] == "" and len(secs[0][1]) >= LEAD_ENOUGH:
         return secs[0][1]
     start = 0
@@ -299,35 +395,41 @@ def wiki_excerpt(extract: str, section: str = "") -> str:
         start = next((i for i, (name, _t) in enumerate(secs) if name == section), -1)
         if start < 0:
             raise SourceMissing(f"節「{section}」がありません")
-    text = []
-    for name, body in secs[start:]:
+    out: list[str] = []
+    for k, (name, body) in enumerate(secs[start:]):
         if name.startswith(_WIKI_SKIP):
             break
-        text.append(body)
-        if len("\n".join(text)) >= MAX_CHARS:
+        out.append(body if k == 0 or not name else f"【{name}】\n{body}")
+        if len("\n".join(out)) >= MAX_CHARS:
             break
-    return "\n".join(text)
+    return "\n".join(out)
 
 
-def _wiki_query(f: Fetcher, title: str, extract: bool) -> dict[str, Any]:
-    props = "extracts|revisions|info" if extract else "revisions|info"
-    url = (f"{WIKI_API}?action=query&format=json&formatversion=2&redirects=1&prop={quote(props)}"
-           f"&rvprop=ids%7Ctimestamp&inprop=url&titles={quote(title)}")
-    if extract:
-        url += "&explaintext=1&exsectionformat=wiki"
+def _wiki_page(f: Fetcher, title: str) -> dict[str, Any]:
+    """記事の HTML を受け取り、{"title", "revid", "text"（html_to_text の文章）} にする。"""
+    url = (f"{WIKI_API}?action=parse&format=json&formatversion=2&redirects=1&prop=text%7Crevid"
+           f"&disabletoc=1&disableeditsection=1&page={quote(title)}")
     d = f.json(url)
-    pages = (d.get("query") or {}).get("pages") or []
-    if not pages or pages[0].get("missing") or pages[0].get("invalid"):
-        raise SourceMissing(f"Wikipedia に「{title}」の記事がありません")
-    return pages[0]
+    if not isinstance(d, dict):
+        raise SourceRefused("Wikipedia の応答の形が違います")
+    err = d.get("error") or {}
+    if err:
+        if err.get("code") in ("missingtitle", "invalidtitle"):
+            raise SourceMissing(f"Wikipedia に「{title}」の記事がありません")
+        raise SourceRefused(f"Wikipedia が断りました（{err.get('code')}: {str(err.get('info', ''))[:120]}）")
+    page = d.get("parse") or {}
+    html = page.get("text")
+    if isinstance(html, dict):  # formatversion=1 の形 {"*": "…"}
+        html = html.get("*")
+    if not isinstance(html, str):
+        raise SourceRefused("Wikipedia の応答に記事の本文がありません")
+    return {"title": page.get("title") or title, "revid": str(page.get("revid") or ""), "text": html_to_text(html)}
 
 
 def fetch_wiki(f: Fetcher, src: Source) -> Fetched:
-    page = _wiki_query(f, src.key, extract=True)
-    title = page.get("title") or src.key
-    revs = page.get("revisions") or [{}]
-    revid = str(revs[0].get("revid") or "")
-    text = wiki_excerpt(page.get("extract") or "", src.section)
+    page = _wiki_page(f, src.key)
+    title, revid = page["title"], page["revid"]
+    text = wiki_excerpt(page["text"], src.section)
     body, cut = clip(text)
     body = drop_trailing_headings(body)
     if len(body) < MIN_CHARS:
@@ -341,7 +443,8 @@ def fetch_wiki(f: Fetcher, src: Source) -> Fetched:
         source_url=f"https://ja.wikipedia.org/w/index.php?title={quote(title)}&oldid={revid}" if revid
         else f"https://ja.wikipedia.org/wiki/{quote(title)}",
         info={"kind": "wiki", "key": src.key, "section": src.section, "page_title": title, "revision": revid,
-              "fetched_at": now_iso(), "clipped": cut, "license": WIKI_LICENSE[0], "license_url": WIKI_LICENSE[1]},
+              "fetched_at": now_iso(), "clipped": cut, "license": WIKI_LICENSE[0], "license_url": WIKI_LICENSE[1],
+              "format": "html"},
     )
 
 
@@ -381,11 +484,16 @@ def check(f: Fetcher, info: dict[str, Any], body: str) -> dict[str, Any]:
                     "detail": "法令の版が変わったが、使った条文は同じ" if same
                     else f"条文が変わった（{new.info.get('enforced') or '日付不明'} 施行の版）"}
         if kind == "wiki":
-            page = _wiki_query(f, str(info.get("key")), extract=True)
-            rev = str((page.get("revisions") or [{}])[0].get("revid") or "")
+            page = _wiki_page(f, str(info.get("key")))
+            rev = page["revid"]
             if rev and rev == info.get("revision"):
                 return {"check": "same", "current_revision": rev, "detail": "記事の版が同じ"}
-            now = flat(page.get("extract") or "")
+            if info.get("format") != "html":  # 前の版（本文だけの API）で取った本文は、行の分け方が違うので文字だけで照らす
+                # （前の版の本文に入っていた表のセルは今の取り込みでは入らないので、「変わった」になる＝点検の対象に出る）
+                now = flat(re.sub(r"[【】・]", "", page["text"]))
+                body = re.sub(r"[【】・]", "", body)
+            else:
+                now = flat(page["text"])
             # 抜き出しの最後に足した「（以下略）」は記事にないので外して照らす
             kept = all(flat(p) in now for p in body.replace("（以下略）", "").split("\n") if flat(p))
             return {"check": "same" if kept else "changed", "current_revision": rev,

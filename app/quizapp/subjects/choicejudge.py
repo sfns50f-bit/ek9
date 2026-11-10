@@ -84,8 +84,8 @@ def fix_user(original: str, previous: dict[str, Any], issues: str, keys: list[st
 
 # --- 設問の欄 ---------------------------------------------------------------------
 
-_FIELD_RE = re.compile(r"^\s*[*_#>-]*\s*\(?(Question|Answer|Wrong|Evidence|Hint|Explanation|[A-D])(?:\s*\d+)?\)?"
-                       r"\s*[*_]*\s*[:：.)]\s*[*_]*\s*(.*)$", re.I)
+_FIELD_RE = re.compile(r"^\s*[*_#>-]*\s*\(?(Question|Answer|Wrong|Evidence|Hint|Explanation|Why\s*[A-D]|[A-D])"
+                       r"(?:\s*\d+)?\)?\s*[*_]*\s*[:：.)]\s*[*_]*\s*(.*)$", re.I)
 
 
 def _strip_outer_quotes(text: str) -> str:
@@ -104,7 +104,10 @@ def parse_question(text: str, strip_quotes: Callable[[str], str] = _strip_outer_
         m = _FIELD_RE.match(line) if current != "explanation" else None
         if m:
             name = m.group(1)
-            current = name.upper() if len(name) == 1 else name.lower()
+            if name.lower().startswith("why"):  # 選択肢ごとの理由（公共。第 14 回のレビュー 3 章 B）
+                current = "why_" + name[-1].upper()
+            else:
+                current = name.upper() if len(name) == 1 else name.lower()
             fields[current] = m.group(2).strip()
         elif current:
             fields[current] = (fields[current] + "\n" + line).strip()
@@ -113,7 +116,8 @@ def parse_question(text: str, strip_quotes: Callable[[str], str] = _strip_outer_
     evidence = strip_quotes(fields.get("evidence", ""))
     return {"question": fields.get("question", ""), "options": [fields.get(c, "") for c in LETTERS],
             "answer": LETTERS.index(answer.group()) if answer else -1, "wrong": wrong, "evidence": evidence,
-            "hint": fields.get("hint", ""), "explanation": fields.get("explanation", "")}
+            "hint": fields.get("hint", ""), "explanation": fields.get("explanation", ""),
+            "why": {c: fields[f"why_{c}"] for c in LETTERS if fields.get(f"why_{c}")}}
 
 
 # --- 選択肢ごとの判定 -----------------------------------------------------------------

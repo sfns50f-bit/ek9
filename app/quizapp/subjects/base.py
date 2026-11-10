@@ -106,7 +106,8 @@ class VerifyResult:
     detail: str = ""
     code: str = "solver_mismatch"  # 不合格の理由の種類（/status で集計する）
     raw: str = ""  # 検証役の生の出力（原因を調べるために、そのまま残す）
-    # 見直しで直す項目（合格したときだけ worker が問題に書き込む）。今は {"choices": [...]}（誤答の種類の付け直し）だけ
+    # 見直しで直す項目（合格したときだけ worker が問題に書き込む）：{"choices": [...]}（誤答の種類の付け直し）、
+    # {"explanation", "hint"}（見直しで指摘された解説・ヒントを作り直した。公共）。"repaired": True は記録に「作り直して合格」
     updates: dict[str, Any] = field(default_factory=dict)
 
 
@@ -183,6 +184,9 @@ class Subject:
     # 検証の判定が割れたとき（設定の回数のうち一部だけ合格）、すぐ捨てずに「要確認」（needs_check）にするか。
     # True の科目は、検証の不合格が出ても検証の回数を最後までかける（英語：第 6 回のレビュー 2-4）
     verify_split_check: bool = False
+    # 検証の回数すべてが不合格のとき、どれかの回がこの理由で落ちていれば、それを最後の理由にする（ふつうは最初の回の理由。
+    # 公共の「2 回とも同じ選択肢を事実として正しいとした」＝不合格。1 回目は要確認で返すため。第 14 回のレビュー 3 章 E-1）
+    verify_overrides: tuple[str, ...] = ()
     # 検証のやり方の切り替え（第 7 回のレビュー：見本集で今の方式と新しい方式を並べて測るため）。
     # {キー: {"label": 名前, "choices": {値: 説明}, "default": 既定の値}}。「状態 → モデルと思考モード」の科目ごとの
     # 設定で変えられ、依頼に記録して（jobs.options）verify(options=…) に渡す
