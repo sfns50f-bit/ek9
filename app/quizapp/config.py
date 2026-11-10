@@ -35,7 +35,8 @@ def _str(name: str, default: str) -> str:
 
 
 def _think() -> bool | None:
-    """OLLAMA_THINK が空なら think パラメータを送らない（モデルの既定に任せる）。"""
+    """OLLAMA_THINK：画面（状態 → モデルと思考モード）で思考モードを設定していないモデルの値（true / false）。
+    空なら「なし」（runtime.resolve_think。科目の既定 Subject.default_think があればその科目の依頼ではその値）。"""
     value = os.environ.get("OLLAMA_THINK", "").strip().lower()
     if value in ("1", "true", "yes", "on"):
         return True
