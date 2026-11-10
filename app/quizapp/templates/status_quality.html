@@ -29,7 +29,7 @@
   </table>
   <h3>検証役のモデルごと</h3>
   <table class="compact">
-    <tr><th>検証役のモデル</th><th>検証した数</th><th>弾いた数</th><th>弾いた割合</th></tr>
+    <tr><th>検証役のモデル</th><th>検証した問題</th><th>弾いた問題（1 回でも不合格）</th><th>弾いた割合</th></tr>
     {% for m in stats.by_model %}
     <tr><td>{{ m.model }}</td><td>{{ m.reached }}</td><td>{{ m.rejected }}</td><td>{{ m.rate }}%</td></tr>
     {% else %}<tr><td colspan="4" class="muted">まだありません</td></tr>{% endfor %}

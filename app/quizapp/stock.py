@@ -218,7 +218,8 @@ def _period(days: int, from_job: int):  # noqa: ANN202
 def verify_stats(s: Session, days: int = 30, from_job: int = 0) -> dict[str, Any]:
     """期間内の作成・検証の成績（検証のテストは含めない）。
 
-    by_model: 検証役のモデルごとに、検証にかけた問題数と、そのモデルが弾いた数
+    by_model: 検証役のモデルごとに、検証にかけた問題の数と、そのモデルが 1 回でも不合格にした問題の数
+              （検証の回数ではなく問題で数える。第 14 回のレビュー 4-1：2 回の検証を 2 つと数えて、弾いた割合が 90% になっていた）
     by_gen: 作成役のモデルごとに、作った数・合格した数・不合格の理由の内訳
     by_code: 不合格の理由の種類ごとの数（作成段階の不合格も含む）
     """
@@ -247,16 +248,19 @@ def verify_stats(s: Session, days: int = 30, from_job: int = 0) -> dict[str, Any
             entries = json.loads(vjson or "[]")
         except ValueError:
             entries = []
-        models_seen = []
+        models_seen: list[str] = []
+        models_failed: set[str] = set()
         for e in entries:
             if e.get("step") != "検証" or not e.get("model"):
                 continue
             if e["model"] not in models_seen:
                 models_seen.append(e["model"])
             if not e.get("ok"):
-                rejected_by[e["model"]] += 1
+                models_failed.add(e["model"])
         for m in models_seen:
             reached[m] += 1
+        for m in models_failed:
+            rejected_by[m] += 1
     by_model = [{"model": m, "reached": n, "rejected": rejected_by[m],
                  "rate": round(100 * rejected_by[m] / n) if n else 0} for m, n in reached.most_common()]
     by_gen = [{"model": m, "total": g["total"], "passed": g["passed"],
@@ -302,6 +306,7 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
             statuses[jid][status] += n
             if status == "rejected":
                 codes[jid][code or "unknown"] += n
+    detail = _job_details(s, [j.id for j in jobs]) if jobs else {}
     out = []
     for j in jobs:
         made = statuses[j.id]["ready"] + statuses[j.id]["deleted"]
@@ -314,7 +319,57 @@ def job_stats(s: Session, days: int = 30, from_job: int = 0, limit: int = 50) ->
             "verify_per": round(j.verify_eval_s / j.verified, 1) if j.verified and j.verify_calls else None,
             "load_s": round(j.gen_load_s + j.verify_load_s, 1),
             "codes": codes[j.id].most_common(),
+            **detail.get(j.id, _EMPTY_DETAIL),
         })
+    return out
+
+
+_EMPTY_DETAIL: dict[str, Any] = {"stages": [], "repaired": 0, "needs_check": 0, "needs_check_fact": 0,
+                                 "verify_median": None, "verify_max": None, "verify_slow": 0}
+# 不合格になった段階の名前（記録の step から。作成の段階の点検・検証・見直し）
+_STAGE = {"検証": "検証", "解説の見直し": "見直し", "設問": "作成（点検）", "設問の点検": "作成（点検）",
+          "資料の取得": "作成（資料）", "本文の点検": "作成（点検）", "本文の見直し": "作成（本文の見直し）",
+          "英文の点検": "作成（点検）", "本文なしの確認": "作成（本文なしの確認）", "文章の確認": "作成（点検）"}
+
+
+def _job_details(s: Session, job_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """依頼ごとの、比べるための数（第 14 回のレビュー 4 章・5 章）：段階ごとの不合格、見直しの指摘を受けて作り直して
+    合格した数、要確認の数とそのうち事実の判定だけで割れた数、検証 1 問あたりの時間（全回の合計）の中央値と最大値、
+    中央値の 3 倍を超えた問題の数。"""
+    rows = s.execute(select(Problem.job_id, Problem.status, Problem.reject_code, Problem.verification_json)
+                     .where(Problem.job_id.in_(job_ids))).all()
+    acc: dict[int, dict[str, Any]] = defaultdict(lambda: {"stages": Counter(), "repaired": 0, "needs_check": 0,
+                                                          "needs_check_fact": 0, "times": []})
+    for jid, status, code, vjson in rows:
+        a = acc[jid]
+        try:
+            entries = json.loads(vjson or "[]")
+        except ValueError:
+            entries = []
+        secs = [float(e.get("secs") or 0) for e in entries if e.get("step") == "検証" and e.get("secs") is not None]
+        if secs:
+            a["times"].append(sum(secs))
+        if any(e.get("repaired") for e in entries):
+            a["repaired"] += 1
+        if status != "rejected" or code in ("duplicate", "exhausted"):
+            continue
+        if code == "needs_check":
+            a["needs_check"] += 1
+            # 事実の判定だけで割れた（公共）：不合格の回の × の行が、どれも「事実」の確認
+            lines = [ln for e in entries if e.get("step") == "検証" and not e.get("ok")
+                     for ln in str(e.get("detail") or "").splitlines() if ln.startswith("×")]
+            if lines and all("事実" in ln for ln in lines):
+                a["needs_check_fact"] += 1
+        fail = next((e for e in reversed(entries) if not e.get("ok")), {})
+        a["stages"][_STAGE.get(str(fail.get("step", "")), str(fail.get("step") or "作成"))] += 1
+    out = {}
+    for jid, a in acc.items():
+        times = sorted(a["times"])
+        med = times[len(times) // 2] if times else None
+        out[jid] = {"stages": a["stages"].most_common(), "repaired": a["repaired"], "needs_check": a["needs_check"],
+                    "needs_check_fact": a["needs_check_fact"], "verify_median": round(med, 1) if med is not None else None,
+                    "verify_max": round(times[-1], 1) if times else None,
+                    "verify_slow": sum(1 for t in times if med and t > 3 * med)}
     return out
 
 
