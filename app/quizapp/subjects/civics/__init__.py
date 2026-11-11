@@ -263,7 +263,7 @@ class CivicsSubject(Subject):
     def _fetch_new(self, ctx: GenContext, template: str, stored: list[dict[str, Any]],
                    existing: set[str]) -> tuple[Any, Source, list[dict[str, Any]]]:
         """まだ使っていない資料を取ってくる。見つからない資料は飛ばして次へ（MAX_FETCH_TRIES まで）。"""
-        from ...llm import LLMUnavailable
+        from ..base import WaitForSource
         from .sources import SourceMissing, SourceUnavailable, fetch
 
         # 使った資料（落ちた本文と、鮮度の調査で変わったと分かった本文の資料は、また取ってきてよい。新しい版で作る）
@@ -277,7 +277,7 @@ class CivicsSubject(Subject):
             try:
                 fetched = fetch(self.fetcher, src)
             except SourceUnavailable as exc:  # つながらない・混んでいる：依頼を待たせてやり直す（回数を使わない）
-                raise LLMUnavailable(f"資料を取れません：{exc}") from exc
+                raise WaitForSource(f"資料を取れません：{exc}") from exc
             except SourceMissing as exc:
                 log.append({"step": "資料の取得", "ok": False, "summary": f"{src.name}：{exc}（次の資料へ）"})
                 continue
@@ -397,7 +397,10 @@ class CivicsSubject(Subject):
             key = (getattr(problem, "id", None) or id(problem), model)
             with self._memo_lock:
                 if str(opts.get("_run", "1")) == "1":
-                    self._fact_memo[key] = hits
+                    if str(opts.get("_runs", "2")) != "1":  # 検証が 1 回だけなら 2 回目と照らさないので残さない
+                        if len(self._fact_memo) >= 500:  # 取り消し・待機で 2 回目が来なかった分がたまらないように
+                            self._fact_memo.pop(next(iter(self._fact_memo)))
+                        self._fact_memo[key] = hits
                 else:
                     same = hits & self._fact_memo.pop(key, set())
                     if same:

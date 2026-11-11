@@ -47,7 +47,7 @@ MAX_SESSION = 50
 MAX_JOB = 50
 MAX_DURATION_MS = 3 * 60 * 60 * 1000
 JOB_STATUS = {
-    "pending": "順番待ち", "running": "処理中", "waiting": "Ollama を待っています", "done": "完了",
+    "pending": "順番待ち", "running": "処理中", "waiting": "待機中（つながるのを待っています）", "done": "完了",
     "partial": "一部完了", "failed": "失敗", "cancelling": "取り消し中", "cancelled": "取り消し済み",
 }
 

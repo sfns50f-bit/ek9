@@ -122,6 +122,12 @@ class Rejected(Exception):
         self.partial = partial or {}
 
 
+class WaitForSource(Exception):
+    """LLM 以外の外の取得先（公共の資料：e-Gov・Wikipedia）につながらない・混んでいる。worker はその依頼だけを
+    待たせ（次に試す時刻まで選ばない）、ほかの依頼は先に進める（Fable のレビュー 1：Ollama の停止と同じ扱いにすると、
+    後ろに並んだほかの科目の依頼まで止まっていた）。作り直しの回数は使わない。"""
+
+
 # 不合格の理由の種類（科目の部品は必要なら独自のものを reject_codes で足す）
 REJECT_CODES = {
     "llm_output": "モデルの出力を読めない・項目が足りない",

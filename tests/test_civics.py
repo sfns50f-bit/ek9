@@ -841,3 +841,64 @@ def test_merge_updates_keeps_labels_from_verification():
            "explanation": "e", "repaired": True}
     out = _merge_updates(prev, new)
     assert out["choices"][0] == {"text": "a", "mistake": "contradicts", "why": "新しい理由"} and out["explanation"] == "e"
+
+
+# --- Fable のレビュー -----------------------------------------------------------------
+
+def test_waiting_for_source_does_not_block_other_jobs(settings, sessions, sandbox, web):
+    from .conftest import OracleLLM
+
+    web.unavailable = True
+    cid = add_job(sessions, subject="civics", scope="tmpl:cv-welfare", count=1)
+    w = make_worker(settings, sessions, sandbox, OracleLLM(sessions))
+    # 何度待っても失敗にならず、作り直しの回数も減らない（依頼の上限は問題数 × 3 回。1 問なら 4 回目で失敗していた）
+    for _ in range(5):
+        w.job_retry_at.clear()  # 次に試す時刻が過ぎたことにする
+        assert w.run_once()
+        j = job(sessions, cid)
+        assert j.status == "waiting" and "資料の取得を待っています" in j.progress
+        assert j.gen_attempts == 0
+    mid = add_job(sessions, subject="math", count=1)  # 後ろに並んだ数学の依頼
+    assert w.run_once()  # 公共はまだ次に試す時刻の前なので、数学を先に進める
+    assert job(sessions, mid).status == "done"
+    assert job(sessions, cid).status == "waiting"
+    assert w.unavailable_until == 0.0  # Ollama の待ちにはしない
+    assert not w.run_once()  # 公共は次に試す時刻まで選ばない
+    web.unavailable = False  # 時刻が過ぎたら続きから（公共の LLM で作る）
+    w2 = make_worker(settings, sessions, sandbox, CivicsOracle())
+    assert w2.run_once()
+    assert job(sessions, cid).status == "done"
+
+
+def test_idle_status_error_does_not_stop_the_loop(settings, sessions, sandbox, monkeypatch):
+    import quizapp.worker as wmod
+
+    w = make_worker(settings, sessions, sandbox, CivicsOracle())
+    calls = {"idle": 0, "sleep": 0}
+
+    class Stop(Exception):
+        pass
+
+    def idle():
+        calls["idle"] += 1
+        raise RuntimeError("database is locked")
+
+    def sleep(_s):
+        calls["sleep"] += 1
+        if calls["sleep"] >= 2:
+            raise Stop()
+
+    monkeypatch.setattr(w, "run_once", lambda: False)
+    monkeypatch.setattr(w, "_idle_status", idle)
+    monkeypatch.setattr(wmod.time, "sleep", sleep)
+    with pytest.raises(Stop):
+        w.run_forever(recover=False)
+    assert calls["idle"] == 2  # 1 回目の失敗のあとも回り続けた
+
+
+def test_fact_memo_is_not_kept_when_verified_once(settings, sessions, sandbox, web):
+    sub = get_subject("civics")
+    sub._fact_memo.clear()
+    add_job(sessions, subject="civics", scope="tmpl:cv-welfare", count=1, verify_count=1)
+    make_worker(settings, sessions, sandbox, CivicsOracle(fact="true_wrong")).run_once()
+    assert sub._fact_memo == {}

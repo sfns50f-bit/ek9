@@ -57,7 +57,7 @@ from .runtime import (
 )
 from .sandbox_client import SandboxClient, SandboxUnavailable
 from .subjects import get_subject
-from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit, VerifyResult
+from .subjects.base import Draft, GenContext, Rejected, Subject, Subunit, VerifyResult, WaitForSource
 
 log = logging.getLogger("worker")
 
@@ -103,6 +103,8 @@ class Worker:
         self.last_ollama_check = -1e9
         self.last_backup_check = -1e9
         self.last_source_check = -1e9
+        # 資料の取得を待っている依頼 → 次に試す時刻（time.monotonic）。その間はほかの依頼を先に進める（WaitForSource）
+        self.job_retry_at: dict[int, float] = {}
         self._source_check_written = False  # この起動で鮮度の調査の結果を一度は書いたか
         self._last_status: tuple[str, int | None] | None = None
         self._last_status_at = -1e9
@@ -282,6 +284,8 @@ class Worker:
                 needs = plan_for_job(self.settings, s, job).needs_ollama
                 if self.lane == "api" and needs or self.lane == "ollama" and not needs:
                     continue  # もう一方の順番待ちの依頼
+                if self.job_retry_at.get(job.id, 0.0) > time.monotonic():
+                    continue  # 資料の取得を待っている（次に試す時刻まで、ほかの依頼を先に進める）
                 if ollama_ok or not needs:
                     ready.append(job)
             if not ready:
@@ -756,8 +760,10 @@ class Worker:
                          "model": plan.gen_model, "raw": getattr(exc, "raw", "")[:4000]}
                 self.save_rejected(job, subject, template, Rejected("llm_output", str(exc), [entry]), plan)
                 continue
-            except LLMUnavailable:
-                with self.sessions.begin() as s:  # 作れなかった分は数えない
+            except (LLMUnavailable, WaitForSource):
+                # 作れなかった分は数えない（資料の取得を待つときも。数えると、待つたびに作り直しの回数が減り、
+                # 1 問も作らないうちに依頼が「失敗」になっていた。第 15 回のレビューの #31 の確認）
+                with self.sessions.begin() as s:
                     s.get(Job, job.id).gen_attempts -= 1
                 raise
             finally:
@@ -806,7 +812,8 @@ class Worker:
                         else:
                             # 何回目の検証か（_run）も渡す（1 回目だけかける確認がある。英語の 1 対 1 の判定）
                             res = subject.verify(self.llm, self.sandbox, model, problem,
-                                                 **_opts(subject, {**job.options, "_run": str(r)}))
+                                                 **_opts(subject, {**job.options, "_run": str(r),
+                                                                   "_runs": str(n_verify)}))
                         ok, summary, detail, code, raw = res.ok, res.summary, res.detail, res.code, res.raw
                         if res.updates:
                             updates[pid] = _merge_updates(updates.get(pid, {}), res.updates)
@@ -904,6 +911,13 @@ class Worker:
                 s.get(Job, job_id).made = s.execute(select(func.count()).select_from(Problem).where(
                     Problem.job_id == job_id, Problem.status == "ready")).scalar_one()
             self._finish(job_id, "failed", str(exc))
+        except WaitForSource as exc:  # この依頼だけを待たせる（Ollama・API の待ちとは分ける）
+            log.warning("job %s waiting for source: %s", job_id, exc)
+            self.job_retry_at[job_id] = time.monotonic() + self.settings.retry_seconds
+            self._update_job(job_id, status="waiting",
+                             progress=f"資料の取得を待っています：{exc}（{self.settings.retry_seconds} 秒ごとに再試行。"
+                                      "ほかの依頼は先に進めます）")
+            self.set_status(f"資料の取得を待っています：{exc}", job_id)
         except (LLMUnavailable, SandboxUnavailable) as exc:
             log.warning("job %s waiting: %s", job_id, exc)
             self.unavailable_until = time.monotonic() + self.settings.retry_seconds
@@ -965,15 +979,27 @@ class Worker:
                 log.exception("worker loop error")
                 worked = False
             if not worked:
-                with self.sessions() as s:
-                    waiting = s.execute(select(func.count()).select_from(Job)
-                                        .where(Job.status.in_(OPEN_STATUSES))).scalar_one()
-                if waiting and time.monotonic() < self.unavailable_until:
-                    what = "API（または sandbox）" if self.lane == "api" else "Ollama"
-                    self.set_status(f"{what}につながるのを待っています（順番待ち {waiting} 件）")
-                else:
-                    self.set_status("待機中（依頼なし）")
+                # 状態の書き込みの失敗（データベースの一時的なエラーなど）でループを抜けない。API の順番待ちは別スレッドで、
+                # 抜けるとそのスレッドだけが黙って止まり、Docker も再起動しない（Fable のレビュー 2）
+                try:
+                    self._idle_status()
+                except Exception:
+                    log.exception("worker idle status error")
                 time.sleep(3)
+
+    def _idle_status(self) -> None:
+        with self.sessions() as s:
+            waiting = s.execute(select(func.count()).select_from(Job)
+                                .where(Job.status.in_(OPEN_STATUSES))).scalar_one()
+        now = time.monotonic()
+        self.job_retry_at = {j: t for j, t in self.job_retry_at.items() if t > now - 3600}  # 古い印は捨てる
+        if waiting and now < self.unavailable_until:
+            what = "API（または sandbox）" if self.lane == "api" else "Ollama"
+            self.set_status(f"{what}につながるのを待っています（順番待ち {waiting} 件）")
+        elif waiting and any(t > now for t in self.job_retry_at.values()):
+            self.set_status(f"資料の取得を待っています（順番待ち {waiting} 件）")
+        else:
+            self.set_status("待機中（依頼なし）")
 
 
 def _merge_updates(prev: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
