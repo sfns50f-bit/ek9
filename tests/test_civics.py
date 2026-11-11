@@ -850,14 +850,19 @@ def test_waiting_for_source_does_not_block_other_jobs(settings, sessions, sandbo
 
     web.unavailable = True
     cid = add_job(sessions, subject="civics", scope="tmpl:cv-welfare", count=1)
-    mid = add_job(sessions, subject="math", count=1)  # 後ろに並んだ数学の依頼
     w = make_worker(settings, sessions, sandbox, OracleLLM(sessions))
-    assert w.run_once()  # 公共：資料を取れないので、この依頼だけ待たせる
-    j = job(sessions, cid)
-    assert j.status == "waiting" and "資料の取得を待っています" in j.progress
-    assert w.unavailable_until == 0.0  # Ollama の待ちにはしない
-    assert w.run_once()  # 次は数学の依頼が進む
+    # 何度待っても失敗にならず、作り直しの回数も減らない（依頼の上限は問題数 × 3 回。1 問なら 4 回目で失敗していた）
+    for _ in range(5):
+        w.job_retry_at.clear()  # 次に試す時刻が過ぎたことにする
+        assert w.run_once()
+        j = job(sessions, cid)
+        assert j.status == "waiting" and "資料の取得を待っています" in j.progress
+        assert j.gen_attempts == 0
+    mid = add_job(sessions, subject="math", count=1)  # 後ろに並んだ数学の依頼
+    assert w.run_once()  # 公共はまだ次に試す時刻の前なので、数学を先に進める
     assert job(sessions, mid).status == "done"
+    assert job(sessions, cid).status == "waiting"
+    assert w.unavailable_until == 0.0  # Ollama の待ちにはしない
     assert not w.run_once()  # 公共は次に試す時刻まで選ばない
     web.unavailable = False  # 時刻が過ぎたら続きから（公共の LLM で作る）
     w2 = make_worker(settings, sessions, sandbox, CivicsOracle())

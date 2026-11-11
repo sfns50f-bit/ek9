@@ -760,8 +760,10 @@ class Worker:
                          "model": plan.gen_model, "raw": getattr(exc, "raw", "")[:4000]}
                 self.save_rejected(job, subject, template, Rejected("llm_output", str(exc), [entry]), plan)
                 continue
-            except LLMUnavailable:
-                with self.sessions.begin() as s:  # 作れなかった分は数えない
+            except (LLMUnavailable, WaitForSource):
+                # 作れなかった分は数えない（資料の取得を待つときも。数えると、待つたびに作り直しの回数が減り、
+                # 1 問も作らないうちに依頼が「失敗」になっていた。第 15 回のレビューの #31 の確認）
+                with self.sessions.begin() as s:
                     s.get(Job, job.id).gen_attempts -= 1
                 raise
             finally:
