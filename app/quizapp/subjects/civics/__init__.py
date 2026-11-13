@@ -26,7 +26,7 @@ from typing import Any
 from .. import choicejudge
 from ..base import LLM, Draft, GenContext, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import check, prompts
-from .catalog import MISTAKES, SOURCES, SPECS, UNITS, Source, questions_for
+from .catalog import MISTAKES, SOURCE_IDS, SOURCES, SPECS, UNITS, Source, questions_for
 
 FIX_ROUNDS = 1  # 点検で落ちたとき、直しを頼む回数
 LETTERS = "ABCD"
@@ -37,6 +37,7 @@ def _why_only(issue: str) -> bool:
 ANSWER_CHECK = "正解の裏付け"
 SOFT_CHECKS = ("事実として正しい誤答", "正解が事実と食い違う疑い")
 FACT_AGREE = "2 回の検証で同じ事実の判定"
+SWAP_CHECKS = ("正解が 1 つか", "事実として正しい誤答")  # この確認だけで止まったら、止められた誤答を差し替えて確かめ直す
 REPAIR_ROUNDS = 1  # 見直しで落ちたとき、理由・ヒントを作り直させる回数（第 14 回のレビュー 3 章 F-1）
 # 事実の判定の理由と結論の食い違い（第 14 回のレビュー 3 章 E-3。理由は正しさを述べているのに結論が「誤り」など）
 _FACT_POS = re.compile(r"正しい|事実である|事実です|合っている|そのとおり|その通り|正確で")
@@ -65,6 +66,22 @@ def _params_key(template: str, params: dict[str, Any]) -> str:
 def _key(template: str, topic: str, i: int, revision: str = "") -> str:
     """同じ問題の印（params_key）。資料の版を含める（改正・書き換えのあとの新しい版では、同じ資料からまた作れる）。"""
     return _params_key(template, {"topic": topic, "q": i, "rev": revision})
+
+
+def _old_extract(p: dict[str, Any], template: str) -> bool:
+    """設問を足さない本文（第 16 回のレビュー A-2・A-3）：資料の一覧から外した資料（エリクソンの経歴など）と、
+    前の版の取り込み（本文だけの API。見出しが落ちている）で取った Wikipedia の本文。"""
+    info = p.get("source_info") or {}
+    return p.get("topic") not in SOURCE_IDS.get(template, set()) or (
+        info.get("kind") == "wiki" and info.get("format") != "html")
+
+
+def _view(problem: Any, choices: list[dict[str, Any]], explanation: str) -> Any:
+    """選択肢を差し替えた問題（検証・見直しにかける形。データベースの行は変えない）。"""
+    return SimpleNamespace(id=getattr(problem, "id", None), question=problem.question, choices=choices,
+                           explanation=explanation, hint=problem.hint, passage=getattr(problem, "passage", None),
+                           params=getattr(problem, "params", None), gen_model=getattr(problem, "gen_model", ""),
+                           status=getattr(problem, "status", ""), format=getattr(problem, "format", "choice"))
 
 
 def _stale(p: dict[str, Any]) -> bool:
@@ -154,6 +171,10 @@ class CivicsSubject(Subject):
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
                                    "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）"}},
+        # 検証の 1 回目で「資料で裏付けられる・事実として正しい」とされた誤答だけを作成役に作り直させ、確かめ直す
+        # （第 16 回のレビュー 3 章 B。作成の途中の問題だけ。見本集の測定・見直しのやり直しではしない）
+        "swap_wrong": {"label": "誤りになっていない誤答の差し替え（検証の 1 回目）", "default": "on",
+                       "choices": {"on": "する（その誤答だけ作り直して確かめ直す）", "off": "しない（そのまま判定する）"}},
         "reuse_passages": {"label": "資料の使い回し（作成）", "default": "on",
                            "choices": {"on": "前に取った資料に設問を足す", "off": "使わない（新しい資料だけ）"}},
     }
@@ -165,6 +186,8 @@ class CivicsSubject(Subject):
         self._fetcher: Any = None  # sources.Fetcher（テストでは差し替える）
         # 1 回目の検証の事実の判定で止めた選択肢（(問題, モデル) → {(種類, 選択肢の文)}）。2 回目と照らす（E-1）
         self._fact_memo: dict[tuple[Any, str], set[tuple[str, str]]] = {}
+        # 検証の 1 回目で誤答を差し替えた問題（問題 → (選択肢, 解説)）。2 回目の検証と見直しは差し替えた後の形で行う
+        self._swap_memo: dict[Any, tuple[list[dict[str, Any]], str]] = {}
         self._memo_lock = threading.Lock()
 
     @property
@@ -197,6 +220,7 @@ class CivicsSubject(Subject):
         reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic")
                     and len(p["questions"]) < questions_for(p["body"])
                     and (p.get("source_info") or {}).get("check") not in ("changed", "missing")
+                    and not _old_extract(p, template)
                     and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * questions_for(p["body"])]
         log: list[dict[str, Any]] = []
         if reusable and reuse:
@@ -379,24 +403,65 @@ class CivicsSubject(Subject):
 
     def verify(self, llm: LLM, sandbox: Sandbox, model: str, problem: Any,
                options: dict[str, str] | None = None) -> VerifyResult:
-        """選択肢ごとの判定（資料の引用つき。引用は資料と機械的に照らす）と、事実としての判定。"""
+        """選択肢ごとの判定（資料の引用つき。引用は資料と機械的に照らす）と、事実としての判定。
+        1 回目の検証で誤答だけが止められたら、その誤答を作成役に作り直させて確かめ直す（_swap_wrong）。"""
         opts = {k: spec["default"] for k, spec in self.verify_options.items()} | (options or {})
+        pid = getattr(problem, "id", None) or id(problem)
+        first = str(opts.get("_run", "1")) == "1"
+        with self._memo_lock:
+            if first:
+                self._swap_memo.pop(pid, None)  # 待機・再起動のあとは 1 回目からやり直す
+            swapped = self._swap_memo.get(pid)
+        if swapped:
+            problem = _view(problem, *swapped)
+        res, flags = self._verify_once(llm, model, problem, opts)
+        if not (first and flags and opts.get("swap_wrong") == "on" and getattr(problem, "status", "") == "draft"
+                and getattr(problem, "gen_model", "") and not (getattr(problem, "params", None) or {}).get("test")):
+            return res
+        fixed = self._swap_wrong(llm, problem, flags)
+        if fixed is None:
+            return VerifyResult(res.ok, res.summary, res.detail + "\n誤答の差し替え：作り直せなかった（そのまま判定）",
+                                res.code, raw=res.raw, updates=res.updates)
+        view, note, updates = fixed
+        res2, _flags = self._verify_once(llm, model, view, opts)
+        detail = f"{res.detail}\n誤答の差し替え：{note}\n【差し替えた後の判定】\n{res2.detail}"
+        raw = (res.raw + "\n\n【誤答を差し替えた後】\n" + res2.raw)[:4000]
+        if not res2.ok:  # 差し替えても止まった：差し替える前の形のまま、前の判定で返す
+            if str(opts.get("_runs", "2")) != "1":
+                with self._memo_lock:  # 2 回目と照らす事実の判定は、差し替える前の問題のもの
+                    self._fact_memo[(pid, model)] = {(k, t) for k, t in self._first_hits}
+            return VerifyResult(False, res.summary, detail + "\n（差し替えた後も止まったので、差し替えない）", res.code, raw=raw)
+        with self._memo_lock:
+            if len(self._swap_memo) >= 500:
+                self._swap_memo.pop(next(iter(self._swap_memo)))
+            self._swap_memo[pid] = (view.choices, view.explanation)
+        merged = {**updates, **res2.updates} if "choices" not in res2.updates else {**updates, **res2.updates,
+                                                                                 "explanation": updates["explanation"]}
+        return VerifyResult(True, f"{res2.summary}。{note}", detail, raw=raw, updates=merged)
+
+    def _verify_once(self, llm: LLM, model: str, problem: Any,
+                     opts: dict[str, str]) -> tuple[VerifyResult, dict[str, str]]:
+        """検証 1 回分。(結果, 差し替えられる誤答 {選択肢の文: 検証役の指摘})。差し替えられるのは、正解は裏付けられていて、
+        誤答が「資料で裏付けられる・事実として正しい」とされたことだけで止まったとき。"""
         checks: list[tuple[str, bool | None, str]] = []
         raws: list[str] = []
         updates: dict[str, Any] = {}
+        flags: dict[str, str] = {}
         choices = list(problem.choices)
         random.shuffle(choices)  # 毎回並べ替える（記号の位置で決まらないように）
-        self._judge_choices(llm, model, problem, choices, checks, raws, updates)
+        self._judge_choices(llm, model, problem, choices, checks, raws, updates, flags)
         if "choices" in updates:  # 付け直した選択肢は、問題に保存した順に戻す（解説は保存した順で組み立ててある）
             by_text = {c["text"]: c for c in updates["choices"]}
             updates["choices"] = [by_text.get(c["text"], c) for c in problem.choices]
+        self._first_hits: set[tuple[str, str]] = set()
         if opts.get("fact_check") == "on":
             choicejudge.set_label(llm, "検証（事実）")
             fact_model = model if opts.get("fact_model", "verify") in ("", "verify") else opts["fact_model"]
-            hits = self._judge_facts(llm, fact_model, problem, choices, checks, raws)
+            hits = self._judge_facts(llm, fact_model, problem, choices, checks, raws, flags)
             key = (getattr(problem, "id", None) or id(problem), model)
             with self._memo_lock:
                 if str(opts.get("_run", "1")) == "1":
+                    self._first_hits = hits
                     if str(opts.get("_runs", "2")) != "1":  # 検証が 1 回だけなら 2 回目と照らさないので残さない
                         if len(self._fact_memo) >= 500:  # 取り消し・待機で 2 回目が来なかった分がたまらないように
                             self._fact_memo.pop(next(iter(self._fact_memo)))
@@ -405,7 +470,55 @@ class CivicsSubject(Subject):
                     same = hits & self._fact_memo.pop(key, set())
                     if same:
                         checks.append((FACT_AGREE, False, "／".join(f"「{t[:50]}」（{k}）" for k, t in sorted(same))))
-        return self._verdict_of(model, checks, raws, updates)
+        stopped = [name for name, ok, _t in checks if ok is not True]
+        if not stopped or any(name not in SWAP_CHECKS for name in stopped):
+            flags = {}
+        return self._verdict_of(model, checks, raws, updates), flags
+
+    def _swap_wrong(self, llm: LLM, problem: Any, flags: dict[str, str]) -> tuple[Any, str, dict[str, Any]] | None:
+        """止められた誤答だけを作成役に作り直させる（設問・正解・ほかの選択肢は変えない）。
+        (差し替えた問題（検証にかける形）, 説明, 問題に書き込む項目)。作り直せない・点検で落ちたら None。"""
+        from ...llm import LLMError
+
+        choices = [dict(c) for c in problem.choices]
+        right = next((i for i, c in enumerate(choices) if c.get("correct")), -1)
+        bad = {LETTERS[i]: flags[c["text"]] for i, c in enumerate(choices) if c["text"] in flags and i != right}
+        if right < 0 or len(choices) != 4 or not bad:
+            return None
+        body = _passage_body(problem)
+        evidence = str((getattr(problem, "params", None) or {}).get("evidence", ""))
+        q = {"question": problem.question, "options": [c["text"] for c in choices], "answer": right,
+             "wrong": {LETTERS[i]: c.get("mistake") for i, c in enumerate(choices) if not c.get("correct")},
+             "evidence": evidence, "hint": problem.hint, "explanation": problem.explanation,
+             "why": {LETTERS[i]: c.get("why", "") for i, c in enumerate(choices) if c.get("why")}}
+        choicejudge.set_label(llm, "直し")
+        try:
+            out = choicejudge.chat_retry(llm, problem.gen_model, prompts.QUESTION_SYSTEM,
+                                         prompts.swap_user(body, q, bad), prompts.SWAP_SCHEMA)
+        except LLMError:
+            return None
+        finally:
+            choicejudge.set_label(llm, "検証")
+        got = choicejudge.parse_question(check.normalize(str(out.get("options") or "")))
+        notes = []
+        for c in bad:
+            i = LETTERS.index(c)
+            new, why = got["options"][i].strip(), got["why"].get(c, "").strip()
+            old = choices[i]["text"]
+            if not new or not why or check.similar(new, old, 0.9) or any(
+                    check.similar(new, o["text"], 0.9) for j, o in enumerate(choices) if j != i):
+                return None
+            mistake = got["wrong"].get(c)
+            choices[i] = {"text": new, "correct": False, "mistake": mistake if mistake in MISTAKES else "contradicts",
+                          "why": why}
+            q["options"][i], q["why"][c], q["wrong"][c] = new, why, choices[i]["mistake"]
+            notes.append(f"「{old[:40]}」→「{new[:40]}」")
+        if check.question_issues(q, body, MISTAKES, why=bool(q["why"])):
+            return None
+        explanation = check.build_explanation(choices, evidence) if q["why"] else problem.explanation
+        note = f"誤答を差し替えた（{problem.gen_model}）：" + "、".join(notes)
+        return _view(problem, choices, explanation), note, {"choices": choices, "explanation": explanation,
+                                                           "swapped": True}
 
     @staticmethod
     def _verdict_of(model: str, checks: list[tuple[str, bool | None, str]], raws: list[str],
@@ -428,7 +541,7 @@ class CivicsSubject(Subject):
 
     def _judge_choices(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
                        checks: list[tuple[str, bool | None, str]], raws: list[str],
-                       updates: dict[str, Any] | None = None) -> None:
+                       updates: dict[str, Any] | None = None, flags: dict[str, str] | None = None) -> None:
         passage = _passage_body(problem)
         choicejudge.set_label(llm, "検証")
         user = prompts.choice_judge_user(_passage_title(problem), passage, problem.question,
@@ -471,6 +584,8 @@ class CivicsSubject(Subject):
         checks.append(("正解が 1 つか", not also,
                        "ほかに裏付けのある選択肢はない" if not also
                        else "「" + "」「".join(choices[i]["text"][:60] for i in also) + "」も資料で裏付けられる（正解が複数）"))
+        if flags is not None:
+            flags.update({choices[i]["text"]: f"資料で裏付けられる（{got[i][1][:150]}）" for i in also})
         if updates is not None and not also and label == "裏付けあり":
             self._relabel(passage, choices, got, checks, updates)
 
@@ -502,7 +617,8 @@ class CivicsSubject(Subject):
             checks.append(("誤答の種類", True, "付け直した：" + "、".join(fixed)))
 
     def _judge_facts(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
-                     checks: list[tuple[str, bool | None, str]], raws: list[str]) -> set[tuple[str, str]]:
+                     checks: list[tuple[str, bool | None, str]], raws: list[str],
+                     flags: dict[str, str] | None = None) -> set[tuple[str, str]]:
         """選択肢が事実として正しいかを判定させる（資料と取得した日は参考に見せる。資料に書かれた経緯は事実として扱う）。
         誤答が「正しい」・正解が「誤り」なら要確認。理由と結論が食い違う判定は使わない（E-3）。読めなければ記録に
         残すだけ。止めた選択肢を {(種類, 選択肢の文)} で返す（2 回目の検証と照らす）。"""
@@ -525,6 +641,9 @@ class CivicsSubject(Subject):
         hits: set[tuple[str, str]] = set()
         if true_wrong:
             hits |= {("誤答が事実として正しい", choices[i]["text"]) for i in true_wrong}
+            if flags is not None:
+                for i in true_wrong:
+                    flags.setdefault(choices[i]["text"], f"事実として正しい（{got[i][1][:150]}）")
             checks.append(("事実として正しい誤答", False, "「" + "」「".join(
                 f"{choices[i]['text'][:50]}」（{got[i][1][:60]}）" for i in true_wrong).rstrip("」") + "」"
                 + "は事実として正しい（資料にないだけで、正解が 2 つの疑い）"))
@@ -563,6 +682,10 @@ class CivicsSubject(Subject):
         """理由・ヒントが資料と合っているか、立場を決めつけていないか。読めなければ 1 回聞き直し、それでも読めなければ不合格。
         「問題あり」なら、作成の途中の問題（下書き）は、指摘を作成役に渡して理由とヒントだけを作り直させ、もう一度見直す
         （REPAIR_ROUNDS 回まで。正解が 1 つに決まることは検証で確かめてあるので、問題ごと捨てない。第 14 回のレビュー 3 章 F-1）。"""
+        with self._memo_lock:  # 検証で誤答を差し替えた問題は、差し替えた後の形を見直す
+            swapped = self._swap_memo.pop(getattr(problem, "id", None) or id(problem), None)
+        if swapped:
+            problem = _view(problem, *swapped)
         return self._review(llm, model, problem, repair=getattr(problem, "status", "") == "draft")
 
     def _review(self, llm: LLM, model: str, problem: Any, repair: bool) -> VerifyResult:
@@ -588,8 +711,12 @@ class CivicsSubject(Subject):
                                     updates={**updates, "repaired": True})
             return VerifyResult(True, f"{model}: 誤りは見つからなかった", issues, raw=raw)
         if verdict.startswith("問題あり"):
-            again = "（作り直しても）" if updates else ""
-            return VerifyResult(False, f"{model}: 誤りを指摘{again}：{_cut(issues, 600) or '理由なし'}", detail, "cv_review",
+            if updates:
+                # 作り直した後の 2 度目の指摘は、不合格にせず要確認にする（第 16 回のレビュー 3 章 D-1：1 度目の指摘は
+                # 直っていて、2 度目は別の細かい指摘・見直し役の読み違いが多かった。問題検証モードで確かめて決める）
+                return VerifyResult(False, f"{model}: 理由・ヒントを作り直した後も指摘（要確認）：{_cut(issues, 600) or '理由なし'}",
+                                    detail, "needs_check", raw=raw)
+            return VerifyResult(False, f"{model}: 誤りを指摘：{_cut(issues, 600) or '理由なし'}", detail, "cv_review",
                                 raw=raw)
         return VerifyResult(False, f"{model}: 見直しの結果を読めなかった", detail, "cv_review_unread", raw=raw)
 

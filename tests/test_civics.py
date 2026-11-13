@@ -122,12 +122,14 @@ class CivicsOracle:
     """
 
     def __init__(self, *, judge="right", fact="right", review_verdict="問題なし", bad_evidence_once=False, bad_questions=(),
-                 question="資料の内容に合うものを、次のうちから一つ選べ。", empty_explanation=False, dup=False):
+                 question="資料の内容に合うものを、次のうちから一つ選べ。", empty_explanation=False, dup=False,
+                 swap=""):
         self.judge, self.fact, self.review_verdict = judge, fact, review_verdict
         self.bad_evidence_once = bad_evidence_once
         self.bad_questions = set(bad_questions)  # この番号の設問は、根拠の文をいつも資料にないものにする
         self.question = question
         self.empty_explanation = empty_explanation
+        self.swap = swap  # 誤答の差し替え：""＝作り直せない、"good"＝誤りの誤答に替える、"same"＝また資料に合う誤答を書く
         self.dup = dup  # 同じ依頼の設問の誤答を同じにする（同じ資料の設問の重複の点検）
         self.calls = []
         self.fix_users = []
@@ -163,6 +165,17 @@ class CivicsOracle:
                     "Hint: 資料の前半の文をよく読もう。"])
             self.bad_evidence_once = False
             return out
+        if "options" in props:  # 検証で止められた誤答の差し替え
+            self.calls.append(("swap", model))
+            self.fix_users.append(user)
+            if not self.swap:
+                return {"options": ""}
+            bad = re.findall(r"^- ([A-D]): ", user, re.M)
+            text = "資料と逆の内容に書き直した誤答" if self.swap == "good" else "資料に合う別の内容"
+            kinds = {"A": "年を取り違えて", "B": "主体を入れ替えて", "C": "数を大きく変えて", "D": "増減を反対にして"}
+            return {"options": "\n".join([f"{c}: {kinds[c]}、{text}（{c * 6}）" for c in bad]
+                                         + [f"Why {c}: 資料の記述と逆のことを述べているので誤り。" for c in bad]
+                                         + ["Wrong: " + ", ".join(f"{c}=contradicts" for c in bad)])}
         if "reasons" in props:  # 選択肢ごとの理由とヒントの書き直し（理由が空・見直しの指摘）
             self.calls.append(("fix_explanation", model))
             self.fix_users.append(user)
@@ -413,7 +426,8 @@ def test_fact_check_can_be_turned_off(settings, sessions, sandbox, web):
 def test_review_problem_rejects(settings, sessions, sandbox, web):
     run_job(settings, sessions, sandbox, CivicsOracle(review_verdict="問題あり"), scope="tmpl:cv-welfare", count=1)
     assert problems(sessions, status="ready") == []
-    assert "cv_review" in {r.reject_code for r in problems(sessions, status="rejected")}
+    # 作り直した後の 2 度目の指摘は要確認（第 16 回のレビュー 3 章 D-1）
+    assert "needs_check" in {r.reject_code for r in problems(sessions, status="rejected")}
 
 
 def test_tampered_civics_problem_is_rejected_by_verification(settings, sessions, sandbox, web):
@@ -783,8 +797,8 @@ def test_review_problem_is_repaired_once(settings, sessions, sandbox, web):
 
 def test_review_problem_after_repair_rejects(settings, sessions, sandbox, web):
     run_job(settings, sessions, sandbox, CivicsOracle(review_verdict="問題あり"), scope="tmpl:cv-welfare", count=1)
-    rej = [p for p in problems(sessions, status="rejected") if p.reject_code == "cv_review"]
-    assert rej and "作り直しても" in rej[0].reject_reason
+    rej = [p for p in problems(sessions, status="rejected") if p.reject_code == "needs_check"]
+    assert rej and "作り直した後も指摘" in rej[0].reject_reason
 
 
 def test_rereview_does_not_repair(settings, sessions, sandbox, web):
@@ -902,3 +916,81 @@ def test_fact_memo_is_not_kept_when_verified_once(settings, sessions, sandbox, w
     add_job(sessions, subject="civics", scope="tmpl:cv-welfare", count=1, verify_count=1)
     make_worker(settings, sessions, sandbox, CivicsOracle(fact="true_wrong")).run_once()
     assert sub._fact_memo == {}
+
+
+# --- 第 16 回のレビュー ---------------------------------------------------------------
+
+def test_flagged_distractors_are_swapped_and_reverified(settings, sessions, sandbox, web):
+    # 検証の 1 回目で誤答が「事実として正しい」とされたら、その誤答だけ作り直して確かめ直す（3 章 B）
+    llm = CivicsOracle(fact="true_wrong_once", swap="good")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert "swap" in {k for k, _m in llm.calls}
+    swapped = [p for p in problems(sessions) if any("誤答を差し替えた" in e.get("summary", "") for e in p.verification)]
+    assert swapped and all(p.status == "ready" for p in swapped)
+    p = swapped[0]
+    wrong = [c for c in p.choices if not c["correct"]]
+    assert all("書き直した誤答" in c["text"] and c["mistake"] == "contradicts" for c in wrong)
+    assert sum(1 for c in p.choices if c["correct"]) == 1
+    assert all(c["text"] in p.explanation for c in wrong)  # 解説も差し替えた後の選択肢で組み立てる
+    assert any("誤答を差し替えた" in e.get("summary", "") for e in p.verification)
+    assert "誤りになっていませんでした" in llm.fix_users[0]
+
+
+def test_swap_that_is_still_true_keeps_the_original(settings, sessions, sandbox, web):
+    llm = CivicsOracle(fact="true_wrong_once", swap="same")  # 差し替えた誤答も資料に合う → 差し替えずに前の判定
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    first = problems(sessions)[0]
+    assert first.status == "rejected" and first.reject_code == "needs_check"
+    assert not any("資料に合う別の内容" in c["text"] for c in first.choices)
+
+
+def test_swap_can_be_turned_off_and_is_not_used_for_tests(settings, sessions, sandbox, web):
+    llm = CivicsOracle(fact="true_wrong_once", swap="good")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1,
+            options_json=dumps({"swap_wrong": "off"}))
+    assert "swap" not in {k for k, _m in llm.calls}
+    llm = CivicsOracle(swap="good")
+    jid = run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1, is_test=True)
+    assert "期待どおり" in job(sessions, jid).error and "swap" not in {k for k, _m in llm.calls}
+
+
+def test_tidy_drops_dangling_lead_ins_and_cut_lists():
+    from quizapp.subjects.civics.sources import drop_trailing_headings, tidy
+
+    text = "\n".join(["少子高齢化とは、少子化と高齢化が同時に進むことである。", "【国際連合の定める高齢化率】",
+                      "国際連合は、高齢化率について以下の3段階を定義している。", "【日本】", "日本の高齢化率は高い。",
+                      "引き起こされる問題としては次のようなものがある。", "・人手不足", "・経済の縮小"])
+    out = tidy(text)
+    assert "以下の3段階" not in out and "【国際連合の定める高齢化率】" not in out  # 続きのない文と、空になった見出し
+    assert "次のようなものがある。\n・人手不足\n・経済の縮小" in out  # 箇条書きが続く文は残す
+    assert tidy(text, cut=True).endswith("日本の高齢化率は高い。")  # 長くて切ったときは、途中の箇条書きを丸ごと落とす
+    # 箇条書きの短い行は見出しとして落とさない（マズローの 5 段階が 3 つで切れていた）
+    lst = "高次の欲求から並べる。\n・自己実現の欲求 (Self-actualization)\n・安全の欲求 (Safety needs)\n・生理的欲求"
+    assert drop_trailing_headings(lst) == lst
+
+
+def test_opinion_evidence_and_borrowed_reason_are_caught():
+    body = "政党交付金は国庫から交付される。献金は見返りを求めないという前提に、深い疑念が生じた事がある。" * 2
+    q = {"question": "資料の内容に合うものはどれか。", "options": ["献金に疑いが持たれたこと", "国庫から交付されない資金であること",
+                                                     "すべての団体に交付されること", "個人だけに交付されること"],
+         "answer": 0, "wrong": {"B": "contradicts", "C": "contradicts", "D": "contradicts"},
+         "evidence": "献金は見返りを求めないという前提に、深い疑念が生じた事がある。", "hint": "資料の後半を読もう。",
+         "explanation": "", "why": {"A": "資料に「深い疑念が生じた」とあるので正しいと分かる。",
+                                    "B": "資料に「国庫から交付される」とあるので誤り。",
+                                    "C": "資料に「すべての団体に交付されること」という記述はなく、個人だけに交付されることは矛盾する。",
+                                    "D": "資料に個人だけという記述はないので誤り。"}}
+    issues = check.question_issues(q, body, MISTAKES, why=True)
+    assert any("意見・推測" in x for x in issues)
+    assert any(x.startswith("選択肢 C の理由が、別の選択肢の文") for x in issues)
+
+
+def test_old_extracts_and_removed_sources_are_not_reused(web):
+    sub = get_subject("civics")
+    body = "非正規雇用は、有期労働契約による雇用形態のこと。" * 30
+    base = {"id": 7, "title": "t", "body": body, "status": "ok", "questions": ["前の設問"], "rejected": 0,
+            "rejected_by": {}, "source_title": "Wikipedia"}
+    removed = {**base, "topic": "wiki:非正規雇用", "source_info": {"kind": "wiki", "format": "html"}}
+    old = {**base, "id": 8, "topic": "wiki:最低賃金", "source_info": {"kind": "wiki"}}
+    assert "wiki:非正規雇用" not in {s.id for s in SOURCES["cv-labor"]}
+    drafts = sub.generate(_ctx(CivicsOracle(), [removed, old]), "cv-labor", "choice")
+    assert drafts and all(d.passage.get("id") not in (7, 8) for d in drafts)
