@@ -18,6 +18,9 @@ _OPINION_RE = re.compile(r"べきだと(思|考え)|べきか|あなた(は|の�
 # 選択肢を記号で呼ぶ（画面で並べ替えるので使えない）
 _LETTER_REF_RE = re.compile(r"選択肢\s*[A-DＡ-Ｄ①-④1-4１-４]|(?<![A-Za-zＡ-Ｚａ-ｚ])[A-DＡ-Ｄ]\s*(は|が|の選択肢|も)")
 # 生徒に見せる文章に書かせない言葉（アプリの内部の言葉・作成の指示）
+# 意見・推測・批判を述べた文（正解の根拠にしない。第 16 回のレビュー A-1：Wikipedia の「〜という前提に、深い疑念が
+# 生じた事がある」を制度の背景として問うていた）。「指摘される」「いわれている」は教科書どおりの内容にも使うので入れない
+_HEDGE_RE = re.compile(r"と思われる|と批判され|問題視され|疑念|とも言われ|ではないかと")
 _INTERNAL = ("与えられた", "指示", "指定された", "作成役", "検証役", "Evidence", "Wrong:", "[[")
 
 
@@ -190,6 +193,8 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
         out.append("根拠の文が資料にそのまま入っていない（資料から一字一句写す）")
     elif flat(opts[q["answer"]]) and flat(opts[q["answer"]]) == flat(q["evidence"]):
         out.append("正解の選択肢が根拠の文の丸写し（言い換える）")
+    elif _HEDGE_RE.search(q["evidence"]):
+        out.append(f"根拠の文が意見・推測・批判を述べた文（「{_HEDGE_RE.search(q['evidence']).group()}」）。事実・制度のしくみを述べた文を根拠にして設問を作る")
     else:
         missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])]
         if missing:
@@ -205,6 +210,11 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
             out += japanese_issues(text, f"選択肢 {c} の理由", min_len=15 if i == q["answer"] else 8)
             if _LETTER_REF_RE.search(text):
                 out.append(f"選択肢 {c} の理由が選択肢を記号（A・B など）で呼んでいる（中身で呼ぶ）")
+            # 別の選択肢の文をそのまま引いた理由（第 16 回のレビュー #1526：誤答の理由が別の誤答の文を否定していた）
+            others = [o for j, o in enumerate(opts) if j != i and len(flat(o)) >= 10 and flat(o) in flat(text)
+                      and flat(o) not in flat(opts[i])]
+            if others:
+                out.append(f"選択肢 {c} の理由が、別の選択肢の文（「{others[0][:20]}…」）を引いている（この選択肢の言葉で説明する）")
     else:
         out += japanese_issues(q["explanation"], "解説", min_len=30)
     right = flat(opts[q["answer"]])

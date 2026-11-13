@@ -378,10 +378,43 @@ def drop_trailing_headings(text: str) -> str:
     """末尾の、文で終わらない行（見出し・定義の語だけの行）を落とす（第 13 回のレビュー：本文が見出し
     「付随的違憲審査制（司法裁判所型、アメリカ型）」で終わっていた。括弧で終わる見出しも、短い行は落とす）。"""
     lines = text.rstrip().split("\n")
-    while lines and (not lines[-1].rstrip().endswith(_SENTENCE_END) or
-                     ("。" not in lines[-1] and len(lines[-1].strip()) <= 40)):
+    # 箇条書きの行（「・」）は見出しではないので落とさない（第 16 回のレビュー A-2：「マズローの欲求段階説」の
+    # 5 つの箇条書きのうち、短い下の 2 つだけが落ちていた）
+    while lines and not lines[-1].startswith("・") and (
+            not lines[-1].rstrip().endswith(_SENTENCE_END)
+            or ("。" not in lines[-1] and len(lines[-1].strip()) <= 40)):
         lines.pop()
     return "\n".join(lines).strip()
+
+
+# 「以下の 3 段階を定義している。」「次のとおりである。」のように、後ろに箇条書き・表が続くはずの文
+_LEAD_IN_RE = re.compile(r"(以下|次|下記)(の|に)[^。]{0,40}(定義している|ある|挙げられる|行っている|示す|掲げる|分けられる"
+                         r"|分類される|大別される|記載する|とおり|通り|説明する)[^。]{0,6}。$")
+
+
+def tidy(text: str, cut: bool = False) -> str:
+    """取り込みで欠けた所を、文章を書き換えずに行ごと落とす（第 16 回のレビュー A-2）。
+    - 途中で切れた箇条書き（cut＝長くて切ったとき、末尾が「・」の行なら、その箇条書きを丸ごと）
+    - 「以下の〜。」で終わるのに、後ろに箇条書きが続かない段落（表が落ちた・切れた）
+    - 中身のなくなった見出し（すぐ後ろが別の見出し・末尾）"""
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    if cut:
+        while lines and lines[-1].startswith("・"):
+            lines.pop()
+    out: list[str] = []
+    dropped = False  # 直前の行を落としたか
+    for i, ln in enumerate(lines):
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not ln.startswith(("・", "【")) and _LEAD_IN_RE.search(ln.rstrip()) and not nxt.startswith("・"):
+            dropped = True
+            continue
+        if dropped and ln.startswith("【") and out and out[-1].startswith("【"):
+            out.pop()  # 中身を落として空になった見出し
+        dropped = False
+        out.append(ln)
+    while out and out[-1].startswith("【"):
+        out.pop()
+    return "\n".join(out).strip()
 
 
 def wiki_excerpt(text: str, section: str = "") -> str:
@@ -431,7 +464,7 @@ def fetch_wiki(f: Fetcher, src: Source) -> Fetched:
     title, revid = page["title"], page["revid"]
     text = wiki_excerpt(page["text"], src.section)
     body, cut = clip(text)
-    body = drop_trailing_headings(body)
+    body = tidy(drop_trailing_headings(body), cut)
     if len(body) < MIN_CHARS:
         raise SourceMissing(f"Wikipedia「{title}」の本文が短すぎます（{len(body)} 字）")
     where = f"「{title}」" + (f"の節「{src.section}」" if src.section else "")

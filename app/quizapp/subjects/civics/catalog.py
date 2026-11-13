@@ -137,7 +137,9 @@ SOURCES: dict[str, list[Source]] = {
     "cv-labor": [kenpo("27", "28"), law("322AC0000000049", "1", "32", title="労働基準法"),
                  law("324AC0000000174", "1", title="労働組合法"),
                  law("347AC0000000113", "5", "6", title="男女雇用機会均等法（雇用の分野における男女の均等な機会及び待遇の確保等に関する法律）"),
-                 wiki("労働三権"), wiki("最低賃金"), wiki("非正規雇用"), wiki("ワーク・ライフ・バランス"), wiki("労働基準法")],
+                 law("419AC0000000128", "3", "16", "17", title="労働契約法"),
+                 # 「非正規雇用」は外した（第 16 回のレビュー A-1：解雇規制の段落が一方的な主張で、数値の文も壊れていた）
+                 wiki("労働三権"), wiki("最低賃金"), wiki("ワーク・ライフ・バランス"), wiki("労働基準法")],
     "cv-welfare": [kenpo("25"), law("325AC0000000144", "1", "4", title="生活保護法"), wiki("社会保障"),
                    wiki("国民皆保険"), wiki("公的年金"), wiki("社会保険"), wiki("介護保険"), wiki("少子高齢化")],
     "cv-intl-politics": [kenpo("9"), wiki("国際連合"), wiki("国際連合安全保障理事会"), wiki("国際司法裁判所"),
@@ -145,6 +147,9 @@ SOURCES: dict[str, list[Source]] = {
     "cv-intl-economy": [wiki("比較優位"), wiki("世界貿易機関"), wiki("為替レート"), wiki("国際収支"),
                         wiki("経済連携協定"), wiki("政府開発援助"), wiki("南北問題")],
 }
+
+
+SOURCE_IDS: dict[str, set[str]] = {t: {s.id for s in srcs} for t, srcs in SOURCES.items()}
 
 
 def questions_for(body: str) -> int:
