@@ -1034,3 +1034,12 @@ def test_civics_golden_set_adds_groups_from_the_database(settings, sessions, san
         golden.load = orig
     assert {x.id: x.expected for x in gs.samples} == {a: "reject", b: "pass"}
     assert gs.db_missing == ["#999999（データベースにない）"]
+
+
+def test_quotes_with_byte_escapes_or_two_sentences_are_found():
+    # 見本集の測定 #242：全角の空白を <0xE3><0x80><0x80> と書いた引用、離れた 2 文をつないだ引用を「資料にない」としていた
+    passage = "二　将来における変動が不確実な事項につき断定的判断を提供すること。　当該提供された断定的判断の内容が確実であるとの誤認\n" \
+              "非常任理事国の任期は2年（国連憲章第23条2項）。現在は地域グループによって配分されている。\n非常任理事国は再任出来ず、必ず退任する。"
+    assert check.near_quote(passage, "断定的判断を提供すること。<0xE3><0x80><0x80>当該提供された断定的判断の内容が確実であるとの誤認")
+    assert check.near_quote(passage, "非常任理事国の任期は2年（国連憲章第23条2項）。非常任理事国は再任出来ず、必ず退任する。")
+    assert not check.near_quote(passage, "非常任理事国の任期は2年（国連憲章第23条2項）。非常任理事国は何度でも再任できる。")
