@@ -515,13 +515,21 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                     review_model="" if review_model == verify_model else review_model,
                     extra=tuple(sorted((r, m) for r, m in extra.items() if m)),
                 )
-            job = Job(subject=sub.id, scope=scope_s, levels=levels_s, format=fmt,
-                      count=max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10))),
-                      options_json=json.dumps(runtime.verify_options(s, sub)))  # 検証のやり方も依頼したときの設定で
-            runtime.apply_plan(job, chosen)
-            runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
-            s.add(job)
-            left = remaining_for(s, sub, sub.templates_for(scope_s, fmt, levels_s), fmt)
+            count = max(1, min(MAX_JOB, _int(str(form.get("count", "10")), 10)))
+            templates = sub.templates_for(scope_s, fmt, levels_s)
+            # 数え方「小単元ごとに」：選んだ範囲の小単元 1 つにつき 1 件の依頼に分ける（それぞれこの問題数。始まって
+            # いない分だけ取り消して次の日に回せる。同じ科目の依頼は続けて処理される）
+            split = str(form.get("split", "")) == "subunit" and len(templates) > 1
+            scopes = [f"tmpl:{t}" for t in templates] if split else [scope_s]
+            for one in scopes:
+                job = Job(subject=sub.id, scope=one, levels=levels_s, format=fmt, count=count,
+                          options_json=json.dumps(runtime.verify_options(s, sub)))  # 検証のやり方も依頼したときの設定で
+                runtime.apply_plan(job, chosen)
+                runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
+                s.add(job)
+            left = remaining_for(s, sub, templates, fmt)
+        if split:
+            return redirect(f"/generate?msg=queued_split&left={len(scopes)}")
         if left is not None and left < job.count:  # 題材・語の残りが頼んだ数より少ない（第 11 回のレビュー 2-3）
             return redirect(f"/generate?msg=queued_low&left={left}")
         return redirect("/generate?msg=queued")

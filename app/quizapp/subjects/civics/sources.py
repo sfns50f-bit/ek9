@@ -392,12 +392,25 @@ _LEAD_IN_RE = re.compile(r"(以下|次|下記)(の|に)[^。]{0,40}(定義して
                          r"|分類される|大別される|記載する|とおり|通り|説明する)[^。]{0,6}。$")
 
 
+_NOTE_HEADS = ("出典", "脚注", "注釈", "参考文献", "関連項目", "外部リンク", "関連文献")
+
+
 def tidy(text: str, cut: bool = False) -> str:
     """取り込みで欠けた所を、文章を書き換えずに行ごと落とす（第 16 回のレビュー A-2）。
     - 途中で切れた箇条書き（cut＝長くて切ったとき、末尾が「・」の行なら、その箇条書きを丸ごと）
     - 「以下の〜。」で終わるのに、後ろに箇条書きが続かない段落（表が落ちた・切れた）
-    - 中身のなくなった見出し（すぐ後ろが別の見出し・末尾）"""
-    lines = [ln for ln in text.split("\n") if ln.strip()]
+    - 中身のなくなった見出し（すぐ後ろが別の見出し・末尾）
+    - 記事の途中の「出典」「脚注」などの小見出しとその中身（第 17 回のレビュー：本文に「【出典】 Inter Parliamentary
+      Union…」が混ざっていた）"""
+    lines = []
+    skipping = False
+    for ln in text.split("\n"):
+        if not ln.strip():
+            continue
+        if ln.startswith("【") and ln.rstrip().endswith("】"):
+            skipping = ln.strip("【】 ").startswith(_NOTE_HEADS)  # 記事の途中の「出典」「脚注」などの小見出しの中身
+        if not skipping:
+            lines.append(ln)
     if cut:
         while lines and lines[-1].startswith("・"):
             lines.pop()

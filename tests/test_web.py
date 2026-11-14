@@ -629,3 +629,22 @@ def test_api_section_limits_and_models(client, settings, sessions):
         assert api_limits(settings, s) == (10.0, 0.5)
     assert 'value="anthropic/claude-haiku-5-5"' in client.get("/generate").text  # 作る画面で選べる
     assert "今月 $1.25" in client.get("/status").text
+
+
+def test_generate_split_by_subunit_queues_one_job_each(client, sessions):
+    """数え方「小単元ごとに」：選んだ範囲の小単元ごとに、同じ問題数の依頼を 1 件ずつ作る。"""
+    from quizapp.subjects import get_subject
+
+    sub = get_subject("math")
+    templates = sub.templates_for("unit:m2-trig", "input", "")
+    assert len(templates) > 1
+    before = len(all_rows(sessions, Job))
+    r = client.post("/generate", data={"subject": "math", "scope": "unit:m2-trig", "format": "input", "count": 2,
+                                       "split": "subunit"}, follow_redirects=True)
+    assert f"小単元ごとに {len(templates)} 件" in r.text
+    jobs = all_rows(sessions, Job)[before:]
+    assert [j.scope for j in jobs] == [f"tmpl:{t}" for t in templates]
+    assert all((j.count, j.format, j.status, j.gen_model) == (2, "input", "pending", jobs[0].gen_model) for j in jobs)
+    # 始まっていない 1 件だけ取り消せる
+    client.post(f"/jobs/{jobs[-1].id}/cancel")
+    assert [j.status for j in all_rows(sessions, Job)[before:]] == ["pending"] * (len(templates) - 1) + ["cancelled"]

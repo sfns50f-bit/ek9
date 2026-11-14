@@ -3,6 +3,7 @@
 {% block head %}{% if jobs | selectattr("status", "in", ["pending", "running", "waiting", "cancelling"]) | list %}<meta http-equiv="refresh" content="{{ 5 if jobs | selectattr("status", "equalto", "cancelling") | list else 20 }}">{% endif %}{% endblock %}
 {% block content %}
 {% if msg == "queued_low" %}<p class="notice warn">作成依頼を順番待ちに入れました。ただし、選んだ範囲でまだ作れる問題は約 {{ left }} 問で、頼んだ数より少なくなります（題材・単語を使い切ると、それ以上は作れません。英語は catalog.py の題材・words.py の語を足すと作れます）。</p>{% endif %}
+{% if msg == "queued_split" %}<p class="notice">小単元ごとに {{ left }} 件の作成依頼を順番待ちに入れました。始まっていない依頼は、下の一覧から 1 件ずつ取り消せます。</p>{% endif %}
 {% if msg == "queued" %}<p class="notice">作成依頼を順番待ちに入れました。デスクトップの Ollama につながると、順に作成と検証が進みます。</p>{% endif %}
 <form method="post" action="/generate" class="card" id="generate-form">
   <h1>問題を作る</h1>
@@ -22,6 +23,12 @@
   <label>問題数
     <input type="number" name="count" value="10" min="1" max="50" inputmode="numeric">
   </label>
+  <fieldset class="segmented">
+    <legend>数え方</legend>
+    <label><input type="radio" name="split" value="" checked><span>選んだ範囲の合計</span></label>
+    <label><input type="radio" name="split" value="subunit"><span>小単元ごとに</span></label>
+  </fieldset>
+  <p class="muted small">「小単元ごとに」は、選んだ範囲の小単元 1 つにつきこの問題数を作ります。依頼は小単元ごとに分かれるので、始まっていない分だけ取り消せます。</p>
   <p class="muted" id="stock-hint"></p>
   {% macro model_choice(name, current, allow_none=false) %}
   <select name="{{ name }}">

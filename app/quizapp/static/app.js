@@ -146,7 +146,7 @@ function setupScopeForm(form, mode) {
   // （作る画面は処理中の依頼があると自動で読み込み直すので、そのたびに初期値に戻らないように。
   //  覚えていない欄は「状態」で変えた初期値がそのまま効く）
   function rememberedFields() {
-    return form.querySelectorAll("input[name=format], input[name=count], select[name^='m_'], input[name^='m_']");
+    return form.querySelectorAll("input[name=format], input[name=count], input[name=split], select[name^='m_'], input[name^='m_']");
   }
   function defaultOf(el) {
     if (el.tagName === "SELECT") {

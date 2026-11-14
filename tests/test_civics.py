@@ -942,6 +942,7 @@ def test_swap_that_is_still_true_keeps_the_original(settings, sessions, sandbox,
     first = problems(sessions)[0]
     assert first.status == "rejected" and first.reject_code == "needs_check"
     assert not any("資料に合う別の内容" in c["text"] for c in first.choices)
+    assert any("誤答を差し替えても止まった" in e.get("summary", "") for e in first.verification)  # 理由を記録に残す
 
 
 def test_swap_can_be_turned_off_and_is_not_used_for_tests(settings, sessions, sandbox, web):
@@ -965,6 +966,8 @@ def test_tidy_drops_dangling_lead_ins_and_cut_lists():
     assert "次のようなものがある。\n・人手不足\n・経済の縮小" in out  # 箇条書きが続く文は残す
     assert tidy(text, cut=True).endswith("日本の高齢化率は高い。")  # 長くて切ったときは、途中の箇条書きを丸ごと落とす
     # 箇条書きの短い行は見出しとして落とさない（マズローの 5 段階が 3 つで切れていた）
+    noted = tidy("並立制は選挙制度の一つである。\n【出典】\nInter Parliamentary Union (IPU)\n【日本の制度】\n日本では衆議院で使う。")
+    assert "Inter Parliamentary" not in noted and "【出典】" not in noted and "【日本の制度】\n日本では" in noted
     lst = "高次の欲求から並べる。\n・自己実現の欲求 (Self-actualization)\n・安全の欲求 (Safety needs)\n・生理的欲求"
     assert drop_trailing_headings(lst) == lst
 
@@ -982,6 +985,10 @@ def test_opinion_evidence_and_borrowed_reason_are_caught():
     issues = check.question_issues(q, body, MISTAKES, why=True)
     assert any("意見・推測" in x for x in issues)
     assert any(x.startswith("選択肢 C の理由が、別の選択肢の文") for x in issues)
+    # 資料の言葉（「与えられた」）を引いた理由は、内部の言葉として弾かない
+    q["why"]["D"] = "資料に「国家から与えられたのではない」とあるので誤り。"
+    assert not any("内部の言葉" in x for x in check.question_issues(q, body + "権利は国家から与えられたのではない。", MISTAKES, why=True))
+    assert any("内部の言葉" in x for x in check.question_issues(q, body, MISTAKES, why=True))
 
 
 def test_old_extracts_and_removed_sources_are_not_reused(web):

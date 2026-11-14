@@ -131,7 +131,7 @@ def build_explanation(choices: list[dict[str, Any]], evidence: str) -> str:
     return "\n".join(x for x in lines if x is not None).strip()
 
 
-def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
+def japanese_issues(text: str, field: str, *, min_len: int = 0, passage: str = "") -> list[str]:
     out = []
     body = (text or "").strip()
     if not body:
@@ -147,7 +147,8 @@ def japanese_issues(text: str, field: str, *, min_len: int = 0) -> list[str]:
         out.append(f"{field}に韓国語の文字")
     if latexfix._META_RE.search(body):
         out.append(f"{field}が作成の指示に触れている")
-    inside = [w for w in _INTERNAL if w in body]
+    # 資料にある言葉を引いただけのもの（「国家から与えられたのではない」など）は内部の言葉としない（第 17 回のレビュー）
+    inside = [w for w in _INTERNAL if w in body and w not in passage]
     if inside:
         out.append(f"{field}にアプリの内部の言葉（{'・'.join(inside[:3])}）がある")
     return out
@@ -199,7 +200,7 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
         missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])]
         if missing:
             out.append(f"正解の「{'・'.join(missing[:3])}」が根拠の文にない（正解を裏付ける、その年・数値の書かれた文を Evidence に写す）")
-    out += japanese_issues(q["hint"], "ヒント")
+    out += japanese_issues(q["hint"], "ヒント", passage=passage)
     whys = q.get("why") or {}
     if why or whys:
         for i, c in enumerate("ABCD"[:len(opts)]):
@@ -207,7 +208,7 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
             if not text.strip():
                 out.append(f"選択肢 {c} の理由（Why {c}）がない")
                 continue
-            out += japanese_issues(text, f"選択肢 {c} の理由", min_len=15 if i == q["answer"] else 8)
+            out += japanese_issues(text, f"選択肢 {c} の理由", min_len=15 if i == q["answer"] else 8, passage=passage)
             if _LETTER_REF_RE.search(text):
                 out.append(f"選択肢 {c} の理由が選択肢を記号（A・B など）で呼んでいる（中身で呼ぶ）")
             # 別の選択肢の文をそのまま引いた理由（第 16 回のレビュー #1526：誤答の理由が別の誤答の文を否定していた）
