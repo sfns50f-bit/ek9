@@ -419,8 +419,9 @@ class CivicsSubject(Subject):
                 and getattr(problem, "gen_model", "") and not (getattr(problem, "params", None) or {}).get("test")):
             return res
         fixed = self._swap_wrong(llm, problem, flags)
-        if fixed is None:
-            return VerifyResult(res.ok, res.summary, res.detail + "\n誤答の差し替え：作り直せなかった（そのまま判定）",
+        if isinstance(fixed, str):  # 作り直せなかった理由も記録に残す（第 17 回のレビュー：成績の書き出しから分からなかった）
+            return VerifyResult(res.ok, _cut(res.summary, 600) + f"／誤答の差し替えはできなかった（{fixed}）",
+                                res.detail + f"\n誤答の差し替え：作り直せなかった（{fixed}。そのまま判定）",
                                 res.code, raw=res.raw, updates=res.updates)
         view, note, updates = fixed
         res2, _flags = self._verify_once(llm, model, view, opts)
@@ -430,7 +431,8 @@ class CivicsSubject(Subject):
             if str(opts.get("_runs", "2")) != "1":
                 with self._memo_lock:  # 2 回目と照らす事実の判定は、差し替える前の問題のもの
                     self._fact_memo[(pid, model)] = {(k, t) for k, t in self._first_hits}
-            return VerifyResult(False, res.summary, detail + "\n（差し替えた後も止まったので、差し替えない）", res.code, raw=raw)
+            return VerifyResult(False, _cut(res.summary, 600) + "／誤答を差し替えても止まった（" + _cut(res2.summary, 200) + "）",
+                                detail + "\n（差し替えた後も止まったので、差し替えない）", res.code, raw=raw)
         with self._memo_lock:
             if len(self._swap_memo) >= 500:
                 self._swap_memo.pop(next(iter(self._swap_memo)))
@@ -475,16 +477,16 @@ class CivicsSubject(Subject):
             flags = {}
         return self._verdict_of(model, checks, raws, updates), flags
 
-    def _swap_wrong(self, llm: LLM, problem: Any, flags: dict[str, str]) -> tuple[Any, str, dict[str, Any]] | None:
+    def _swap_wrong(self, llm: LLM, problem: Any, flags: dict[str, str]) -> tuple[Any, str, dict[str, Any]] | str:
         """止められた誤答だけを作成役に作り直させる（設問・正解・ほかの選択肢は変えない）。
-        (差し替えた問題（検証にかける形）, 説明, 問題に書き込む項目)。作り直せない・点検で落ちたら None。"""
+        (差し替えた問題（検証にかける形）, 説明, 問題に書き込む項目)。作り直せない・点検で落ちたら、その理由（文字列）。"""
         from ...llm import LLMError
 
         choices = [dict(c) for c in problem.choices]
         right = next((i for i, c in enumerate(choices) if c.get("correct")), -1)
         bad = {LETTERS[i]: flags[c["text"]] for i, c in enumerate(choices) if c["text"] in flags and i != right}
         if right < 0 or len(choices) != 4 or not bad:
-            return None
+            return "選択肢の形が違う"
         body = _passage_body(problem)
         evidence = str((getattr(problem, "params", None) or {}).get("evidence", ""))
         q = {"question": problem.question, "options": [c["text"] for c in choices], "answer": right,
@@ -495,8 +497,8 @@ class CivicsSubject(Subject):
         try:
             out = choicejudge.chat_retry(llm, problem.gen_model, prompts.QUESTION_SYSTEM,
                                          prompts.swap_user(body, q, bad), prompts.SWAP_SCHEMA)
-        except LLMError:
-            return None
+        except LLMError as exc:
+            return f"作成役の出力を読めなかった：{exc}"[:120]
         finally:
             choicejudge.set_label(llm, "検証")
         got = choicejudge.parse_question(check.normalize(str(out.get("options") or "")))
@@ -505,16 +507,19 @@ class CivicsSubject(Subject):
             i = LETTERS.index(c)
             new, why = got["options"][i].strip(), got["why"].get(c, "").strip()
             old = choices[i]["text"]
-            if not new or not why or check.similar(new, old, 0.9) or any(
+            if not new or not why:
+                return f"選択肢 {c} の新しい文・理由が出力にない"
+            if check.similar(new, old, 0.9) or any(
                     check.similar(new, o["text"], 0.9) for j, o in enumerate(choices) if j != i):
-                return None
+                return f"新しい誤答が前の文・ほかの選択肢とほぼ同じ（「{new[:30]}」）"
             mistake = got["wrong"].get(c)
             choices[i] = {"text": new, "correct": False, "mistake": mistake if mistake in MISTAKES else "contradicts",
                           "why": why}
             q["options"][i], q["why"][c], q["wrong"][c] = new, why, choices[i]["mistake"]
             notes.append(f"「{old[:40]}」→「{new[:40]}」")
-        if check.question_issues(q, body, MISTAKES, why=bool(q["why"])):
-            return None
+        issues = check.question_issues(q, body, MISTAKES, why=bool(q["why"]))
+        if issues:
+            return "設問の点検：" + _cut("／".join(issues), 150)
         explanation = check.build_explanation(choices, evidence) if q["why"] else problem.explanation
         note = f"誤答を差し替えた（{problem.gen_model}）：" + "、".join(notes)
         return _view(problem, choices, explanation), note, {"choices": choices, "explanation": explanation,
