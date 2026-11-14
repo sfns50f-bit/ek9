@@ -190,8 +190,19 @@ def golden_set(s: Session, subject: str) -> GoldenSet | None:
     wanted = [int(i) for i in extra.get("ids", [])]
     rows = {p.id: p for p in s.execute(select(Problem).options(selectinload(Problem.passage))
                                        .where(Problem.id.in_(wanted))).scalars()} if wanted else {}
+    # 期待の違う番号のまとまり（to_add_from_db.more＝[{ids, expected, defect_type, note}, …]。公共の見本集は、
+    # 通すべき問題・微妙な問題もデータベースから加える）
+    groups = {pid: extra for pid in wanted}
+    for g in extra.get("more") or []:
+        ids = [int(i) for i in g.get("ids", [])]
+        more_rows = list(s.execute(select(Problem).options(selectinload(Problem.passage))
+                                   .where(Problem.id.in_(ids))).scalars()) if ids else []
+        rows.update({p.id: p for p in more_rows})
+        groups.update({pid: g for pid in ids})
+        wanted = wanted + [i for i in ids if i not in wanted]
     found, missing = [], []
     for pid in wanted:
+        extra = groups[pid]
         p = rows.get(pid)
         if pid in have:
             continue

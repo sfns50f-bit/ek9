@@ -509,9 +509,12 @@ class CivicsSubject(Subject):
             old = choices[i]["text"]
             if not new or not why:
                 return f"選択肢 {c} の新しい文・理由が出力にない"
-            if check.similar(new, old, 0.9) or any(
-                    check.similar(new, o["text"], 0.9) for j, o in enumerate(choices) if j != i):
-                return f"新しい誤答が前の文・ほかの選択肢とほぼ同じ（「{new[:30]}」）"
+            # 前の文とは 1 語だけ違ってよい（「増加」→「減少」のように語を逆にするのが狙い。第 18 回のレビュー：
+            # 前の文と 9 割同じだと弾いていて、差し替えの失敗の半分がこれだった）。同じ文のままなら弾く
+            if check.flat(new) == check.flat(old):
+                return "新しい誤答が前の文と同じ"
+            if any(check.similar(new, o["text"], 0.9) for j, o in enumerate(choices) if j != i):
+                return f"新しい誤答がほかの選択肢とほぼ同じ（「{new[:30]}」）"
             mistake = got["wrong"].get(c)
             choices[i] = {"text": new, "correct": False, "mistake": mistake if mistake in MISTAKES else "contradicts",
                           "why": why}
@@ -717,10 +720,13 @@ class CivicsSubject(Subject):
             return VerifyResult(True, f"{model}: 誤りは見つからなかった", issues, raw=raw)
         if verdict.startswith("問題あり"):
             if updates:
-                # 作り直した後の 2 度目の指摘は、不合格にせず要確認にする（第 16 回のレビュー 3 章 D-1：1 度目の指摘は
-                # 直っていて、2 度目は別の細かい指摘・見直し役の読み違いが多かった。問題検証モードで確かめて決める）
-                return VerifyResult(False, f"{model}: 理由・ヒントを作り直した後も指摘（要確認）：{_cut(issues, 600) or '理由なし'}",
-                                    detail, "needs_check", raw=raw)
+                # 作り直した後の 2 度目の指摘は、記録に残して通す（2026-11-14 に開発者が決めた。第 18 回のレビュー 4 章 1：
+                # 3 回の実機で 19 件を見て、解説を直す必要があったのは 2〜3 件・正解や誤答の誤りは 0 件。要確認にすると
+                # 作成の 2 割を手で確かめることになった）。書き直した理由・ヒントは書き込む。問題検証モードの書き出しで
+                # 「指摘が残った」と探せる
+                return VerifyResult(True, f"{model}: 理由・ヒントを作り直した後も指摘が残った（記録に残して通す）："
+                                          f"{_cut(issues, 600) or '理由なし'}", detail, raw=raw,
+                                    updates={**updates, "repaired": True})
             return VerifyResult(False, f"{model}: 誤りを指摘：{_cut(issues, 600) or '理由なし'}", detail, "cv_review",
                                 raw=raw)
         return VerifyResult(False, f"{model}: 見直しの結果を読めなかった", detail, "cv_review_unread", raw=raw)

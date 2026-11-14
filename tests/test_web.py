@@ -550,7 +550,8 @@ def test_review_tools_for_existing_problems(client, settings, sessions, sandbox)
     with sessions() as s:
         assert s.get(Problem, a).question.startswith("$A = 120^\\circ$")
     text = client.get("/review?status=issues").text
-    assert f"#{b}" in text and f"#{a}" not in text and "日本語" in text
+    # 番号は前後の数字と分けて照らす（見本集の「加えられなかった問題：#1577…」に #1 が含まれるため）
+    assert f"#{b}" in text and not re.search(rf"#{a}(?!\d)", text) and "日本語" in text
     md = client.get("/review/export.md?status=issues").text
     assert f"#{b}" in md and f"#{c}" not in md
     client.post("/review/delete-ids", data={"ids": f"{a}, {c} 9999"})
