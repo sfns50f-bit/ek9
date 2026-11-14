@@ -509,9 +509,12 @@ class CivicsSubject(Subject):
             old = choices[i]["text"]
             if not new or not why:
                 return f"選択肢 {c} の新しい文・理由が出力にない"
-            if check.similar(new, old, 0.9) or any(
-                    check.similar(new, o["text"], 0.9) for j, o in enumerate(choices) if j != i):
-                return f"新しい誤答が前の文・ほかの選択肢とほぼ同じ（「{new[:30]}」）"
+            # 前の文とは 1 語だけ違ってよい（「増加」→「減少」のように語を逆にするのが狙い。第 18 回のレビュー：
+            # 前の文と 9 割同じだと弾いていて、差し替えの失敗の半分がこれだった）。同じ文のままなら弾く
+            if check.flat(new) == check.flat(old):
+                return "新しい誤答が前の文と同じ"
+            if any(check.similar(new, o["text"], 0.9) for j, o in enumerate(choices) if j != i):
+                return f"新しい誤答がほかの選択肢とほぼ同じ（「{new[:30]}」）"
             mistake = got["wrong"].get(c)
             choices[i] = {"text": new, "correct": False, "mistake": mistake if mistake in MISTAKES else "contradicts",
                           "why": why}

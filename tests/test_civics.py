@@ -172,6 +172,11 @@ class CivicsOracle:
                 return {"options": ""}
             bad = re.findall(r"^- ([A-D]): ", user, re.M)
             text = "資料と逆の内容に書き直した誤答" if self.swap == "good" else "資料に合う別の内容"
+            if self.swap == "flip":  # 前の文の 1 語だけを逆にする（狙いどおりの差し替え。前の文とほぼ同じでも通す）
+                olds = dict(re.findall(r"^([A-D])\. (.*)$", user, re.M))
+                return {"options": "\n".join([f"{c}: {olds[c]}（ただし逆）" for c in bad]
+                                             + [f"Why {c}: 資料の記述と逆のことを述べているので誤り。" for c in bad]
+                                             + ["Wrong: " + ", ".join(f"{c}=contradicts" for c in bad)])}
             kinds = {"A": "年を取り違えて", "B": "主体を入れ替えて", "C": "数を大きく変えて", "D": "増減を反対にして"}
             return {"options": "\n".join([f"{c}: {kinds[c]}、{text}（{c * 6}）" for c in bad]
                                          + [f"Why {c}: 資料の記述と逆のことを述べているので誤り。" for c in bad]
@@ -1001,3 +1006,11 @@ def test_old_extracts_and_removed_sources_are_not_reused(web):
     assert "wiki:非正規雇用" not in {s.id for s in SOURCES["cv-labor"]}
     drafts = sub.generate(_ctx(CivicsOracle(), [removed, old]), "cv-labor", "choice")
     assert drafts and all(d.passage.get("id") not in (7, 8) for d in drafts)
+
+
+def test_swap_may_change_only_one_word(settings, sessions, sandbox, web):
+    # 前の文の 1 語だけを変えた誤答も受け付ける（第 18 回のレビュー：「前の文とほぼ同じ」で弾いていた）
+    llm = CivicsOracle(fact="true_wrong_once", swap="flip")
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert any("誤答を差し替えた" in e.get("summary", "") for p in problems(sessions) for e in p.verification)
+    assert "wiki:成年" not in {s.id for s in SOURCES["cv-contract"]}
