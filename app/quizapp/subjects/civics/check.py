@@ -24,9 +24,23 @@ _HEDGE_RE = re.compile(r"と思われる|と批判され|問題視され|疑念|
 _INTERNAL = ("与えられた", "指示", "指定された", "作成役", "検証役", "Evidence", "Wrong:", "[[")
 
 
+_BYTES_RE = re.compile(r"(?:<0x[0-9A-Fa-f]{2}>)+")
+
+
+def _decode_bytes(text: str) -> str:
+    """モデルが字をバイトの並びで書いたもの（「<0xE3><0x80><0x80>」＝全角の空白）を元の字に戻す
+    （見本集の測定 #242：条文の全角の空白をこう書いた引用が「資料にない文」とされ、判定を読めなかった）。"""
+    def back(m: re.Match[str]) -> str:
+        try:
+            return bytes(int(h, 16) for h in re.findall(r"<0x([0-9A-Fa-f]{2})>", m.group())).decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            return ""
+    return _BYTES_RE.sub(back, text or "")
+
+
 def flat(text: str) -> str:
     """照らし合わせ用：NFKC・空白と引用符を除く。"""
-    t = unicodedata.normalize("NFKC", text or "")
+    t = unicodedata.normalize("NFKC", _decode_bytes(text or ""))
     return re.sub(r"[\s「」『』\"“”]", "", t)
 
 
@@ -48,6 +62,11 @@ def near_quote(passage: str, quote: str, ratio: float = 0.9) -> bool:
     q = flat(quote)
     if len(q) < 10:
         return False
+    # 資料の離れた 2 文をつないだ引用（見本集の測定 #242：「任期は2年（…）。非常任理事国は再任出来ず、必ず退任する。」）は、
+    # それぞれの文が資料にあれば資料の文とみなす
+    parts = [p for p in sentences(quote) if len(flat(p)) >= 6]
+    if len(parts) >= 2 and all(contains(passage, p) for p in parts):
+        return True
     for s in sentences(passage):
         sm = difflib.SequenceMatcher(None, q, flat(s), autojunk=False)
         if sum(b.size for b in sm.get_matching_blocks()) >= ratio * len(q):
