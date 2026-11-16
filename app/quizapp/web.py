@@ -671,7 +671,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         with sessions() as s:
             stats = stock.verify_stats(s, days_n, from_n)
             job_rows = stock.job_stats(s, days_n, from_n)
-            rejected = stock.recent_rejected(s, days_n, from_n)
+            # 書き出しは 300 件まで（画面は新しい 30 件。第 16〜18 回のレビュー：依頼を絞っても古い不合格が見えなかった）
+            rejected = stock.recent_rejected(s, days_n, from_n, limit=300)
         codes = {}
         for sub in all_subjects():
             codes.update(sub.all_reject_codes())

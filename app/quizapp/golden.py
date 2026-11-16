@@ -384,6 +384,11 @@ def to_markdown(gs: GoldenSet, jobs: list[Any], past: dict[int, dict[str, bool]]
             if x is not None and x.note:
                 line += f" 見本集のメモ：{x.note[:120]}"
             out.append(line)
+            if r["outcome"] == "unsure":  # 要確認は、通した回の出力も見て、なぜ割れたかを確かめられるようにする
+                for st in r.get("steps", []):
+                    if st.get("ok") and str(st.get("key", "")).startswith("verify") and st.get("raw"):
+                        out += [f"  - （通した回）{st.get('step')}（{st.get('model') or '—'}）：{str(st.get('summary', ''))[:200]}",
+                                "", "    ```", *[f"    {ln}" for ln in str(st["raw"])[-900:].splitlines()], "    ```", ""]
             for st in bad:
                 out.append(f"  - {st.get('step')}（{st.get('model') or '—'}）：{str(st.get('summary', ''))[:300]}")
                 if st.get("code") in UNSURE_CODES and st.get("raw"):  # 読めなかった出力そのもの（原因を確かめる）

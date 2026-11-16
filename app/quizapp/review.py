@@ -349,6 +349,8 @@ def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], reje
         ver = (f"{j.verify_model} ×{j.verify_count}" if j.verify_model else
                (r["old_models"][1] if r.get("old_models") else "—"))
         rate = f"（{r['pass_rate']}%）" if r.get("pass_rate") is not None else ""
+        if not r["tried"] and (j.error or j.status not in ("done",)):  # 1 問も作っていない依頼は理由を出す
+            rate = f"（{j.status}：{cut_sentence(j.error.strip(), 80)}）" if (j.error or "").strip() else f"（{j.status}）"
         out.append(f"| #{j.id} | {gen} | {ver} | {r['made']}／{r['tried']}{rate} | {r['gen_per'] if r['gen_per'] is not None else '—'} "
                    f"| {r['verify_per'] if r['verify_per'] is not None else '—'} | {r['load_s']} | "
                    f"{'%.3f' % j.api_cost_usd if j.api_cost_usd else '—'} | "
@@ -378,6 +380,9 @@ def quality_markdown(stats: dict[str, Any], job_rows: list[dict[str, Any]], reje
             out += ["", "<details><summary>理由の全文</summary>", "", (p.reject_reason or "").strip(), "", "</details>"]
         if p.question:
             out.append(f"- 問題文：{p.question.strip()[:300]}")
+        # 選択肢も出す（第 16〜18 回のレビュー：要確認・不合格の判断が、この書き出しだけではできなかった）
+        for c in (p.choices or []) if p.format == "choice" else []:
+            out.append(f"  - {'（正解）' if c.get('correct') else '（誤答）'}{str(c.get('text', '')).strip()[:200]}")
         # 検証を何回かかけたときは、回ごとに理由と生の出力を並べる（第 13 回のレビュー：理由と生の出力が別の回の
         # ものだった）。生の出力のない段階（作成の点検など）は最後のものだけ
         runs = [e for e in fails if e.get("raw")] or ([fail] if fail else [])

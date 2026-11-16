@@ -476,6 +476,8 @@ def fetch_wiki(f: Fetcher, src: Source) -> Fetched:
     page = _wiki_page(f, src.key)
     title, revid = page["title"], page["revid"]
     text = wiki_excerpt(page["text"], src.section)
+    if src.drop:  # 不正確・一方的な文を含む行を入れない（catalog の drop）
+        text = "\n".join(ln for ln in text.split("\n") if not any(d in ln for d in src.drop))
     body, cut = clip(text)
     body = tidy(drop_trailing_headings(body), cut)
     if len(body) < MIN_CHARS:

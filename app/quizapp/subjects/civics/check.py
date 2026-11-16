@@ -120,6 +120,24 @@ def fix_evidence(q: dict[str, Any], passage: str) -> str:
         return ""
     best = best_sentence(passage, ev)
     if not best:
+        # 途中を「……」「（中略）」で省いた根拠（長い条文で多い。第 17 回のレビュー：地方自治法 74 条で 3 問落ちた）は、
+        # 省いた前後がどちらも同じ資料の 1 行にこの順で入っていれば、その行のうち前から後ろまでを原文で写す
+        parts = [p for p in re.split(r"…+|\.{3,}|・{3,}|（中略）|\(中略\)", ev) if len(flat(p)) >= 6]
+        if len(parts) >= 2:
+            for line in (passage or "").split("\n"):
+                pos, ok = 0, True
+                spans = []
+                for p in parts:
+                    k = line.find(p.strip(), pos)
+                    if k < 0:
+                        ok = False
+                        break
+                    spans.append((k, k + len(p.strip())))
+                    pos = k + len(p.strip())
+                if ok:
+                    best = line[spans[0][0]:spans[-1][1]].strip()
+                    break
+    if not best:
         return ""
     q["evidence"] = best
     return f"根拠の文を資料の原文に差し替えた（「{ev[:30]}…」→「{best[:30]}…」）"

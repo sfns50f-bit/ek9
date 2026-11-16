@@ -85,6 +85,7 @@ def _view(problem: Any, choices: list[dict[str, Any]], explanation: str) -> Any:
 
 
 FACT_MODEL = "gemma4:26b-a4b-it-qat"
+SAFE_HINT = "設問の言葉と同じ言葉が出てくる資料の文を探し、その前後を読もう。"
 
 
 def _fact_model(verify_model: str, choice: str) -> str:
@@ -368,6 +369,14 @@ class CivicsSubject(Subject):
         for i, (q, issues) in enumerate(zip(qs, q_issues)):
             if issues and all(_why_only(x) for x in issues):
                 q_issues[i] = self._rewrite_whys(ctx, body, q, i + 1, log, "／".join(issues))
+            # ヒントだけがまだ引っかかる設問（正解だけにある語句を書く・記号で呼ぶ）は、捨てずにヒントを決まった文に
+            # 差し替える（第 17・18 回のレビュー：#1794・#1761 がヒントだけで落ちていた。ヒントは答えに関わらない）
+            left = q_issues[i]
+            if left and all(x.startswith("ヒント") for x in left):
+                q["hint"] = SAFE_HINT
+                q_issues[i] = check.question_issues(q, body, MISTAKES, why=True)
+                log.append({"step": "設問の機械的な直し", "ok": True,
+                            "summary": f"設問 {i + 1}: ヒントを決まった文に差し替えた（{'／'.join(left)[:120]}）"})
         return qs, q_issues
 
     @staticmethod
