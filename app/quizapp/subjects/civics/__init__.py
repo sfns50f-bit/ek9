@@ -84,6 +84,21 @@ def _view(problem: Any, choices: list[dict[str, Any]], explanation: str) -> Any:
                            status=getattr(problem, "status", ""), format=getattr(problem, "format", "choice"))
 
 
+FACT_MODEL = "gemma4:26b-a4b-it-qat"
+
+
+def _fact_model(verify_model: str, choice: str) -> str:
+    """事実の判定に使うモデル。「検証役と同じ」は検証役。検証役が API のモデルのときは、ローカルのモデルを選んで
+    いても検証役で判定する（API だけの依頼は、Ollama が止まっていても進む。ローカルのモデルの入れ替えも待たない）。"""
+    from ...runtime import provider_of
+
+    if choice in ("", "verify"):
+        return verify_model
+    if provider_of(verify_model)[0] != "ollama" and provider_of(choice)[0] == "ollama":
+        return verify_model
+    return choice
+
+
 def _stale(p: dict[str, Any]) -> bool:
     """鮮度の調査で資料が変わったと分かった本文（設問を足さない。同じ資料の新しい版を取ってきてよい）。"""
     return (p.get("source_info") or {}).get("check") == "changed"
@@ -167,7 +182,10 @@ class CivicsSubject(Subject):
         "fact_check": {"label": "誤答が事実として正しくないかの確認（知識で判定。資料は参考に見せる）", "default": "on",
                        "choices": {"on": "する（1 回だけなら要確認、2 回とも同じなら不合格）", "off": "しない"}},
         # 事実の判定だけ別のモデルにする（第 14 回のレビュー 3 章 E-4。e4b は知識の古さ・限定語の見落としで誤検出した）
-        "fact_model": {"label": "事実の判定のモデル", "default": "verify",
+        # 既定は 26b（2026-11-16 に開発者が決めた。ローカルだけで完結させる。見本集で止めるべき 14 問のうち e4b 5 問・
+        # 26b 8 問・Haiku 7 問。docs/civics.md の 8 章）。検証役が API のモデルの依頼（API 生成）では、ローカルのモデルを
+        # 呼ばずに検証役のモデルで判定する（_fact_model）
+        "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL,
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
                                    "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）"}},
@@ -458,7 +476,7 @@ class CivicsSubject(Subject):
         self._first_hits: set[tuple[str, str]] = set()
         if opts.get("fact_check") == "on":
             choicejudge.set_label(llm, "検証（事実）")
-            fact_model = model if opts.get("fact_model", "verify") in ("", "verify") else opts["fact_model"]
+            fact_model = _fact_model(model, opts.get("fact_model", ""))
             hits = self._judge_facts(llm, fact_model, problem, choices, checks, raws, flags)
             key = (getattr(problem, "id", None) or id(problem), model)
             with self._memo_lock:

@@ -1043,3 +1043,17 @@ def test_quotes_with_byte_escapes_or_two_sentences_are_found():
     assert check.near_quote(passage, "断定的判断を提供すること。<0xE3><0x80><0x80>当該提供された断定的判断の内容が確実であるとの誤認")
     assert check.near_quote(passage, "非常任理事国の任期は2年（国連憲章第23条2項）。非常任理事国は再任出来ず、必ず退任する。")
     assert not check.near_quote(passage, "非常任理事国の任期は2年（国連憲章第23条2項）。非常任理事国は何度でも再任できる。")
+
+
+def test_fact_model_default_is_local_26b_and_api_jobs_stay_on_the_api(settings, sessions, sandbox, web):
+    """事実の判定の既定は 26b（ローカルで完結）。検証役が API のモデルなら、検証役で判定する（Ollama を呼ばない）。"""
+    from quizapp.subjects.civics import FACT_MODEL, _fact_model
+
+    assert CivicsSubject.verify_options["fact_model"]["default"] == FACT_MODEL == "gemma4:26b-a4b-it-qat"
+    assert _fact_model("gemma4:e4b-it-qat", FACT_MODEL) == FACT_MODEL
+    assert _fact_model("gemma4:e4b-it-qat", "verify") == "gemma4:e4b-it-qat"
+    assert _fact_model("anthropic/claude-haiku-5-5", FACT_MODEL) == "anthropic/claude-haiku-5-5"
+    assert _fact_model("gemma4:e4b-it-qat", "anthropic/claude-haiku-5-5") == "anthropic/claude-haiku-5-5"
+    llm = CivicsOracle()
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert {m for k, m in llm.calls if k == "fact"} == {FACT_MODEL}
