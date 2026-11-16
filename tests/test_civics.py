@@ -1091,3 +1091,23 @@ def test_hint_only_issue_gets_a_safe_hint(settings, sessions, sandbox, web):
     run_job(settings, sessions, sandbox, LeakyHint(), scope="tmpl:cv-welfare", count=1)
     first = [p for p in problems(sessions) if "資料に合う内容 1 " in p.answer_display][0]
     assert first.status == "ready" and first.hint == SAFE_HINT
+
+
+def test_blind_fact_check_is_optional(settings, sessions, sandbox, web):
+    """資料を見せない事実の判定：初めは「しない」。「する」にすると、資料なしの呼び出しが 1 回増える。"""
+    assert CivicsSubject.verify_options["fact_blind"]["default"] == "off"
+
+    class Blind(CivicsOracle):
+        seen = []
+
+        def chat_json(self, model, system, user, schema, *, temperature=0.7):
+            if "資料は示しません" in system:
+                self.seen.append("資料" in user.split("設問:")[0])
+            return super().chat_json(model, system, user, schema, temperature=temperature)
+
+    llm = Blind()
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert not llm.seen
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1, options_json=dumps({"fact_blind": "on"}))
+    assert llm.seen and not any(llm.seen)  # 呼ばれ、資料は渡していない
+    assert problems(sessions, status="ready")
