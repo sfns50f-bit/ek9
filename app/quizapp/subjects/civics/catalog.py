@@ -29,6 +29,9 @@ class Source:
     section: str = ""
     label: str = ""
     law_title: str = ""  # 法令の表示名（e-Gov の題名が長い・分かりにくいときだけ）
+    # この言葉を含む行（段落・箇条書きの 1 項目）を本文に入れない（Wikipedia だけ。不正確・一方的な文。行ごと落とし、
+    # 文章は書き換えない。第 16〜18 回のレビュー）
+    drop: tuple[str, ...] = ()
 
     @property
     def id(self) -> str:
@@ -53,8 +56,8 @@ def kenpo(*parts: str, label: str = "") -> Source:
     return law(KENPO, *parts, label=label or f"日本国憲法 第{'・'.join(parts)}条", title="日本国憲法")
 
 
-def wiki(title: str, section: str = "") -> Source:
-    return Source("wiki", title, section=section)
+def wiki(title: str, section: str = "", drop: tuple[str, ...] = ()) -> Source:
+    return Source("wiki", title, section=section, drop=drop)
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,10 @@ SPECS: dict[str, Spec] = {s.id: s for _u, _l, specs in UNITS for s in specs}
 
 # 小単元ごとの資料（2026-11 に e-Gov の法令 ID と条を確かめた。Wikipedia の記事名は実機の取得で確かめる）。
 # 人物の記事は、導入が生い立ちになりやすいので、考え方を説明した記事・節を選ぶ（人物の記事を足すなら節を指定する）
+# drop＝その言葉を含む行を本文に入れない（第 16〜18 回のレビュー）：政党交付金（出典の弱い政治的な主張・逸話）、
+# 市場の失敗（「電力価格は国会で決められる」は事実と違う）、介護保険・公的年金（冒頭の「公的扶助制度」。社会保険で
+# あって公的扶助ではない）、少子高齢化（意味の取れない文）、国際連合安全保障理事会（「再任出来ず」。正しくは
+# 引き続いての再選ができない）、難民（出典の弱い傾向の話）
 SOURCES: dict[str, list[Source]] = {
     "cv-self": [wiki("青年期"), wiki("アイデンティティ"), wiki("自己実現理論"), wiki("防衛機制"), wiki("通過儀礼"),
                 wiki("マージナル・マン"), wiki("欲求")],  # 人物の記事（エリクソン）は生い立ちが選ばれたので外した（第 14 回 A-3）
@@ -123,12 +130,12 @@ SOURCES: dict[str, list[Source]] = {
                   wiki("国政調査権"), wiki("内閣不信任決議")],
     "cv-election": [kenpo("15", "44", "47"), law("325AC1000000100", "9", "10", title="公職選挙法"),
                     wiki("小選挙区比例代表並立制"), wiki("一票の格差"), wiki("政党"), wiki("普通選挙"),
-                    wiki("期日前投票"), wiki("政党交付金")],
+                    wiki("期日前投票"), wiki("政党交付金", drop=("中曽根税制改革", "スポーツ平和党"))],
     "cv-local": [kenpo("92", "93", "94", "95"), law("322AC0000000067", "1_2", title="地方自治法"),
                  law("322AC0000000067", "74", title="地方自治法"), law("322AC0000000067", "76", title="地方自治法"),
                  wiki("地方自治"), wiki("直接請求"), wiki("住民投票"), wiki("地方交付税"), wiki("地方分権")],
     "cv-market": [law("322AC0000000054", "1", "3", title="独占禁止法（私的独占の禁止及び公正取引の確保に関する法律）"),
-                  wiki("市場経済"), wiki("市場の失敗"), wiki("寡占"), wiki("外部性"), wiki("需要と供給"),
+                  wiki("市場経済"), wiki("市場の失敗", drop=("電力価格は国会で決められる",)), wiki("寡占"), wiki("外部性"), wiki("需要と供給"),
                   wiki("公正取引委員会"), wiki("株式会社")],
     "cv-finance": [kenpo("83", "84", "85", "86"), law("322AC0000000034", "4", title="財政法"), wiki("財政政策"),
                    wiki("累進課税"), wiki("消費税"), wiki("国債"), wiki("直接税"), wiki("租税法律主義")],
@@ -142,9 +149,10 @@ SOURCES: dict[str, list[Source]] = {
                  # 「非正規雇用」は外した（第 16 回のレビュー A-1：解雇規制の段落が一方的な主張で、数値の文も壊れていた）
                  wiki("労働三権"), wiki("最低賃金"), wiki("ワーク・ライフ・バランス"), wiki("労働基準法")],
     "cv-welfare": [kenpo("25"), law("325AC0000000144", "1", "4", title="生活保護法"), wiki("社会保障"),
-                   wiki("国民皆保険"), wiki("公的年金"), wiki("社会保険"), wiki("介護保険"), wiki("少子高齢化")],
-    "cv-intl-politics": [kenpo("9"), wiki("国際連合"), wiki("国際連合安全保障理事会"), wiki("国際司法裁判所"),
-                         wiki("国際法"), wiki("核拡散防止条約"), wiki("難民"), wiki("国際連合平和維持活動")],
+                   wiki("国民皆保険"), wiki("公的年金", drop=("公的扶助制度",)), wiki("社会保険"), wiki("介護保険", drop=("公的扶助制度",)),
+                   wiki("少子高齢化", drop=("少子高齢化を解決する手段として",))],
+    "cv-intl-politics": [kenpo("9"), wiki("国際連合"), wiki("国際連合安全保障理事会", drop=("再任出来ず",)), wiki("国際司法裁判所"),
+                         wiki("国際法"), wiki("核拡散防止条約"), wiki("難民", drop=("統計上、", "密入国")), wiki("国際連合平和維持活動")],
     "cv-intl-economy": [wiki("比較優位"), wiki("世界貿易機関"), wiki("為替レート"), wiki("国際収支"),
                         wiki("経済連携協定"), wiki("政府開発援助"), wiki("南北問題")],
 }

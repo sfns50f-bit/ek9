@@ -1043,3 +1043,71 @@ def test_quotes_with_byte_escapes_or_two_sentences_are_found():
     assert check.near_quote(passage, "断定的判断を提供すること。<0xE3><0x80><0x80>当該提供された断定的判断の内容が確実であるとの誤認")
     assert check.near_quote(passage, "非常任理事国の任期は2年（国連憲章第23条2項）。非常任理事国は再任出来ず、必ず退任する。")
     assert not check.near_quote(passage, "非常任理事国の任期は2年（国連憲章第23条2項）。非常任理事国は何度でも再任できる。")
+
+
+def test_fact_model_default_is_local_26b_and_api_jobs_stay_on_the_api(settings, sessions, sandbox, web):
+    """事実の判定の既定は 26b（ローカルで完結）。検証役が API のモデルなら、検証役で判定する（Ollama を呼ばない）。"""
+    from quizapp.subjects.civics import FACT_MODEL, _fact_model
+
+    assert CivicsSubject.verify_options["fact_model"]["default"] == FACT_MODEL == "gemma4:26b-a4b-it-qat"
+    assert _fact_model("gemma4:e4b-it-qat", FACT_MODEL) == FACT_MODEL
+    assert _fact_model("gemma4:e4b-it-qat", "verify") == "gemma4:e4b-it-qat"
+    assert _fact_model("anthropic/claude-haiku-5-5", FACT_MODEL) == "anthropic/claude-haiku-5-5"
+    assert _fact_model("gemma4:e4b-it-qat", "anthropic/claude-haiku-5-5") == "anthropic/claude-haiku-5-5"
+    llm = CivicsOracle()
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert {m for k, m in llm.calls if k == "fact"} == {FACT_MODEL}
+
+
+def test_source_drop_removes_lines_and_evidence_with_ellipsis_is_restored(web):
+    """資料の一覧の drop：その言葉を含む行を本文に入れない。途中を「……」で省いた根拠の文は原文に戻す。"""
+    from quizapp.subjects.civics.sources import fetch
+
+    src = next(s for s in SOURCES["cv-intl-politics"] if s.key == "国際連合安全保障理事会")
+    assert src.drop == ("再任出来ず",)
+    good = "安全保障理事会は、世界の平和と安全の維持に主要な責任を負っている。" * 12
+    web.wiki_text["国際連合安全保障理事会"] = good + "\n非常任理事国は再任出来ず、必ず退任する。\n" + good
+    body = fetch(Fetcher(web, min_interval=0), src).body
+    assert "再任出来ず" not in body and "主要な責任" in body
+    passage = "３　長は、第一項の請求を受理した日から二十日以内に議会を招集し、意見を付けてこれを議会に付議し、その結果を代表者に通知するとともに、これを公表しなければならない。"
+    q = {"evidence": "長は、第一項の請求を受理した日から二十日以内に議会を招集し、……これを公表しなければならない。"}
+    assert "差し替えた" in check.fix_evidence(q, passage) and check.contains(passage, q["evidence"])
+    q = {"evidence": "長は、三十日以内に議会を招集し、……これを公表しなければならない。"}
+    assert check.fix_evidence(q, passage) == ""  # 資料にない言葉が入っていれば直さない
+
+
+def test_hint_only_issue_gets_a_safe_hint(settings, sessions, sandbox, web):
+    """ヒントだけが点検に引っかかる設問は、捨てずにヒントを決まった文に差し替える。"""
+    from quizapp.subjects.civics import SAFE_HINT
+
+    class LeakyHint(CivicsOracle):
+        def chat_json(self, model, system, user, schema, *, temperature=0.7):
+            out = super().chat_json(model, system, user, schema, temperature=temperature)
+            for k in list(out):
+                if k.startswith("q") or k == "reasons":  # 書き直しても、正解の選択肢をそのままヒントに書く
+                    out[k] = re.sub(r"^Hint: .*$", "Hint: 資料に合う内容 1 です、の文を読もう。", out[k], flags=re.M)
+            return out
+
+    run_job(settings, sessions, sandbox, LeakyHint(), scope="tmpl:cv-welfare", count=1)
+    first = [p for p in problems(sessions) if "資料に合う内容 1 " in p.answer_display][0]
+    assert first.status == "ready" and first.hint == SAFE_HINT
+
+
+def test_blind_fact_check_is_optional(settings, sessions, sandbox, web):
+    """資料を見せない事実の判定：初めは「しない」。「する」にすると、資料なしの呼び出しが 1 回増える。"""
+    assert CivicsSubject.verify_options["fact_blind"]["default"] == "off"
+
+    class Blind(CivicsOracle):
+        seen = []
+
+        def chat_json(self, model, system, user, schema, *, temperature=0.7):
+            if "資料は示しません" in system:
+                self.seen.append("資料" in user.split("設問:")[0])
+            return super().chat_json(model, system, user, schema, temperature=temperature)
+
+    llm = Blind()
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert not llm.seen
+    run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1, options_json=dumps({"fact_blind": "on"}))
+    assert llm.seen and not any(llm.seen)  # 呼ばれ、資料は渡していない
+    assert problems(sessions, status="ready")

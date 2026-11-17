@@ -84,6 +84,22 @@ def _view(problem: Any, choices: list[dict[str, Any]], explanation: str) -> Any:
                            status=getattr(problem, "status", ""), format=getattr(problem, "format", "choice"))
 
 
+FACT_MODEL = "gemma4:26b-a4b-it-qat"
+SAFE_HINT = "設問の言葉と同じ言葉が出てくる資料の文を探し、その前後を読もう。"
+
+
+def _fact_model(verify_model: str, choice: str) -> str:
+    """事実の判定に使うモデル。「検証役と同じ」は検証役。検証役が API のモデルのときは、ローカルのモデルを選んで
+    いても検証役で判定する（API だけの依頼は、Ollama が止まっていても進む。ローカルのモデルの入れ替えも待たない）。"""
+    from ...runtime import provider_of
+
+    if choice in ("", "verify"):
+        return verify_model
+    if provider_of(verify_model)[0] != "ollama" and provider_of(choice)[0] == "ollama":
+        return verify_model
+    return choice
+
+
 def _stale(p: dict[str, Any]) -> bool:
     """鮮度の調査で資料が変わったと分かった本文（設問を足さない。同じ資料の新しい版を取ってきてよい）。"""
     return (p.get("source_info") or {}).get("check") == "changed"
@@ -167,7 +183,10 @@ class CivicsSubject(Subject):
         "fact_check": {"label": "誤答が事実として正しくないかの確認（知識で判定。資料は参考に見せる）", "default": "on",
                        "choices": {"on": "する（1 回だけなら要確認、2 回とも同じなら不合格）", "off": "しない"}},
         # 事実の判定だけ別のモデルにする（第 14 回のレビュー 3 章 E-4。e4b は知識の古さ・限定語の見落としで誤検出した）
-        "fact_model": {"label": "事実の判定のモデル", "default": "verify",
+        # 既定は 26b（2026-11-16 に開発者が決めた。ローカルだけで完結させる。見本集で止めるべき 14 問のうち e4b 5 問・
+        # 26b 8 問・Haiku 7 問。docs/civics.md の 8 章）。検証役が API のモデルの依頼（API 生成）では、ローカルのモデルを
+        # 呼ばずに検証役のモデルで判定する（_fact_model）
+        "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL,
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
                                    "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）"}},
@@ -175,6 +194,10 @@ class CivicsSubject(Subject):
         # （第 16 回のレビュー 3 章 B。作成の途中の問題だけ。見本集の測定・見直しのやり直しではしない）
         "swap_wrong": {"label": "誤りになっていない誤答の差し替え（検証の 1 回目）", "default": "on",
                        "choices": {"on": "する（その誤答だけ作り直して確かめ直す）", "off": "しない（そのまま判定する）"}},
+        # 資料を見せない知識だけの判定を足す（第 16 回のレビュー 3 章 C。初めは「しない」。検証の呼び出しが 1 回増える。
+        # 見本集で今の形と比べてから既定にするか決める）
+        "fact_blind": {"label": "資料を見せない事実の判定（知識だけ）を足す", "default": "off",
+                       "choices": {"off": "しない", "on": "する（誤答を正しいとしたら、事実の判定と同じ扱い）"}},
         "reuse_passages": {"label": "資料の使い回し（作成）", "default": "on",
                            "choices": {"on": "前に取った資料に設問を足す", "off": "使わない（新しい資料だけ）"}},
     }
@@ -350,6 +373,14 @@ class CivicsSubject(Subject):
         for i, (q, issues) in enumerate(zip(qs, q_issues)):
             if issues and all(_why_only(x) for x in issues):
                 q_issues[i] = self._rewrite_whys(ctx, body, q, i + 1, log, "／".join(issues))
+            # ヒントだけがまだ引っかかる設問（正解だけにある語句を書く・記号で呼ぶ）は、捨てずにヒントを決まった文に
+            # 差し替える（第 17・18 回のレビュー：#1794・#1761 がヒントだけで落ちていた。ヒントは答えに関わらない）
+            left = q_issues[i]
+            if left and all(x.startswith("ヒント") for x in left):
+                q["hint"] = SAFE_HINT
+                q_issues[i] = check.question_issues(q, body, MISTAKES, why=True)
+                log.append({"step": "設問の機械的な直し", "ok": True,
+                            "summary": f"設問 {i + 1}: ヒントを決まった文に差し替えた（{'／'.join(left)[:120]}）"})
         return qs, q_issues
 
     @staticmethod
@@ -458,8 +489,10 @@ class CivicsSubject(Subject):
         self._first_hits: set[tuple[str, str]] = set()
         if opts.get("fact_check") == "on":
             choicejudge.set_label(llm, "検証（事実）")
-            fact_model = model if opts.get("fact_model", "verify") in ("", "verify") else opts["fact_model"]
+            fact_model = _fact_model(model, opts.get("fact_model", ""))
             hits = self._judge_facts(llm, fact_model, problem, choices, checks, raws, flags)
+            if opts.get("fact_blind") == "on":
+                hits |= self._judge_facts(llm, fact_model, problem, choices, checks, raws, flags, blind=True)
             key = (getattr(problem, "id", None) or id(problem), model)
             with self._memo_lock:
                 if str(opts.get("_run", "1")) == "1":
@@ -626,12 +659,31 @@ class CivicsSubject(Subject):
 
     def _judge_facts(self, llm: LLM, model: str, problem: Any, choices: list[dict[str, Any]],
                      checks: list[tuple[str, bool | None, str]], raws: list[str],
-                     flags: dict[str, str] | None = None) -> set[tuple[str, str]]:
+                     flags: dict[str, str] | None = None, blind: bool = False) -> set[tuple[str, str]]:
         """選択肢が事実として正しいかを判定させる（資料と取得した日は参考に見せる。資料に書かれた経緯は事実として扱う）。
         誤答が「正しい」・正解が「誤り」なら要確認。理由と結論が食い違う判定は使わない（E-3）。読めなければ記録に
         残すだけ。止めた選択肢を {(種類, 選択肢の文)} で返す（2 回目の検証と照らす）。"""
         passage = getattr(problem, "passage", None)
         info = getattr(passage, "source_info", None) or {}
+        if blind:  # 資料を見せない（知識だけ）。正解が「誤り」とされても止めない（資料の年・数値は知識では確かめられない）
+            out, raw = choicejudge.ask(llm, model, prompts.FACT_BLIND_SYSTEM, prompts.fact_user(
+                problem.question, [c["text"] for c in choices]), prompts.JUDGMENTS_SCHEMA)
+            raws.append(f"【資料を見せない事実の判定】（{model}）\n" + raw)
+            got = choicejudge.parse_judgments(str(out.get("judgments") or "") if out else raw, prompts.FACT_LABELS,
+                                              len(choices))
+            wrong = [i for i, (lb, reason) in got.items() if not choices[i].get("correct") and lb == "正しい"
+                     and not _fact_conflict(lb, reason)] if len(got) >= len(choices) else []
+            if not wrong:
+                checks.append(("資料を見せない事実の判定", True, "誤答に知識として正しいものはない"
+                               if len(got) >= len(choices) else "判定を読めなかった（この確認では止めない）"))
+                return set()
+            if flags is not None:
+                for i in wrong:
+                    flags.setdefault(choices[i]["text"], f"知識として正しい（{got[i][1][:150]}）")
+            checks.append(("事実として正しい誤答", False, "「" + "」「".join(
+                f"{choices[i]['text'][:50]}」（{got[i][1][:60]}）" for i in wrong).rstrip("」") + "」"
+                + "は、資料を見せない判定で事実として正しい（正解が 2 つの疑い）"))
+            return {("誤答が事実として正しい", choices[i]["text"]) for i in wrong}
         out, raw = choicejudge.ask(llm, model, prompts.FACT_SYSTEM, prompts.fact_user(
             problem.question, [c["text"] for c in choices], _passage_body(problem),
             str(info.get("fetched_at", ""))[:10]), prompts.JUDGMENTS_SCHEMA)
