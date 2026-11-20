@@ -198,6 +198,10 @@ class CivicsSubject(Subject):
         # 見本集で今の形と比べてから既定にするか決める）
         "fact_blind": {"label": "資料を見せない事実の判定（知識だけ）を足す", "default": "off",
                        "choices": {"off": "しない", "on": "する（誤答を正しいとしたら、事実の判定と同じ扱い）"}},
+        # 見直しで理由・ヒントを作り直した後にも指摘が残ったときの扱い（2026-11-14 に「通す」と決めた。第 19 回の
+        # レビュー：通した 6 問のうち 3 問に、正解・誤答の欠陥があった。画面で「要確認」に戻せるようにした）
+        "review_after_repair": {"label": "見直しで作り直した後にも指摘が残ったとき", "default": "pass",
+                                "choices": {"pass": "記録に残して通す", "check": "要確認にする（問題検証モードで確かめる）"}},
         "reuse_passages": {"label": "資料の使い回し（作成）", "default": "on",
                            "choices": {"on": "前に取った資料に設問を足す", "off": "使わない（新しい資料だけ）"}},
     }
@@ -211,6 +215,8 @@ class CivicsSubject(Subject):
         self._fact_memo: dict[tuple[Any, str], set[tuple[str, str]]] = {}
         # 検証の 1 回目で誤答を差し替えた問題（問題 → (選択肢, 解説)）。2 回目の検証と見直しは差し替えた後の形で行う
         self._swap_memo: dict[Any, tuple[list[dict[str, Any]], str]] = {}
+        # 検証で受け取った「作り直した後の指摘」の扱い（見直しには検証のやり方が渡らないので、検証のときに覚えておく）
+        self._review_mode: dict[Any, str] = {}
         self._memo_lock = threading.Lock()
 
     @property
@@ -272,9 +278,18 @@ class CivicsSubject(Subject):
         partial: dict[str, Any] = {"unit": _unit_of(template), "template": template, "format": "choice",
                                    "params": params}
         qs, q_issues = self._write_questions(ctx, spec, title, body, have, n, log, partial, fetched_at)
+        # 設問の番号（params_key に入る）は、すでにある問題と重ならない番号を使う（第 19 回のレビュー：削除した設問は
+        # 数に入らないので、前の数え方では番号がストックの問題と重なり、合格しても「既存の問題と同じ」になっていた）
+        nums: list[int] = []
+        k = start
+        while len(nums) < len(qs):
+            if _key(template, topic, k, revision) not in existing:
+                nums.append(k)
+            k += 1
         drafts = []
-        for i, (q, problems) in enumerate(zip(qs, q_issues), start):
-            qlog = _own_log(log, i - start + 1)
+        for n_q, (q, problems) in enumerate(zip(qs, q_issues)):
+            i = nums[n_q]
+            qlog = _own_log(log, n_q + 1)
             choices = []
             if 0 <= q["answer"] < len(q["options"]):
                 choices = [{"text": t, "correct": j == q["answer"],
@@ -440,6 +455,9 @@ class CivicsSubject(Subject):
         pid = getattr(problem, "id", None) or id(problem)
         first = str(opts.get("_run", "1")) == "1"
         with self._memo_lock:
+            if len(self._review_mode) >= 500:
+                self._review_mode.pop(next(iter(self._review_mode)))
+            self._review_mode[pid] = str(opts.get("review_after_repair", "pass"))
             if first:
                 self._swap_memo.pop(pid, None)  # 待機・再起動のあとは 1 回目からやり直す
             swapped = self._swap_memo.get(pid)
@@ -742,13 +760,15 @@ class CivicsSubject(Subject):
         """理由・ヒントが資料と合っているか、立場を決めつけていないか。読めなければ 1 回聞き直し、それでも読めなければ不合格。
         「問題あり」なら、作成の途中の問題（下書き）は、指摘を作成役に渡して理由とヒントだけを作り直させ、もう一度見直す
         （REPAIR_ROUNDS 回まで。正解が 1 つに決まることは検証で確かめてあるので、問題ごと捨てない。第 14 回のレビュー 3 章 F-1）。"""
+        pid = getattr(problem, "id", None) or id(problem)
         with self._memo_lock:  # 検証で誤答を差し替えた問題は、差し替えた後の形を見直す
-            swapped = self._swap_memo.pop(getattr(problem, "id", None) or id(problem), None)
+            swapped = self._swap_memo.pop(pid, None)
+            mode = self._review_mode.pop(pid, "pass")
         if swapped:
             problem = _view(problem, *swapped)
-        return self._review(llm, model, problem, repair=getattr(problem, "status", "") == "draft")
+        return self._review(llm, model, problem, repair=getattr(problem, "status", "") == "draft", after_repair=mode)
 
-    def _review(self, llm: LLM, model: str, problem: Any, repair: bool) -> VerifyResult:
+    def _review(self, llm: LLM, model: str, problem: Any, repair: bool, after_repair: str = "pass") -> VerifyResult:
         verdict, issues, raw = self._review_once(llm, model, problem)
         history: list[str] = []
         current, updates = problem, {}
@@ -771,6 +791,9 @@ class CivicsSubject(Subject):
                                     updates={**updates, "repaired": True})
             return VerifyResult(True, f"{model}: 誤りは見つからなかった", issues, raw=raw)
         if verdict.startswith("問題あり"):
+            if updates and after_repair == "check":  # 検証のやり方で「要確認」を選んだとき（第 19 回のレビュー）
+                return VerifyResult(False, f"{model}: 理由・ヒントを作り直した後も指摘（要確認）：{_cut(issues, 600) or '理由なし'}",
+                                    detail, "needs_check", raw=raw)
             if updates:
                 # 作り直した後の 2 度目の指摘は、記録に残して通す（2026-11-14 に開発者が決めた。第 18 回のレビュー 4 章 1：
                 # 3 回の実機で 19 件を見て、解説を直す必要があったのは 2〜3 件・正解や誤答の誤りは 0 件。要確認にすると

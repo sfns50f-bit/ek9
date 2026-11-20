@@ -1111,3 +1111,30 @@ def test_blind_fact_check_is_optional(settings, sessions, sandbox, web):
     run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1, options_json=dumps({"fact_blind": "on"}))
     assert llm.seen and not any(llm.seen)  # 呼ばれ、資料は渡していない
     assert problems(sessions, status="ready")
+
+
+def test_review_after_repair_can_go_to_needs_check(settings, sessions, sandbox, web):
+    """検証のやり方「作り直した後にも指摘が残ったとき」：要確認にすると、通さずに要確認にする（第 19 回のレビュー）。"""
+    assert CivicsSubject.verify_options["review_after_repair"]["default"] == "pass"
+    run_job(settings, sessions, sandbox, CivicsOracle(review_verdict="問題あり"), scope="tmpl:cv-welfare", count=1,
+            options_json=dumps({"review_after_repair": "check"}))
+    rej = [p for p in problems(sessions, status="rejected") if p.reject_code == "needs_check"]
+    assert rej and "作り直した後も指摘（要確認）" in rej[0].reject_reason
+    assert not problems(sessions, status="ready")
+
+
+def test_reused_passage_skips_numbers_already_in_stock(web):
+    """削除した設問は数に入らないので、新しい設問の番号がストックの問題と重ならないようにする（第 19 回のレビュー）。"""
+    from quizapp.subjects.civics import _key
+
+    sub = get_subject("civics")
+    body = "第二十五条\n" + "すべて国民は、健康で文化的な最低限度の生活を営む権利を有する。" * 2
+    topic = f"law:{KENPO}:25"
+    stored = [{"id": 5, "title": "日本国憲法　第二十五条", "body": body, "topic": topic, "status": "ok",
+               "questions": ["残っている設問"], "rejected": 0, "rejected_by": {}, "source_title": "e-Gov",
+               "source_info": {"kind": "law", "check": "same", "revision": "r1"}}]
+    taken = {_key("cv-welfare", topic, 2, "r1")}  # 1 問目を削除し、2 問目がストックにある
+    ctx = GenContext(llm=CivicsOracle(), sandbox=None, gen_model="m", rng=random.Random(1),
+                     passages=lambda t: stored, existing_keys=lambda t: taken)
+    drafts = sub.generate(ctx, "cv-welfare", "choice")
+    assert drafts and all(d.params_key not in taken for d in drafts)
