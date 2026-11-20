@@ -13,6 +13,7 @@ _JA_RE = re.compile(r"[぀-ヿ一-鿿]")
 _HANGUL_RE = re.compile(r"[가-힯]")
 # 「誤っているもの」を選ばせる設問（選択肢ごとの判定は「合うものが 1 つ」を確かめるので作らせない）
 _NEGATIVE_RE = re.compile(r"誤って|誤りを含む|適当でない|適切でない|当てはまらない|正しくない|合わない|含まれない|ないもの")
+_ASSUME_RE = re.compile(r"ないものとする")
 # 意見・価値判断を問う設問（意見が分かれるテーマは制度や立場を問う形にする。仕様書）
 _OPINION_RE = re.compile(r"べきだと(思|考え)|べきか|あなた(は|の考え)|賛成|反対で|望ましいと(思|考え)|どちらが正しい|良いと思")
 # 選択肢を記号で呼ぶ（画面で並べ替えるので使えない）
@@ -94,6 +95,15 @@ def answer_terms_in_hint(question: str, options: list[str], answer: int, hint: s
     terms |= {t for t in numbers(options[answer]) if t not in others}
     h = flat(hint)
     return sorted(t for t in terms if t in h)
+
+
+_QUOTE_RE = re.compile(r"[『「]([^』」]{8,})[』」]")
+
+
+def passage_quotes(text: str, passage: str) -> list[str]:
+    """理由の中の『…』「…」のうち、資料にそのまま入っているもの（8 字以上。第 20 回の後：誤答は資料の言葉を変えて作り、
+    変える前の言葉を理由に引用させる）。"""
+    return [m for m in _QUOTE_RE.findall(text or "") if contains(passage, m) or near_quote(passage, m)]
 
 
 def best_sentence(passage: str, quote: str, ratio: float = 0.9) -> str:
@@ -200,7 +210,8 @@ def normalize(text: str) -> str:
     return t.strip()
 
 
-def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *, why: bool = False) -> list[str]:
+def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *, why: bool = False,
+                    quote_wrongs: bool = False) -> list[str]:
     """設問 1 つの点検。q は choicejudge.parse_question の形。why=True（作成のとき）は選択肢ごとの理由（Why A〜D）を
     点検する。False のときも理由があれば理由を、なければ解説（前の版の問題）を点検する。"""
     out = []
@@ -209,7 +220,8 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
         out.append("設問が空")
     else:
         out += [x for x in japanese_issues(q["question"], "設問") if not x.endswith("が空")]
-        if _NEGATIVE_RE.search(q["question"]):
+        # 「…にあたるものはないものとする」のような場面の前提は、誤りを選ばせる設問ではない（第 20 回のレビュー #1901）
+        if _NEGATIVE_RE.search(_ASSUME_RE.sub("", q["question"])):
             out.append("「誤っているもの・適当でないもの」を選ばせる設問（「資料の内容に合うもの」を選ばせる形にする）")
         if _OPINION_RE.search(q["question"]):
             out.append("意見・価値判断を問う設問（制度のしくみや、それぞれの立場の主張を問う形にする）")
@@ -234,7 +246,11 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
     elif _HEDGE_RE.search(q["evidence"]):
         out.append(f"根拠の文が意見・推測・批判を述べた文（「{_HEDGE_RE.search(q['evidence']).group()}」）。事実・制度のしくみを述べた文を根拠にして設問を作る")
     else:
-        missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])]
+        # 設問か、すべての誤答にもある数値（「17歳の高校生が…」のような場面の設定）は正解を決める値ではない
+        # （第 20 回のレビュー #1902）。一部の誤答にだけある年・数値は、正解を決める値として根拠の文に要る
+        wrongs = [flat(o) for i, o in enumerate(opts) if i != q["answer"]]
+        missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])
+                   and n not in flat(q["question"]) and not all(n in w for w in wrongs)]
         if missing:
             out.append(f"正解の「{'・'.join(missing[:3])}」が根拠の文にない（正解を裏付ける、その年・数値の書かれた文を Evidence に写す）")
     out += japanese_issues(q["hint"], "ヒント", passage=passage)
@@ -246,6 +262,9 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
                 out.append(f"選択肢 {c} の理由（Why {c}）がない")
                 continue
             out += japanese_issues(text, f"選択肢 {c} の理由", min_len=15 if i == q["answer"] else 8, passage=passage)
+            if quote_wrongs and i != q["answer"] and not passage_quotes(text, passage):
+                out.append(f"選択肢 {c} の理由に、この誤答と食い違う資料の言葉の引用がない（変える前の資料の言葉を"
+                           f"「資料に『…』とある」の形で、資料から一字一句写す。写せる言葉がなければ誤答を作り直す）")
             if _LETTER_REF_RE.search(text):
                 out.append(f"選択肢 {c} の理由が選択肢を記号（A・B など）で呼んでいる（中身で呼ぶ）")
             # 別の選択肢の文をそのまま引いた理由（第 16 回のレビュー #1526：誤答の理由が別の誤答の文を否定していた）

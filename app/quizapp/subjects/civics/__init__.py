@@ -31,6 +31,17 @@ from .catalog import MISTAKES, SOURCE_IDS, SOURCES, SPECS, UNITS, Source, questi
 FIX_ROUNDS = 1  # 点検で落ちたとき、直しを頼む回数
 LETTERS = "ABCD"
 MAX_FETCH_TRIES = 4  # 1 回の作成で資料の取得を試す数（記事・条が見つからなければ次の資料へ）
+def _quote_mode(ctx: Any) -> bool:
+    """作成で、誤答の理由に資料の言葉の引用を求めるか（検証のやり方 wrong_quote）。見直しの作り直し（options のない
+    ctx）では求めない。"""
+    opts = getattr(ctx, "options", None)
+    return opts is not None and opts.get("wrong_quote", "on") != "off"
+
+
+def _is_law(p: dict[str, Any]) -> bool:
+    return str(p.get("topic") or "").startswith("law:")
+
+
 def _why_only(issue: str) -> bool:
     """選択肢ごとの理由とヒントを書き直させれば直る指摘（設問ごと捨てない。第 14 回のレビュー 3 章 B・F）。"""
     return (issue.startswith("選択肢 ") and "の理由" in issue) or issue.startswith("ヒント")
@@ -120,6 +131,17 @@ def _passage_title(problem: Any) -> str:
     return getattr(p, "title", "") if p is not None else ""
 
 
+def _quote(reason: str, passage: str) -> str:
+    """判定の理由の中の引用（choicejudge.quote_of）。引用符を付けずに「判定 — 資料の文 — 理由」と書いた形
+    （第 20 回のレビュー：e4b の #1905・#1924。引用が読めず要確認になった）も、最初の区切りまでが資料の文と
+    9 割以上合うときだけ引用とみなす。"""
+    q = choicejudge.quote_of(reason, 8)
+    if q:
+        return q
+    seg = re.split(r"\s+[—―]{1,2}\s+|\s+--\s+", reason or "", maxsplit=1)[0].strip(" \"“”「」『』")
+    return seg if len(seg) >= 12 and check.near_quote(passage, seg) else ""
+
+
 def _passage_body(problem: Any) -> str:
     p = getattr(problem, "passage", None)
     return getattr(p, "body", "") if p is not None else ""
@@ -189,7 +211,10 @@ class CivicsSubject(Subject):
         "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL,
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
-                                   "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）"}},
+                                   "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）",
+                                   # 知識が要る誤答を止めるのに、ローカルのモデルと Haiku では足りなかった（第 19 回のレビュー）。
+                                   # 事実の判定だけ Sonnet にする構成を、見本集で比べられるようにした
+                                   "anthropic/claude-sonnet-5-5": "anthropic/claude-sonnet-5-5（API）"}},
         # 検証の 1 回目で「資料で裏付けられる・事実として正しい」とされた誤答だけを作成役に作り直させ、確かめ直す
         # （第 16 回のレビュー 3 章 B。作成の途中の問題だけ。見本集の測定・見直しのやり直しではしない）
         "swap_wrong": {"label": "誤りになっていない誤答の差し替え（検証の 1 回目）", "default": "on",
@@ -198,6 +223,18 @@ class CivicsSubject(Subject):
         # 見本集で今の形と比べてから既定にするか決める）
         "fact_blind": {"label": "資料を見せない事実の判定（知識だけ）を足す", "default": "off",
                        "choices": {"off": "しない", "on": "する（誤答を正しいとしたら、事実の判定と同じ扱い）"}},
+        # 見直しで理由・ヒントを作り直した後にも指摘が残ったときの扱い（2026-11-14 に「通す」と決めた。第 19 回の
+        # レビュー：通した 6 問のうち 3 問に、正解・誤答の欠陥があった。画面で「要確認」に戻せるようにした）
+        "review_after_repair": {"label": "見直しで作り直した後にも指摘が残ったとき", "default": "pass",
+                                "choices": {"pass": "記録に残して通す", "check": "要確認にする（問題検証モードで確かめる）"}},
+        # 誤答は資料の特定の言葉を変えて作らせ、変える前の言葉を理由に引用させる（引用が資料にない誤答は作り直させる）。
+        # 第 20 回のレビューの後、ローカルの作成役で「資料にないが現実には正しい誤答」を減らすために足した
+        "wrong_quote": {"label": "誤答の作り方（作成）", "default": "on",
+                        "choices": {"on": "資料の言葉を変えて作る（変える前の言葉を理由に引用させ、資料にあるか確かめる）",
+                                    "off": "前の版（引用を求めない）"}},
+        # 条文の資料を先に使う（Wikipedia の不正確な 1 文・一方的な段落から来る欠陥を減らす。条文のない小単元は今までどおり）
+        "law_first": {"label": "資料の選び方（作成）", "default": "on",
+                      "choices": {"on": "条文（e-Gov）の資料を先に使う", "off": "区別しない（前の版）"}},
         "reuse_passages": {"label": "資料の使い回し（作成）", "default": "on",
                            "choices": {"on": "前に取った資料に設問を足す", "off": "使わない（新しい資料だけ）"}},
     }
@@ -211,6 +248,8 @@ class CivicsSubject(Subject):
         self._fact_memo: dict[tuple[Any, str], set[tuple[str, str]]] = {}
         # 検証の 1 回目で誤答を差し替えた問題（問題 → (選択肢, 解説)）。2 回目の検証と見直しは差し替えた後の形で行う
         self._swap_memo: dict[Any, tuple[list[dict[str, Any]], str]] = {}
+        # 検証で受け取った「作り直した後の指摘」の扱い（見直しには検証のやり方が渡らないので、検証のときに覚えておく）
+        self._review_mode: dict[Any, str] = {}
         self._memo_lock = threading.Lock()
 
     @property
@@ -245,6 +284,9 @@ class CivicsSubject(Subject):
                     and (p.get("source_info") or {}).get("check") not in ("changed", "missing")
                     and not _old_extract(p, template)
                     and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * questions_for(p["body"])]
+        law_first = ctx.options.get("law_first", "on") != "off"
+        if law_first:  # 条文の資料に設問を足すのを先にする（sorted は安定なので、同じ種類の中の順は変えない）
+            reusable = sorted(reusable, key=lambda p: not _is_law(p))
         log: list[dict[str, Any]] = []
         if reusable and reuse:
             src = reusable[0]
@@ -272,9 +314,18 @@ class CivicsSubject(Subject):
         partial: dict[str, Any] = {"unit": _unit_of(template), "template": template, "format": "choice",
                                    "params": params}
         qs, q_issues = self._write_questions(ctx, spec, title, body, have, n, log, partial, fetched_at)
+        # 設問の番号（params_key に入る）は、すでにある問題と重ならない番号を使う（第 19 回のレビュー：削除した設問は
+        # 数に入らないので、前の数え方では番号がストックの問題と重なり、合格しても「既存の問題と同じ」になっていた）
+        nums: list[int] = []
+        k = start
+        while len(nums) < len(qs):
+            if _key(template, topic, k, revision) not in existing:
+                nums.append(k)
+            k += 1
         drafts = []
-        for i, (q, problems) in enumerate(zip(qs, q_issues), start):
-            qlog = _own_log(log, i - start + 1)
+        for n_q, (q, problems) in enumerate(zip(qs, q_issues)):
+            i = nums[n_q]
+            qlog = _own_log(log, n_q + 1)
             choices = []
             if 0 <= q["answer"] < len(q["options"]):
                 choices = [{"text": t, "correct": j == q["answer"],
@@ -319,6 +370,8 @@ class CivicsSubject(Subject):
         if not left:
             raise Rejected("exhausted", "この小単元の資料をすべて使いました（catalog.SOURCES に資料を足すと作れます）")
         ctx.rng.shuffle(left)
+        if ctx.options.get("law_first", "on") != "off":  # 条文の資料を先に取る（同じ種類の中は無作為のまま）
+            left.sort(key=lambda src: src.kind != "law")
         log: list[dict[str, Any]] = []
         for src in left[:MAX_FETCH_TRIES]:
             try:
@@ -342,7 +395,8 @@ class CivicsSubject(Subject):
                          log: list[dict[str, Any]], partial: dict[str, Any],
                          fetched_at: str = "") -> tuple[list[dict[str, Any]], list[list[str]]]:
         schema = prompts.question_schema(n)
-        user = prompts.question_user(title, body, n, spec.focus, have, spec.level, fetched_at)
+        quote = _quote_mode(ctx)
+        user = prompts.question_user(title, body, n, spec.focus, have, spec.level, fetched_at, quote_wrongs=quote)
         log.append({"step": "設問の作成", "ok": True, "model": ctx.gen_model,
                     "summary": f"作成役 {ctx.gen_model} が設問を {n} 問書く",
                     "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.QUESTION_SYSTEM})
@@ -355,7 +409,7 @@ class CivicsSubject(Subject):
             fixed = [f"設問 {i}: {x}" for i, q in enumerate(qs, 1) for x in [check.fix_evidence(q, body)] if x]
             if fixed:
                 log.append({"step": "設問の機械的な直し", "ok": True, "summary": "／".join(fixed)})
-            q_issues = [check.question_issues(q, body, MISTAKES, why=True) + self._duplicates(qs, k, have)
+            q_issues = [check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=quote) + self._duplicates(qs, k, have)
                         for k, q in enumerate(qs)]
             partial.update(question=qs[0]["question"] if qs else "", explanation=body)
             all_issues = [f"設問 {i}: {x}" for i, xs in enumerate(q_issues, 1) for x in xs]
@@ -378,7 +432,7 @@ class CivicsSubject(Subject):
             left = q_issues[i]
             if left and all(x.startswith("ヒント") for x in left):
                 q["hint"] = SAFE_HINT
-                q_issues[i] = check.question_issues(q, body, MISTAKES, why=True)
+                q_issues[i] = check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=quote)
                 log.append({"step": "設問の機械的な直し", "ok": True,
                             "summary": f"設問 {i + 1}: ヒントを決まった文に差し替えた（{'／'.join(left)[:120]}）"})
         return qs, q_issues
@@ -409,12 +463,12 @@ class CivicsSubject(Subject):
                                          prompts.why_user(body, q, note), prompts.WHY_SCHEMA)
         except LLMError as exc:
             log.append({"step": "理由の書き直し", "ok": False, "summary": f"設問 {no}: 出力を読めなかった（{exc}）"})
-            return check.question_issues(q, body, MISTAKES, why=True)
+            return check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=_quote_mode(ctx))
         got = choicejudge.parse_question(check.normalize(str(out.get("reasons") or "")))
         q["why"] = {**q.get("why", {}), **got["why"]}
         if got["hint"]:
             q["hint"] = got["hint"]
-        issues = check.question_issues(q, body, MISTAKES, why=True)
+        issues = check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=_quote_mode(ctx))
         log.append({"step": "理由の書き直し", "ok": not issues,
                     "summary": f"設問 {no}: 選択肢ごとの理由とヒントだけを書き直させた"
                                + (f"（まだ: {'／'.join(issues)}）" if issues else "")})
@@ -440,6 +494,9 @@ class CivicsSubject(Subject):
         pid = getattr(problem, "id", None) or id(problem)
         first = str(opts.get("_run", "1")) == "1"
         with self._memo_lock:
+            if len(self._review_mode) >= 500:
+                self._review_mode.pop(next(iter(self._review_mode)))
+            self._review_mode[pid] = str(opts.get("review_after_repair", "pass"))
             if first:
                 self._swap_memo.pop(pid, None)  # 待機・再起動のあとは 1 回目からやり直す
             swapped = self._swap_memo.get(pid)
@@ -599,7 +656,7 @@ class CivicsSubject(Subject):
             new = choicejudge.parse_judgments(text, prompts.CHOICE_LABELS, len(choices))
             got = {**got, **new} if note.startswith(choicejudge.MISSING_HEAD) else new
             # 引用を照らすのは「裏付けあり」「一部だけ合う」だけ（正解が 2 つあるのを見つけるのに要る判定）
-            bad = [q for lb, reason in got.values() for q in [choicejudge.quote_of(reason, 8)]
+            bad = [q for lb, reason in got.values() for q in [_quote(reason, passage)]
                    if lb in ("裏付けあり", "一部だけ合う") and (q and not check.near_quote(passage, q)
                                                             or not q and lb == "裏付けあり")]
             if len(got) >= len(choices) and not bad:
@@ -644,7 +701,7 @@ class CivicsSubject(Subject):
             if c.get("correct") or not code or code == mine:
                 new.append({k: v for k, v in c.items() if k != "label_doubt"})
                 continue
-            quote = choicejudge.quote_of(got[i][1], 8)
+            quote = _quote(got[i][1], passage)
             if code == "contradicts" and mine in ("partial", "not_stated") and quote and check.near_quote(passage, quote):
                 fixed.append(f"「{c['text'][:40]}」{MISTAKES.get(str(mine), mine)}→{MISTAKES[code]}（引用「{quote[:40]}」）")
                 c = {k: v for k, v in c.items() if k != "label_doubt"} | {"mistake": code}
@@ -742,13 +799,15 @@ class CivicsSubject(Subject):
         """理由・ヒントが資料と合っているか、立場を決めつけていないか。読めなければ 1 回聞き直し、それでも読めなければ不合格。
         「問題あり」なら、作成の途中の問題（下書き）は、指摘を作成役に渡して理由とヒントだけを作り直させ、もう一度見直す
         （REPAIR_ROUNDS 回まで。正解が 1 つに決まることは検証で確かめてあるので、問題ごと捨てない。第 14 回のレビュー 3 章 F-1）。"""
+        pid = getattr(problem, "id", None) or id(problem)
         with self._memo_lock:  # 検証で誤答を差し替えた問題は、差し替えた後の形を見直す
-            swapped = self._swap_memo.pop(getattr(problem, "id", None) or id(problem), None)
+            swapped = self._swap_memo.pop(pid, None)
+            mode = self._review_mode.pop(pid, "pass")
         if swapped:
             problem = _view(problem, *swapped)
-        return self._review(llm, model, problem, repair=getattr(problem, "status", "") == "draft")
+        return self._review(llm, model, problem, repair=getattr(problem, "status", "") == "draft", after_repair=mode)
 
-    def _review(self, llm: LLM, model: str, problem: Any, repair: bool) -> VerifyResult:
+    def _review(self, llm: LLM, model: str, problem: Any, repair: bool, after_repair: str = "pass") -> VerifyResult:
         verdict, issues, raw = self._review_once(llm, model, problem)
         history: list[str] = []
         current, updates = problem, {}
@@ -771,6 +830,9 @@ class CivicsSubject(Subject):
                                     updates={**updates, "repaired": True})
             return VerifyResult(True, f"{model}: 誤りは見つからなかった", issues, raw=raw)
         if verdict.startswith("問題あり"):
+            if updates and after_repair == "check":  # 検証のやり方で「要確認」を選んだとき（第 19 回のレビュー）
+                return VerifyResult(False, f"{model}: 理由・ヒントを作り直した後も指摘（要確認）：{_cut(issues, 600) or '理由なし'}",
+                                    detail, "needs_check", raw=raw)
             if updates:
                 # 作り直した後の 2 度目の指摘は、記録に残して通す（2026-11-14 に開発者が決めた。第 18 回のレビュー 4 章 1：
                 # 3 回の実機で 19 件を見て、解説を直す必要があったのは 2〜3 件・正解や誤答の誤りは 0 件。要確認にすると

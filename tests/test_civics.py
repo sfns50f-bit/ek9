@@ -123,8 +123,9 @@ class CivicsOracle:
 
     def __init__(self, *, judge="right", fact="right", review_verdict="問題なし", bad_evidence_once=False, bad_questions=(),
                  question="資料の内容に合うものを、次のうちから一つ選べ。", empty_explanation=False, dup=False,
-                 swap=""):
+                 swap="", no_quote=False):
         self.judge, self.fact, self.review_verdict = judge, fact, review_verdict
+        self.no_quote = no_quote  # 作成のとき、誤答の理由に資料の言葉を引用しない
         self.bad_evidence_once = bad_evidence_once
         self.bad_questions = set(bad_questions)  # この番号の設問は、根拠の文をいつも資料にないものにする
         self.question = question
@@ -160,8 +161,11 @@ class CivicsOracle:
                     f"Evidence: {evidence}",
                     *([] if self.empty_explanation else [
                         f"Why A: 資料に「{evidence[:20]}」とあり、資料に合う内容 {i} が正しいと分かる。",
-                        "Why B: 資料と逆の内容を述べているので誤り。", "Why C: 主体が資料と違うので誤り。",
-                        "Why D: 条件が資料と違うので誤り。"]),
+                        *(["Why B: 資料と逆の内容を述べているので誤り。", "Why C: 主体が資料と違うので誤り。",
+                            "Why D: 条件が資料と違うので誤り。"] if self.no_quote else [
+                            f"Why B: 資料に『{evidence[:12]}』とあり、それと逆の内容を述べているので誤り。",
+                            f"Why C: 資料に『{evidence[:12]}』とあり、主体が資料と違うので誤り。",
+                            f"Why D: 資料に『{evidence[:12]}』とあり、条件が資料と違うので誤り。"])]),
                     "Hint: 資料の前半の文をよく読もう。"])
             self.bad_evidence_once = False
             return out
@@ -185,9 +189,11 @@ class CivicsOracle:
             self.calls.append(("fix_explanation", model))
             self.fix_users.append(user)
             right = re.search(r"^正解: ([A-D])", user, re.M).group(1)
+            first = (self._passage_sentences(user) or ["資料"])[0][:12]
             return {"reasons": "\n".join([
                 f"Why {c}: " + ("資料の前半の文に書かれているので、この選択肢が正しいと分かる。" if c == right
-                                else "資料と食い違う内容なので誤り。") for c in "ABCD"] + ["Hint: 資料の前半を読もう。"])}
+                                else f"資料に『{first}』とあり、それと食い違う内容なので誤り。") for c in "ABCD"]
+                + ["Hint: 資料の前半を読もう。"])}
         if "judgments" in props:
             items = re.findall(r"^(\d+): (.*)$", user.split("選択肢:")[-1], re.M)
             if "事実として正しいかどうか" in system:
@@ -1111,3 +1117,106 @@ def test_blind_fact_check_is_optional(settings, sessions, sandbox, web):
     run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1, options_json=dumps({"fact_blind": "on"}))
     assert llm.seen and not any(llm.seen)  # 呼ばれ、資料は渡していない
     assert problems(sessions, status="ready")
+
+
+def test_review_after_repair_can_go_to_needs_check(settings, sessions, sandbox, web):
+    """検証のやり方「作り直した後にも指摘が残ったとき」：要確認にすると、通さずに要確認にする（第 19 回のレビュー）。"""
+    assert CivicsSubject.verify_options["review_after_repair"]["default"] == "pass"
+    run_job(settings, sessions, sandbox, CivicsOracle(review_verdict="問題あり"), scope="tmpl:cv-welfare", count=1,
+            options_json=dumps({"review_after_repair": "check"}))
+    rej = [p for p in problems(sessions, status="rejected") if p.reject_code == "needs_check"]
+    assert rej and "作り直した後も指摘（要確認）" in rej[0].reject_reason
+    assert not problems(sessions, status="ready")
+
+
+def test_reused_passage_skips_numbers_already_in_stock(web):
+    """削除した設問は数に入らないので、新しい設問の番号がストックの問題と重ならないようにする（第 19 回のレビュー）。"""
+    from quizapp.subjects.civics import _key
+
+    sub = get_subject("civics")
+    body = "第二十五条\n" + "すべて国民は、健康で文化的な最低限度の生活を営む権利を有する。" * 2
+    topic = f"law:{KENPO}:25"
+    stored = [{"id": 5, "title": "日本国憲法　第二十五条", "body": body, "topic": topic, "status": "ok",
+               "questions": ["残っている設問"], "rejected": 0, "rejected_by": {}, "source_title": "e-Gov",
+               "source_info": {"kind": "law", "check": "same", "revision": "r1"}}]
+    taken = {_key("cv-welfare", topic, 2, "r1")}  # 1 問目を削除し、2 問目がストックにある
+    ctx = GenContext(llm=CivicsOracle(), sandbox=None, gen_model="m", rng=random.Random(1),
+                     passages=lambda t: stored, existing_keys=lambda t: taken)
+    drafts = sub.generate(ctx, "cv-welfare", "choice")
+    assert drafts and all(d.params_key not in taken for d in drafts)
+
+
+def test_sonnet_is_a_fact_model_choice_and_keeps_local_verify():
+    from quizapp.subjects.civics import _fact_model
+
+    assert "anthropic/claude-sonnet-5-5" in CivicsSubject.verify_options["fact_model"]["choices"]
+    assert _fact_model("gemma4:e4b-it-qat", "anthropic/claude-sonnet-5-5") == "anthropic/claude-sonnet-5-5"
+
+
+def test_assumption_and_scenario_numbers_are_not_rejected():
+    """第 20 回のレビュー：「…にあたるものはないものとする」は誤りを選ばせる設問ではない（#1901）。設問・すべての誤答に
+    ある場面の数値（「17歳の高校生」）は根拠の文になくてよい（#1902）。一部の誤答にだけある年は今までどおり要る。"""
+    passage = "未成年者が法律行為をするには、その法定代理人の同意を得なければならない。ただし、単に権利を得る法律行為については、この限りでない。"
+    q = {"question": "17歳の高校生が親の同意を得ずにした契約について、資料の内容に合うものはどれか。"
+                     "目的を定めて処分を許した財産にあたるものはないものとする。",
+         "options": ["17歳の高校生が贈与を受ける契約は取り消せない", "17歳の高校生が時計を買う契約は取り消せない",
+                     "17歳の高校生が楽器を売る契約は取り消せない", "17歳の高校生が借金をする契約は取り消せない"],
+         "answer": 0, "wrong": {"B": "contradicts", "C": "contradicts", "D": "contradicts"},
+         "evidence": "ただし、単に権利を得る法律行為については、この限りでない。", "hint": "ただし書きを読もう。",
+         "explanation": "", "why": {c: "資料のただし書きと比べて判断できる理由。" for c in "ABCD"}}
+    assert check.question_issues(q, passage, MISTAKES, why=True) == []
+    bad = {**q, "options": ["2人が贈与を受ける契約は取り消せない"] + q["options"][1:]}
+    assert any("2人" in x and "根拠の文" in x for x in check.question_issues(bad, passage, MISTAKES, why=True))
+    bad = {**q, "question": "資料の内容に合わないものはどれか。"}
+    assert any("誤っているもの" in x for x in check.question_issues(bad, passage, MISTAKES, why=True))
+
+
+def test_bare_quote_between_dashes_is_read():
+    """第 20 回のレビュー：e4b が「裏付けあり — 資料の文 — 理由」と引用符なしで書き、引用なしで要確認になった（#1905）。"""
+    from quizapp.subjects.civics import _quote
+    passage = "国会は、国権の最高機関であって、国の唯一の立法機関である。衆議院と参議院の両議院で構成する。"
+    assert _quote("国会は、国権の最高機関であって、国の唯一の立法機関である。 — 選択肢と一致する。", passage).startswith("国会は")
+    assert _quote('引用: "衆議院と参議院の両議院で構成する。"', passage) == "衆議院と参議院の両議院で構成する。"
+    assert _quote("内閣は、行政権を行使する機関であると書かれている。 — 一致する。", passage) == ""
+    assert _quote("選択肢と一致する。", passage) == ""
+
+
+def test_wrong_options_must_quote_the_passage():
+    """第 20 回のレビューの後：誤答は資料の言葉を変えて作り、変える前の言葉を理由に引用させる（wrong_quote）。"""
+    passage = "国会は、国権の最高機関であって、国の唯一の立法機関である。衆議院と参議院の両議院で構成する。"
+    q = {"question": "資料の内容に合うものを選べ。", "options": ["国会は立法機関", "内閣は立法機関", "裁判所は立法機関", "天皇は立法機関"],
+         "answer": 0, "wrong": {"B": "contradicts", "C": "contradicts", "D": "contradicts"},
+         "evidence": "国会は、国権の最高機関であって、国の唯一の立法機関である。", "hint": "資料の 1 文目を読もう。",
+         "explanation": "",
+         "why": {"A": "資料に『国の唯一の立法機関である』とあり、国会が立法機関だと分かる。",
+                 "B": "資料に『国の唯一の立法機関である』とあり、内閣ではないので誤り。",
+                 "C": "資料に「国権の最高機関であって」とあり、裁判所ではないので誤り。",
+                 "D": "天皇は立法機関ではないので誤り。"}}
+    issues = check.question_issues(q, passage, MISTAKES, why=True, quote_wrongs=True)
+    assert len(issues) == 1 and issues[0].startswith("選択肢 D の理由に") and "引用" in issues[0]
+    assert check.question_issues(q, passage, MISTAKES, why=True) == []  # 求めないとき（前の版・見直しの作り直し）
+    q["why"]["D"] = "資料に『天皇は立法機関である』とあるので誤り。"  # 資料にない引用は数えない
+    assert check.question_issues(q, passage, MISTAKES, why=True, quote_wrongs=True)
+
+
+def test_generation_asks_for_quotes_and_rewrites_reasons_without_them(settings, sessions, sandbox, web):
+    llm = CivicsOracle(no_quote=True)
+    jid = run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1)
+    assert job(sessions, jid).status == "done"
+    assert any(c[0] == "fix_explanation" for c in llm.calls)  # 引用のない理由だけを書き直させた
+    assert any(p.status == "ready" for p in problems(sessions))
+    llm = CivicsOracle(no_quote=True)
+    jid = run_job(settings, sessions, sandbox, llm, scope="tmpl:cv-welfare", count=1,
+                  options_json=dumps({"wrong_quote": "off"}))
+    assert job(sessions, jid).status == "done" and not any(c[0] == "fix_explanation" for c in llm.calls)
+
+
+def test_law_sources_are_used_first(settings, sessions, sandbox, web):
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1,
+            options_json=dumps({"reuse_passages": "off"}))
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1,
+            options_json=dumps({"reuse_passages": "off"}))
+    with sessions() as s:
+        topics = [p.topic for p in s.execute(select(Passage).order_by(Passage.id)).scalars()]
+    laws = [s.id for s in SOURCES["cv-welfare"] if s.kind == "law"]
+    assert len(laws) == 2 and topics[:2] and set(topics[:2]) == set(laws)
