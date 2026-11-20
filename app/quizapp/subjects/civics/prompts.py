@@ -77,13 +77,23 @@ COMBINE = ("共通テストのレベルなので、半分以上の設問を、�
            "（2 つの制度・国・時期の違いの比較、理由と結果のつながりなど）。Evidence にはその中心になる 1 文を写す")
 
 
+# 誤答の作り方の決まり（検証のやり方 wrong_quote。第 20 回のレビューの後：ローカルの作成役で、資料にないが現実には
+# 正しい誤答・資料のほかの箇所どおりの誤答を減らす）
+QUOTE_WRONGS = ("誤答の作り方（この依頼の決まり）: 誤答 3 つは、どれも資料の特定の文の言葉を 1 か所だけ変えて作る"
+                "（語を逆にする・数や年を変える・主体や対象を入れ替える・肯定と否定を入れ替える）。資料に触れられていないことを"
+                "誤答にしない（not_stated は使わない）。誤答の理由（Why）には、変える前の資料の言葉を「資料に『…』とある」の形で、"
+                "資料から一字一句そのまま写す（8 字以上）。写せる資料の言葉がない誤答は作らない")
+
+
 def question_user(title: str, body: str, n_questions: int, focus: str, existing: list[str] | list[dict[str, Any]],
-                  level: str = "", fetched: str = "") -> str:
+                  level: str = "", fetched: str = "", *, quote_wrongs: bool = False) -> str:
     lines = [f"資料の題名: {title}" + (f"（{fetched} に取得）" if fetched else ""), "資料:", body, "",
              f"作る設問の数: {n_questions}（[[q1]] から [[q{n_questions}]] まで。それぞれ資料の別の部分を問う）",
              f"この単元で問いたいこと: {focus}"]
     if level == "common":
         lines.append(COMBINE)
+    if quote_wrongs:
+        lines.append(QUOTE_WRONGS)
     if existing:
         lines += ["", "この資料にすでにある設問（同じことを問わない。同じ内容を正解にしない。同じ誤答を作らない）:"]
         for q in existing:

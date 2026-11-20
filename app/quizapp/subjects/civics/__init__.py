@@ -31,6 +31,17 @@ from .catalog import MISTAKES, SOURCE_IDS, SOURCES, SPECS, UNITS, Source, questi
 FIX_ROUNDS = 1  # 点検で落ちたとき、直しを頼む回数
 LETTERS = "ABCD"
 MAX_FETCH_TRIES = 4  # 1 回の作成で資料の取得を試す数（記事・条が見つからなければ次の資料へ）
+def _quote_mode(ctx: Any) -> bool:
+    """作成で、誤答の理由に資料の言葉の引用を求めるか（検証のやり方 wrong_quote）。見直しの作り直し（options のない
+    ctx）では求めない。"""
+    opts = getattr(ctx, "options", None)
+    return opts is not None and opts.get("wrong_quote", "on") != "off"
+
+
+def _is_law(p: dict[str, Any]) -> bool:
+    return str(p.get("topic") or "").startswith("law:")
+
+
 def _why_only(issue: str) -> bool:
     """選択肢ごとの理由とヒントを書き直させれば直る指摘（設問ごと捨てない。第 14 回のレビュー 3 章 B・F）。"""
     return (issue.startswith("選択肢 ") and "の理由" in issue) or issue.startswith("ヒント")
@@ -216,6 +227,14 @@ class CivicsSubject(Subject):
         # レビュー：通した 6 問のうち 3 問に、正解・誤答の欠陥があった。画面で「要確認」に戻せるようにした）
         "review_after_repair": {"label": "見直しで作り直した後にも指摘が残ったとき", "default": "pass",
                                 "choices": {"pass": "記録に残して通す", "check": "要確認にする（問題検証モードで確かめる）"}},
+        # 誤答は資料の特定の言葉を変えて作らせ、変える前の言葉を理由に引用させる（引用が資料にない誤答は作り直させる）。
+        # 第 20 回のレビューの後、ローカルの作成役で「資料にないが現実には正しい誤答」を減らすために足した
+        "wrong_quote": {"label": "誤答の作り方（作成）", "default": "on",
+                        "choices": {"on": "資料の言葉を変えて作る（変える前の言葉を理由に引用させ、資料にあるか確かめる）",
+                                    "off": "前の版（引用を求めない）"}},
+        # 条文の資料を先に使う（Wikipedia の不正確な 1 文・一方的な段落から来る欠陥を減らす。条文のない小単元は今までどおり）
+        "law_first": {"label": "資料の選び方（作成）", "default": "on",
+                      "choices": {"on": "条文（e-Gov）の資料を先に使う", "off": "区別しない（前の版）"}},
         "reuse_passages": {"label": "資料の使い回し（作成）", "default": "on",
                            "choices": {"on": "前に取った資料に設問を足す", "off": "使わない（新しい資料だけ）"}},
     }
@@ -265,6 +284,9 @@ class CivicsSubject(Subject):
                     and (p.get("source_info") or {}).get("check") not in ("changed", "missing")
                     and not _old_extract(p, template)
                     and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * questions_for(p["body"])]
+        law_first = ctx.options.get("law_first", "on") != "off"
+        if law_first:  # 条文の資料に設問を足すのを先にする（sorted は安定なので、同じ種類の中の順は変えない）
+            reusable = sorted(reusable, key=lambda p: not _is_law(p))
         log: list[dict[str, Any]] = []
         if reusable and reuse:
             src = reusable[0]
@@ -348,6 +370,8 @@ class CivicsSubject(Subject):
         if not left:
             raise Rejected("exhausted", "この小単元の資料をすべて使いました（catalog.SOURCES に資料を足すと作れます）")
         ctx.rng.shuffle(left)
+        if ctx.options.get("law_first", "on") != "off":  # 条文の資料を先に取る（同じ種類の中は無作為のまま）
+            left.sort(key=lambda src: src.kind != "law")
         log: list[dict[str, Any]] = []
         for src in left[:MAX_FETCH_TRIES]:
             try:
@@ -371,7 +395,8 @@ class CivicsSubject(Subject):
                          log: list[dict[str, Any]], partial: dict[str, Any],
                          fetched_at: str = "") -> tuple[list[dict[str, Any]], list[list[str]]]:
         schema = prompts.question_schema(n)
-        user = prompts.question_user(title, body, n, spec.focus, have, spec.level, fetched_at)
+        quote = _quote_mode(ctx)
+        user = prompts.question_user(title, body, n, spec.focus, have, spec.level, fetched_at, quote_wrongs=quote)
         log.append({"step": "設問の作成", "ok": True, "model": ctx.gen_model,
                     "summary": f"作成役 {ctx.gen_model} が設問を {n} 問書く",
                     "detail": "作成役に送った文章:\n" + user + "\n\n（システムの指示）\n" + prompts.QUESTION_SYSTEM})
@@ -384,7 +409,7 @@ class CivicsSubject(Subject):
             fixed = [f"設問 {i}: {x}" for i, q in enumerate(qs, 1) for x in [check.fix_evidence(q, body)] if x]
             if fixed:
                 log.append({"step": "設問の機械的な直し", "ok": True, "summary": "／".join(fixed)})
-            q_issues = [check.question_issues(q, body, MISTAKES, why=True) + self._duplicates(qs, k, have)
+            q_issues = [check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=quote) + self._duplicates(qs, k, have)
                         for k, q in enumerate(qs)]
             partial.update(question=qs[0]["question"] if qs else "", explanation=body)
             all_issues = [f"設問 {i}: {x}" for i, xs in enumerate(q_issues, 1) for x in xs]
@@ -407,7 +432,7 @@ class CivicsSubject(Subject):
             left = q_issues[i]
             if left and all(x.startswith("ヒント") for x in left):
                 q["hint"] = SAFE_HINT
-                q_issues[i] = check.question_issues(q, body, MISTAKES, why=True)
+                q_issues[i] = check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=quote)
                 log.append({"step": "設問の機械的な直し", "ok": True,
                             "summary": f"設問 {i + 1}: ヒントを決まった文に差し替えた（{'／'.join(left)[:120]}）"})
         return qs, q_issues
@@ -438,12 +463,12 @@ class CivicsSubject(Subject):
                                          prompts.why_user(body, q, note), prompts.WHY_SCHEMA)
         except LLMError as exc:
             log.append({"step": "理由の書き直し", "ok": False, "summary": f"設問 {no}: 出力を読めなかった（{exc}）"})
-            return check.question_issues(q, body, MISTAKES, why=True)
+            return check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=_quote_mode(ctx))
         got = choicejudge.parse_question(check.normalize(str(out.get("reasons") or "")))
         q["why"] = {**q.get("why", {}), **got["why"]}
         if got["hint"]:
             q["hint"] = got["hint"]
-        issues = check.question_issues(q, body, MISTAKES, why=True)
+        issues = check.question_issues(q, body, MISTAKES, why=True, quote_wrongs=_quote_mode(ctx))
         log.append({"step": "理由の書き直し", "ok": not issues,
                     "summary": f"設問 {no}: 選択肢ごとの理由とヒントだけを書き直させた"
                                + (f"（まだ: {'／'.join(issues)}）" if issues else "")})

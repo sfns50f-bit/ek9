@@ -97,6 +97,15 @@ def answer_terms_in_hint(question: str, options: list[str], answer: int, hint: s
     return sorted(t for t in terms if t in h)
 
 
+_QUOTE_RE = re.compile(r"[『「]([^』」]{8,})[』」]")
+
+
+def passage_quotes(text: str, passage: str) -> list[str]:
+    """理由の中の『…』「…」のうち、資料にそのまま入っているもの（8 字以上。第 20 回の後：誤答は資料の言葉を変えて作り、
+    変える前の言葉を理由に引用させる）。"""
+    return [m for m in _QUOTE_RE.findall(text or "") if contains(passage, m) or near_quote(passage, m)]
+
+
 def best_sentence(passage: str, quote: str, ratio: float = 0.9) -> str:
     """引用に最も近い資料の 1 文（9 割以上の字が同じ並びで合うもの）。なければ空。"""
     q = flat(quote)
@@ -201,7 +210,8 @@ def normalize(text: str) -> str:
     return t.strip()
 
 
-def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *, why: bool = False) -> list[str]:
+def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *, why: bool = False,
+                    quote_wrongs: bool = False) -> list[str]:
     """設問 1 つの点検。q は choicejudge.parse_question の形。why=True（作成のとき）は選択肢ごとの理由（Why A〜D）を
     点検する。False のときも理由があれば理由を、なければ解説（前の版の問題）を点検する。"""
     out = []
@@ -252,6 +262,9 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
                 out.append(f"選択肢 {c} の理由（Why {c}）がない")
                 continue
             out += japanese_issues(text, f"選択肢 {c} の理由", min_len=15 if i == q["answer"] else 8, passage=passage)
+            if quote_wrongs and i != q["answer"] and not passage_quotes(text, passage):
+                out.append(f"選択肢 {c} の理由に、この誤答と食い違う資料の言葉の引用がない（変える前の資料の言葉を"
+                           f"「資料に『…』とある」の形で、資料から一字一句写す。写せる言葉がなければ誤答を作り直す）")
             if _LETTER_REF_RE.search(text):
                 out.append(f"選択肢 {c} の理由が選択肢を記号（A・B など）で呼んでいる（中身で呼ぶ）")
             # 別の選択肢の文をそのまま引いた理由（第 16 回のレビュー #1526：誤答の理由が別の誤答の文を否定していた）
