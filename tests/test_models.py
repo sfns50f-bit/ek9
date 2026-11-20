@@ -740,3 +740,36 @@ def test_english_verifier_thinks_unless_set_on_screen(settings, sessions, client
         j2 = Job(subject="english", scope="", format="choice", count=1)
         runtime.record_think(settings, s, j2, plan)
     assert j2.think["gemma4:e4b-it-qat"] == "off"
+
+
+def test_api_preset_has_its_own_fact_model_and_warns_local_roles(client, sessions):
+    """2026-11-20 に開発者の依頼で足した：公共の事実の判定のモデルを、ローカル生成と API 生成で別に選べる。
+    API 生成でも Ollama のモデルが残る役割は、状態の画面で知らせる（デスクトップPCが止まっていると依頼が終わらない）。"""
+    client.post("/status/subject-models", data={"subject": "civics", "opt_fact_model": "gemma4:26b-a4b-it-qat",
+                                               "api:opt_fact_model": "anthropic/claude-sonnet-5-5"})
+    with sessions() as s:
+        sub = get_subject("civics")
+        assert runtime.verify_options(s, sub)["fact_model"] == "gemma4:26b-a4b-it-qat"
+        assert runtime.verify_options(s, sub, "api")["fact_model"] == "anthropic/claude-sonnet-5-5"
+        assert not runtime.has_api_preset(s, sub)  # 検証のやり方だけでは API 生成の設定にならない
+    page = client.get("/status/models").text
+    assert 'name="api:opt_fact_model"' in page and "（API 生成のとき）" in page
+    # API 生成の作成役・検証役だけを API に：見直し役（ローカル生成の 12b）は Ollama のまま → 知らせる
+    client.post("/status/subject-models", data={"subject": "civics", "review": "gemma4:12b-it-qat",
+                                               "opt_fact_model": "gemma4:26b-a4b-it-qat",
+                                               "api:opt_fact_model": "anthropic/claude-sonnet-5-5",
+                                               "api:gen": "anthropic/claude-haiku-5-5",
+                                               "api:verify": "anthropic/claude-haiku-5-5"})
+    page = client.get("/status/models").text
+    civics = page.split('id="subject-civics"', 1)[1].split("</form>", 1)[0]
+    assert "Ollama（デスクトップPC）のモデルを使います：見直し <strong>gemma4:12b-it-qat</strong>" in civics
+    client.post("/generate", data={"subject": "civics", "format": "choice", "count": "1", "m_civics_mode": "api"})
+    assert jobs(sessions)[-1].options["fact_model"] == "anthropic/claude-sonnet-5-5"
+    client.post("/generate", data={"subject": "civics", "format": "choice", "count": "1", "m_civics_mode": "local"})
+    assert jobs(sessions)[-1].options["fact_model"] == "gemma4:26b-a4b-it-qat"
+    # 見直し役も API にすると、知らせは消える
+    client.post("/status/subject-models", data={"subject": "civics", "api:gen": "anthropic/claude-haiku-5-5",
+                                               "api:verify": "anthropic/claude-haiku-5-5",
+                                               "api:review": "anthropic/claude-haiku-5-5"})
+    civics = client.get("/status/models").text.split('id="subject-civics"', 1)[1].split("</form>", 1)[0]
+    assert "デスクトップPCが起動していないと" not in civics

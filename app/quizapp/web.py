@@ -441,7 +441,9 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             api = api_info(s)
         # 候補：Ollama にあるモデルと、API のモデル（「anthropic/…」）
         model_names = [m["name"] for m in ollama.get("models", [])] + api["models"]
+        api_local = {k: runtime.local_roles(v, get_subject(k)) for k, v in api_plans.items()}
         return render(request, "generate.html", jobs=jobs, data=data, msg=msg, left=left, plans=plans, api_plans=api_plans,
+                      api_local=api_local,
                       model_names=model_names, max_verify=runtime.MAX_VERIFY_COUNT, api=api,
                       presets=runtime.PRESETS)
 
@@ -522,8 +524,9 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             split = str(form.get("split", "")) == "subunit" and len(templates) > 1
             scopes = [f"tmpl:{t}" for t in templates] if split else [scope_s]
             for one in scopes:
+                # 検証のやり方も依頼したときの設定で（API 生成は API 生成だけの値があればそれ）
                 job = Job(subject=sub.id, scope=one, levels=levels_s, format=fmt, count=count,
-                          options_json=json.dumps(runtime.verify_options(s, sub)))  # 検証のやり方も依頼したときの設定で
+                          options_json=json.dumps(runtime.verify_options(s, sub, "api" if preset == "api" else "local")))
                 runtime.apply_plan(job, chosen)
                 runtime.record_think(settings, s, job, chosen)  # 思考モードも依頼したときの設定で最後まで
                 s.add(job)
@@ -620,6 +623,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             plans = {sub.id: runtime.model_plan(settings, s, sub) for sub in all_subjects()}
             api_plans = {sub.id: runtime.model_plan(settings, s, sub, "api") for sub in all_subjects()}
             has_api = {sub.id: runtime.has_api_preset(s, sub) for sub in all_subjects()}
+            api_local = {sub.id: runtime.local_roles(api_plans[sub.id], sub) for sub in all_subjects()}
+            options_now = {sub.id: runtime.verify_options(s, sub) for sub in all_subjects()}
             today = runtime.api_daily(s).get(runtime.day_key(settings), {})
             think_choices = runtime.think_settings(s)
             ollama = kv_json(s, "ollama", {}) or {}
@@ -639,6 +644,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         return render(request, "status_models.html", page="/status/models", plan=plan, overrides=overrides,
                       think_rows=think_rows, think_labels=runtime.THINK_CHOICES, model_names=model_names,
                       subject_settings=subject_settings, plans=plans, api_plans=api_plans, has_api=has_api, today=today,
+                      api_local=api_local, options_now=options_now,
                       roles=runtime.ROLES, api_prefix=runtime.API_PREFIX,
                       daily_keys=runtime.DAILY_KEYS,
                       ollama=ollama, tests=tests, settings=settings, max_verify=runtime.MAX_VERIFY_COUNT, msg=msg,
@@ -729,7 +735,8 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
         sub = subject_or_404(str(form.get("subject", "")))
         roles = [*runtime.ROLES, *sub.model_roles]
         keys = [*roles, *(runtime.API_PREFIX + r for r in roles), *runtime.DAILY_KEYS,
-                *(f"opt_{k}" for k in sub.verify_options)]
+                *(f"opt_{k}" for k in sub.verify_options),
+                *(f"{runtime.API_PREFIX}opt_{k}" for k, spec in sub.verify_options.items() if spec.get("api"))]
         values = {} if form.get("action") == "reset" else {k: str(form.get(k, "")) for k in keys}
         with sessions.begin() as s:
             runtime.save_subject_settings(s, sub.id, values)

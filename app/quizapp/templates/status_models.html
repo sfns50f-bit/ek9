@@ -78,6 +78,14 @@
         </select></label>
       {% endfor %}
       <p class="notice warn same-model" {{ 'hidden' if not ap.same_gen_verify }}>作成役と検証役（または見直し役）が同じモデルです。作成のときの見落としを検証でも見落としやすくなります。</p>
+      {% for key, spec in sub.verify_options.items() if spec.api %}{% set cur = mine.get(api_prefix ~ "opt_" ~ key, "") %}{% set local_v = options_now[sub.id].get(key, spec.default) %}
+      <label>検証のやり方：{{ spec.label }}（API 生成のとき）
+        <select name="{{ api_prefix }}opt_{{ key }}">
+          <option value="">ローカル生成と同じ（{{ spec.choices.get(local_v, local_v) }}）</option>
+          {% for v, text in spec.choices.items() %}<option value="{{ v }}" {{ 'selected' if cur == v }}>{{ text }}</option>{% endfor %}
+        </select></label>
+      {% endfor %}
+      {% if has_api[sub.id] and api_local[sub.id] %}<p class="notice warn">API 生成でも、次の役割は Ollama（デスクトップPC）のモデルを使います：{% for label, m in api_local[sub.id] %}{{ label }} <strong>{{ m }}</strong>{{ "、" if not loop.last }}{% endfor %}。デスクトップPCが起動していないと、この依頼は進みません。全部 API にするときは、この役割にも API のモデルを選んでください。</p>{% endif %}
       {% if not api.configured %}<p class="muted small">API は使えるように設定されていません（下の「API（Anthropic）」）。</p>{% endif %}
     </div>
     {% for key, spec in sub.verify_options.items() %}{% set cur = mine.get("opt_" ~ key, spec.default) %}

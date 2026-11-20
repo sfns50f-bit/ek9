@@ -50,7 +50,7 @@
   <p class="muted small preset-line" data-mode="local">{{ plan_line(sub, plan) }}</p>
   {% if plan.same_gen_verify %}<p class="notice warn preset-line" data-mode="local">作成役と検証役（または見直し役）が同じモデルです（状態 → モデルと思考モードで変えられます）。</p>{% endif %}
   {% if ap %}<p class="muted small preset-line" data-mode="api" hidden>{{ plan_line(sub, ap) }}</p>
-  {% if ap.needs_ollama %}<p class="muted small preset-line" data-mode="api" hidden>ローカル生成と同じ（Ollama の）モデルの役割があるので、Ollama の順番待ちで進みます（デスクトップの電源が要ります）。</p>{% endif %}
+  {% if ap.needs_ollama %}<p class="notice warn preset-line" data-mode="api" hidden>次の役割は Ollama（デスクトップPC）のモデルです：{% for label, m in api_local[sub.id] %}{{ label }} {{ m }}{{ "、" if not loop.last }}{% endfor %}。デスクトップPCの電源が入っていないと、この依頼は終わりません（全部 API にするには「状態 → モデルと思考モード」の API 生成の欄で選びます）。</p>{% endif %}
   {% if ap.same_gen_verify %}<p class="notice warn preset-line" data-mode="api" hidden>作成役と検証役（または見直し役）が同じモデルです（状態 → モデルと思考モードで変えられます）。</p>{% endif %}{% endif %}
   {% if not ap %}<p class="muted small preset-line" data-mode="local">API 生成は「状態 → モデルと思考モード」の{{ sub.name }}の欄で API のモデルを選ぶと出ます。</p>{% endif %}
   <div class="manual-models preset-line" data-mode="manual" hidden>

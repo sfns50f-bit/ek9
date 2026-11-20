@@ -116,7 +116,8 @@ def subject_settings(session: Session) -> dict[str, dict[str, str]]:
 def has_api_preset(session: Session, subject: object) -> bool:
     """科目に API 生成の設定（どれかの役割）があるか。なければ作る画面に「API 生成」を出さない。"""
     mine = subject_settings(session).get(getattr(subject, "id", ""), {})
-    return any(k.startswith(API_PREFIX) for k in mine)
+    # 検証のやり方の API 生成だけの値（api:opt_…）だけでは、API 生成の設定とみなさない
+    return any(k.startswith(API_PREFIX) and not k.startswith(API_PREFIX + "opt_") for k in mine)
 
 
 def save_subject_settings(session: Session, subject_id: str, values: dict[str, str]) -> None:
@@ -128,15 +129,32 @@ def save_subject_settings(session: Session, subject_id: str, values: dict[str, s
     kv_set(session, "subject_models", dumps(data))
 
 
-def verify_options(session: Session, subject: object | None) -> dict[str, str]:
-    """科目の検証のやり方（Subject.verify_options の既定値に、科目ごとの設定 opt_<キー> を重ねたもの）。"""
+def verify_options(session: Session, subject: object | None, preset: str = "local") -> dict[str, str]:
+    """科目の検証のやり方（Subject.verify_options の既定値に、科目ごとの設定 opt_<キー> を重ねたもの）。
+
+    preset="api" は、API 生成だけの値（api:opt_<キー>）があればそれを使う。API 生成で別にできるのは、spec に
+    "api": True のあるものだけ（公共の事実の判定のモデル。2026-11-20 に開発者の依頼で足した：API 生成なのに
+    ローカルのモデルが残ると、デスクトップPCが止まっているときに依頼が終わらない）。"""
     opts = getattr(subject, "verify_options", {}) or {}
     mine = subject_settings(session).get(getattr(subject, "id", ""), {})
     out = {}
     for key, spec in opts.items():
         value = mine.get(f"opt_{key}", spec.get("default", ""))
+        if preset == "api" and spec.get("api") and mine.get(f"{API_PREFIX}opt_{key}") in spec.get("choices", {}):
+            value = mine[f"{API_PREFIX}opt_{key}"]
         out[key] = value if value in spec.get("choices", {}) else spec.get("default", "")
     return out
+
+
+def local_roles(plan: "ModelPlan", subject: object | None) -> list[tuple[str, str]]:
+    """Ollama のモデルを使う役割（(役割の名前, モデル)）。API 生成でもデスクトップPCが要る役割を知らせるため。"""
+    roles = [*((label, plan.model_for(role)) for role, label in (getattr(subject, "model_roles", {}) or {}).items()),
+             ("作成", plan.gen_model), ("検証", plan.verify_model)]
+    if plan.verify_model_2:
+        roles.append(("別系統の検証", plan.verify_model_2))
+    if plan.review:
+        roles.append(("見直し", plan.reviewer))
+    return [(label, m) for label, m in roles if m and provider_of(m)[0] == "ollama"]
 
 
 def option_label(subject: object | None, options: dict[str, str]) -> str:

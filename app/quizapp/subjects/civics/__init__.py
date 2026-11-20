@@ -208,7 +208,10 @@ class CivicsSubject(Subject):
         # 既定は 26b（2026-11-16 に開発者が決めた。ローカルだけで完結させる。見本集で止めるべき 14 問のうち e4b 5 問・
         # 26b 8 問・Haiku 7 問。docs/civics.md の 8 章）。検証役が API のモデルの依頼（API 生成）では、ローカルのモデルを
         # 呼ばずに検証役のモデルで判定する（_fact_model）
-        "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL,
+        # "api": True＝「状態 → モデルと思考モード」の API 生成の欄で、API 生成のときだけの値を別に選べる（2026-11-20 に
+        # 開発者の依頼で足した。ローカル生成は 26b、API 生成は Haiku・Sonnet など）。API 生成でもローカルのモデルを
+        # 選んだままなら、検証役が API のモデルのときは検証役で判定する（_fact_model）
+        "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL, "api": True,
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
                                    "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）",
