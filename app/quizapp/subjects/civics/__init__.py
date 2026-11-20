@@ -189,7 +189,10 @@ class CivicsSubject(Subject):
         "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL,
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
-                                   "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）"}},
+                                   "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）",
+                                   # 知識が要る誤答を止めるのに、ローカルのモデルと Haiku では足りなかった（第 19 回のレビュー）。
+                                   # 事実の判定だけ Sonnet にする構成を、見本集で比べられるようにした
+                                   "anthropic/claude-sonnet-5-5": "anthropic/claude-sonnet-5-5（API）"}},
         # 検証の 1 回目で「資料で裏付けられる・事実として正しい」とされた誤答だけを作成役に作り直させ、確かめ直す
         # （第 16 回のレビュー 3 章 B。作成の途中の問題だけ。見本集の測定・見直しのやり直しではしない）
         "swap_wrong": {"label": "誤りになっていない誤答の差し替え（検証の 1 回目）", "default": "on",

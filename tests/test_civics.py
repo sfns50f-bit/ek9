@@ -1138,3 +1138,10 @@ def test_reused_passage_skips_numbers_already_in_stock(web):
                      passages=lambda t: stored, existing_keys=lambda t: taken)
     drafts = sub.generate(ctx, "cv-welfare", "choice")
     assert drafts and all(d.params_key not in taken for d in drafts)
+
+
+def test_sonnet_is_a_fact_model_choice_and_keeps_local_verify():
+    from quizapp.subjects.civics import _fact_model
+
+    assert "anthropic/claude-sonnet-5-5" in CivicsSubject.verify_options["fact_model"]["choices"]
+    assert _fact_model("gemma4:e4b-it-qat", "anthropic/claude-sonnet-5-5") == "anthropic/claude-sonnet-5-5"
