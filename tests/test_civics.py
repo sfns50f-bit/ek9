@@ -1145,3 +1145,31 @@ def test_sonnet_is_a_fact_model_choice_and_keeps_local_verify():
 
     assert "anthropic/claude-sonnet-5-5" in CivicsSubject.verify_options["fact_model"]["choices"]
     assert _fact_model("gemma4:e4b-it-qat", "anthropic/claude-sonnet-5-5") == "anthropic/claude-sonnet-5-5"
+
+
+def test_assumption_and_scenario_numbers_are_not_rejected():
+    """第 20 回のレビュー：「…にあたるものはないものとする」は誤りを選ばせる設問ではない（#1901）。設問・すべての誤答に
+    ある場面の数値（「17歳の高校生」）は根拠の文になくてよい（#1902）。一部の誤答にだけある年は今までどおり要る。"""
+    passage = "未成年者が法律行為をするには、その法定代理人の同意を得なければならない。ただし、単に権利を得る法律行為については、この限りでない。"
+    q = {"question": "17歳の高校生が親の同意を得ずにした契約について、資料の内容に合うものはどれか。"
+                     "目的を定めて処分を許した財産にあたるものはないものとする。",
+         "options": ["17歳の高校生が贈与を受ける契約は取り消せない", "17歳の高校生が時計を買う契約は取り消せない",
+                     "17歳の高校生が楽器を売る契約は取り消せない", "17歳の高校生が借金をする契約は取り消せない"],
+         "answer": 0, "wrong": {"B": "contradicts", "C": "contradicts", "D": "contradicts"},
+         "evidence": "ただし、単に権利を得る法律行為については、この限りでない。", "hint": "ただし書きを読もう。",
+         "explanation": "", "why": {c: "資料のただし書きと比べて判断できる理由。" for c in "ABCD"}}
+    assert check.question_issues(q, passage, MISTAKES, why=True) == []
+    bad = {**q, "options": ["2人が贈与を受ける契約は取り消せない"] + q["options"][1:]}
+    assert any("2人" in x and "根拠の文" in x for x in check.question_issues(bad, passage, MISTAKES, why=True))
+    bad = {**q, "question": "資料の内容に合わないものはどれか。"}
+    assert any("誤っているもの" in x for x in check.question_issues(bad, passage, MISTAKES, why=True))
+
+
+def test_bare_quote_between_dashes_is_read():
+    """第 20 回のレビュー：e4b が「裏付けあり — 資料の文 — 理由」と引用符なしで書き、引用なしで要確認になった（#1905）。"""
+    from quizapp.subjects.civics import _quote
+    passage = "国会は、国権の最高機関であって、国の唯一の立法機関である。衆議院と参議院の両議院で構成する。"
+    assert _quote("国会は、国権の最高機関であって、国の唯一の立法機関である。 — 選択肢と一致する。", passage).startswith("国会は")
+    assert _quote('引用: "衆議院と参議院の両議院で構成する。"', passage) == "衆議院と参議院の両議院で構成する。"
+    assert _quote("内閣は、行政権を行使する機関であると書かれている。 — 一致する。", passage) == ""
+    assert _quote("選択肢と一致する。", passage) == ""

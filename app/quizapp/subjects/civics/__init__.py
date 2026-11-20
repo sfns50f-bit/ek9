@@ -120,6 +120,17 @@ def _passage_title(problem: Any) -> str:
     return getattr(p, "title", "") if p is not None else ""
 
 
+def _quote(reason: str, passage: str) -> str:
+    """判定の理由の中の引用（choicejudge.quote_of）。引用符を付けずに「判定 — 資料の文 — 理由」と書いた形
+    （第 20 回のレビュー：e4b の #1905・#1924。引用が読めず要確認になった）も、最初の区切りまでが資料の文と
+    9 割以上合うときだけ引用とみなす。"""
+    q = choicejudge.quote_of(reason, 8)
+    if q:
+        return q
+    seg = re.split(r"\s+[—―]{1,2}\s+|\s+--\s+", reason or "", maxsplit=1)[0].strip(" \"“”「」『』")
+    return seg if len(seg) >= 12 and check.near_quote(passage, seg) else ""
+
+
 def _passage_body(problem: Any) -> str:
     p = getattr(problem, "passage", None)
     return getattr(p, "body", "") if p is not None else ""
@@ -620,7 +631,7 @@ class CivicsSubject(Subject):
             new = choicejudge.parse_judgments(text, prompts.CHOICE_LABELS, len(choices))
             got = {**got, **new} if note.startswith(choicejudge.MISSING_HEAD) else new
             # 引用を照らすのは「裏付けあり」「一部だけ合う」だけ（正解が 2 つあるのを見つけるのに要る判定）
-            bad = [q for lb, reason in got.values() for q in [choicejudge.quote_of(reason, 8)]
+            bad = [q for lb, reason in got.values() for q in [_quote(reason, passage)]
                    if lb in ("裏付けあり", "一部だけ合う") and (q and not check.near_quote(passage, q)
                                                             or not q and lb == "裏付けあり")]
             if len(got) >= len(choices) and not bad:
@@ -665,7 +676,7 @@ class CivicsSubject(Subject):
             if c.get("correct") or not code or code == mine:
                 new.append({k: v for k, v in c.items() if k != "label_doubt"})
                 continue
-            quote = choicejudge.quote_of(got[i][1], 8)
+            quote = _quote(got[i][1], passage)
             if code == "contradicts" and mine in ("partial", "not_stated") and quote and check.near_quote(passage, quote):
                 fixed.append(f"「{c['text'][:40]}」{MISTAKES.get(str(mine), mine)}→{MISTAKES[code]}（引用「{quote[:40]}」）")
                 c = {k: v for k, v in c.items() if k != "label_doubt"} | {"mistake": code}

@@ -13,6 +13,7 @@ _JA_RE = re.compile(r"[぀-ヿ一-鿿]")
 _HANGUL_RE = re.compile(r"[가-힯]")
 # 「誤っているもの」を選ばせる設問（選択肢ごとの判定は「合うものが 1 つ」を確かめるので作らせない）
 _NEGATIVE_RE = re.compile(r"誤って|誤りを含む|適当でない|適切でない|当てはまらない|正しくない|合わない|含まれない|ないもの")
+_ASSUME_RE = re.compile(r"ないものとする")
 # 意見・価値判断を問う設問（意見が分かれるテーマは制度や立場を問う形にする。仕様書）
 _OPINION_RE = re.compile(r"べきだと(思|考え)|べきか|あなた(は|の考え)|賛成|反対で|望ましいと(思|考え)|どちらが正しい|良いと思")
 # 選択肢を記号で呼ぶ（画面で並べ替えるので使えない）
@@ -209,7 +210,8 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
         out.append("設問が空")
     else:
         out += [x for x in japanese_issues(q["question"], "設問") if not x.endswith("が空")]
-        if _NEGATIVE_RE.search(q["question"]):
+        # 「…にあたるものはないものとする」のような場面の前提は、誤りを選ばせる設問ではない（第 20 回のレビュー #1901）
+        if _NEGATIVE_RE.search(_ASSUME_RE.sub("", q["question"])):
             out.append("「誤っているもの・適当でないもの」を選ばせる設問（「資料の内容に合うもの」を選ばせる形にする）")
         if _OPINION_RE.search(q["question"]):
             out.append("意見・価値判断を問う設問（制度のしくみや、それぞれの立場の主張を問う形にする）")
@@ -234,7 +236,11 @@ def question_issues(q: dict[str, Any], passage: str, mistakes: dict[str, str], *
     elif _HEDGE_RE.search(q["evidence"]):
         out.append(f"根拠の文が意見・推測・批判を述べた文（「{_HEDGE_RE.search(q['evidence']).group()}」）。事実・制度のしくみを述べた文を根拠にして設問を作る")
     else:
-        missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])]
+        # 設問か、すべての誤答にもある数値（「17歳の高校生が…」のような場面の設定）は正解を決める値ではない
+        # （第 20 回のレビュー #1902）。一部の誤答にだけある年・数値は、正解を決める値として根拠の文に要る
+        wrongs = [flat(o) for i, o in enumerate(opts) if i != q["answer"]]
+        missing = [n for n in numbers(opts[q["answer"]]) if n not in flat(q["evidence"])
+                   and n not in flat(q["question"]) and not all(n in w for w in wrongs)]
         if missing:
             out.append(f"正解の「{'・'.join(missing[:3])}」が根拠の文にない（正解を裏付ける、その年・数値の書かれた文を Evidence に写す）")
     out += japanese_issues(q["hint"], "ヒント", passage=passage)
