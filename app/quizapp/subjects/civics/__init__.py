@@ -373,8 +373,13 @@ class CivicsSubject(Subject):
         if not left:
             raise Rejected("exhausted", "この小単元の資料をすべて使いました（catalog.SOURCES に資料を足すと作れます）")
         ctx.rng.shuffle(left)
-        if ctx.options.get("law_first", "on") != "off":  # 条文の資料を先に取る（同じ種類の中は無作為のまま）
-            left.sort(key=lambda src: src.kind != "law")
+        if ctx.options.get("law_first", "on") != "off":
+            # 条文の資料を先に取る（同じ種類の中は無作為のまま）。ただし 1 回に試す数の最後の 1 つは Wikipedia の
+            # 資料にする（見つからない条文が続いても、条文のない資料へ進めるように）
+            laws = [x for x in left if x.kind == "law"]
+            wikis = [x for x in left if x.kind != "law"]
+            head = laws[:MAX_FETCH_TRIES - 1]
+            left = head + wikis[:1] + laws[len(head):] + wikis[1:]
         log: list[dict[str, Any]] = []
         for src in left[:MAX_FETCH_TRIES]:
             try:

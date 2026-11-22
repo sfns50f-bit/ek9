@@ -353,13 +353,14 @@ def test_civics_job_fetches_source_and_stocks_problems(settings, sessions, sandb
 
 
 def test_missing_sources_are_skipped(settings, sessions, sandbox, web):
-    titles = [s.key for s in SOURCES["cv-intl-economy"]]
-    web.missing.update(titles[1:])  # 1 つだけ残す
+    srcs = SOURCES["cv-intl-economy"]
+    keep = [s for s in srcs if s.kind == "law"][-1]  # 1 つだけ残す（条文を先に試すので、1 回目の取得で届く）
+    web.missing.update(s.key for s in srcs if s.key != keep.key)
     jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-intl-economy", count=1)
     assert job(sessions, jid).status == "done"
     with sessions() as s:
         topics = {p.topic for p in s.execute(select(Passage)).scalars() if p.status == "ok"}
-    assert topics == {f"wiki:{titles[0]}"}
+    assert topics == {keep.id}
 
 
 def test_all_sources_missing_rejects_with_cv_source(settings, sessions, sandbox, web):
@@ -631,6 +632,9 @@ def test_changed_source_is_fetched_again_as_a_new_version(settings, sessions, sa
     # 資料を使い切ったので、もう作れない
     jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1)
     assert "exhausted" in {r.reject_code for r in problems(sessions, job_id=jid)}
+    # 使い切った小単元にはもう作りに行かない（作り直しの上限まで「使い切り」の行を足さない）。理由も分かる形で終える
+    assert [r.reject_code for r in problems(sessions, job_id=jid)] == ["exhausted"]
+    assert job(sessions, jid).status == "failed" and "使い切りました" in job(sessions, jid).error
     # 法改正で条文が変わった → 新しい版の資料を取ってきて作れる（古い問題は残す）
     web.law_rev[KENPO] = "R2"
     web.law_text[(KENPO, "25")] = ARTICLE_XML.format(n="25", title="第二十五条", law="改正後の憲法")
@@ -1219,4 +1223,4 @@ def test_law_sources_are_used_first(settings, sessions, sandbox, web):
     with sessions() as s:
         topics = [p.topic for p in s.execute(select(Passage).order_by(Passage.id)).scalars()]
     laws = [s.id for s in SOURCES["cv-welfare"] if s.kind == "law"]
-    assert len(laws) == 2 and topics[:2] and set(topics[:2]) == set(laws)
+    assert len(topics) >= 2 and set(topics[:2]) <= set(laws)

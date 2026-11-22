@@ -105,6 +105,9 @@ class Worker:
         self.last_source_check = -1e9
         # 資料の取得を待っている依頼 → 次に試す時刻（time.monotonic）。その間はほかの依頼を先に進める（WaitForSource）
         self.job_retry_at: dict[int, float] = {}
+        # 依頼ごとに、使い切り（exhausted）を返した小単元。その依頼ではもう作りに行かない（2026-11-22：資料を使い切った
+        # 小単元で、作り直しの上限まで「使い切り」の行を足し続けていた）。再起動で消えても、1 回ずつ確かめ直すだけ
+        self.exhausted: dict[int, set[str]] = {}
         self._source_check_written = False  # この起動で鮮度の調査の結果を一度は書いたか
         self._last_status: tuple[str, int | None] | None = None
         self._last_status_at = -1e9
@@ -519,6 +522,8 @@ class Worker:
             job = self._job(job_id)
             if made >= job.count or job.gen_attempts >= budget or (job.is_test and self._test_caught(job_id)):
                 break
+            if set(templates) <= self.exhausted.get(job_id, set()) and not self._drafts(job_id):
+                break  # 選んだ範囲の小単元をすべて使い切った
 
         if job.is_test:
             if made:
@@ -536,6 +541,9 @@ class Worker:
             self._finish(job_id, "done", "")
         elif made:
             self._finish(job_id, "partial", f"{job.count} 問中 {made} 問だけ検証に合格しました（作り直しの上限に達しました）")
+        elif set(templates) <= self.exhausted.get(job_id, set()):
+            self._finish(job_id, "failed", "選んだ範囲の題材（資料・語・数値）をすべて使い切りました。作れる問題が残っていません"
+                                           "（公共は catalog.SOURCES に資料を足すと作れます）")
         else:
             self._finish(job_id, "failed", "検証に合格した問題がありませんでした。/status の不合格の理由を確認してください")
 
@@ -742,7 +750,11 @@ class Worker:
             if produced >= n:  # 1 回で複数問（同じ本文の設問）を作る科目もある
                 break
             self._check_cancel(job.id)
-            template = order[(job.gen_attempts + i) % len(order)]
+            dead = self.exhausted.get(job.id, set())
+            alive = [t for t in order if t not in dead]
+            if not alive:
+                break  # 選んだ範囲の小単元をすべて使い切った
+            template = alive[(job.gen_attempts + i) % len(alive)]
             text = f"作成中 {i + 1}/{n}（{plan.gen_model}）"
             self._update_job(job.id, progress=text)
             self.set_status(f"{label} — {text}", job.id)
@@ -754,6 +766,8 @@ class Worker:
                 made = subject.generate(ctx, template, job.format)
             except Rejected as exc:
                 self.save_rejected(job, subject, template, exc, plan)
+                if exc.code == "exhausted":
+                    self.exhausted.setdefault(job.id, set()).add(template)
                 continue
             except LLMError as exc:
                 entry = {"step": "文章", "ok": False, "summary": f"作成役の出力を読めません（{exc}）",
