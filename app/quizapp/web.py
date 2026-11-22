@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote as quote_url
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -439,11 +440,12 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                          if runtime.has_api_preset(s, sub)}
             ollama = kv_json(s, "ollama", {}) or {}
             api = api_info(s)
+            low = low_sources(s)
         # 候補：Ollama にあるモデルと、API のモデル（「anthropic/…」）
         model_names = [m["name"] for m in ollama.get("models", [])] + api["models"]
         api_local = {k: runtime.local_roles(v, get_subject(k)) for k, v in api_plans.items()}
         return render(request, "generate.html", jobs=jobs, data=data, msg=msg, left=left, plans=plans, api_plans=api_plans,
-                      api_local=api_local,
+                      api_local=api_local, low_sources=low,
                       model_names=model_names, max_verify=runtime.MAX_VERIFY_COUNT, api=api,
                       presets=runtime.PRESETS)
 
@@ -545,7 +547,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
                 Problem.template == t, Problem.status.in_(("ready", "draft", "test")))).scalars())
             topics = set(s.execute(select(Passage.topic).where(Passage.template == t,
                                                                Passage.status != "rejected")).scalars())
-            n = sub.remaining(t, fmt, existing, topics)
+            n = sub.remaining(t, fmt, existing, topics, data=runtime.subject_data(s, sub.id))
             if n is not None:
                 total, counted = total + n, True
         return total if counted else None
@@ -593,6 +595,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             "source_check": kv_json(s, "source_check", {}) or {},
             "source_check_days": settings.source_check_days,
             "api": api_info(s),
+            "low_sources": low_sources(s),
         }
 
     STATUS_PAGES = {"/status": "まとめ", "/status/models": "モデルと思考モード", "/status/quality": "検証の成績",
@@ -794,7 +797,7 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
     @app.get("/review")
     def review_page(request: Request, subject: str = "", unit: str = "", level: str = "", gen_model: str = "",
                     status: str = "ready", date_from: str = "", date_to: str = "", id_from: str = "",
-                    id_to: str = "", page: int = 1, msg: str = "", n: int = 0) -> Response:
+                    id_to: str = "", page: int = 1, msg: str = "", n: int = 0, detail: str = "") -> Response:
         if not review_ok(request):
             return redirect("/review/login")
         f = review_filters(subject, unit, level, gen_model, status, date_from, date_to, id_from, id_to)
@@ -810,7 +813,15 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             reviewer = runtime.model_plan(settings, s, get_subject(subject)).reviewer
             goldens = [gs for gs in (golden.golden_set(s, sub.id) for sub in all_subjects()) if gs is not None]
             option_now = {sub.id: runtime.verify_options(s, sub) for sub in all_subjects()}
-        return render(request, "review.html", goldens=goldens, option_values=lambda k: option_now.get(k, {}),
+            source_subjects = []  # 資料の一覧を書き出せる科目（公共）と、小単元ごとの残り
+            for sub in all_subjects():
+                rep = sources_report(s, sub)
+                if rep is not None:
+                    source_subjects.append({"id": sub.id, "name": sub.name, "warn": sub.remaining_warn,
+                                            "templates": rep["templates"], "changed": len(rep["changed_problems"]),
+                                            "note": rep["data"].get("note", ""),
+                                            "updated_at": rep["data"].get("updated_at", "")})
+        return render(request, "review.html", goldens=goldens, source_subjects=source_subjects, detail=detail[:1000], option_values=lambda k: option_now.get(k, {}),
                       subject_options=lambda k: getattr(get_subject(k), "verify_options", {}), subject_name=lambda k: getattr(get_subject(k), "name", k), page="/review", problems=rows[:per], more=len(rows) > per,
                       page_no=page, f=f, options=options, labels=review.labels, mistake=review.mistake_label,
                       issues=review.text_issues, think=review.think_text, locked=bool(settings.review_password),
@@ -871,6 +882,116 @@ def create_app(settings: Settings | None = None, sessions: sessionmaker[Session]
             text = golden.to_markdown(gs, jobs, golden.past_reviews(s, [x.id for x in gs.samples]))
         headers = {"Content-Disposition": f'attachment; filename="golden_{subject}.md"'} if download else {}
         return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+    # --- 資料の一覧（公共。2026-11-22）：書き出し → クラウドの AI で確かめる → 取り込む ---------------
+
+    def sources_inputs(s: Session, sub: Subject) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        passages = [{"id": p.id, "template": p.template, "topic": p.topic, "status": p.status, "title": p.title,
+                     "source_title": p.source_title, "source_url": p.source_url, "source_info": p.source_info}
+                    for p in s.execute(select(Passage).where(Passage.subject == sub.id).order_by(Passage.id)).scalars()]
+        problems = [{"id": i, "passage_id": pid, "template": t, "status": st, "question": q}
+                    for i, pid, t, st, q in s.execute(
+                        select(Problem.id, Problem.passage_id, Problem.template, Problem.status, Problem.question)
+                        .where(Problem.subject == sub.id, Problem.passage_id.is_not(None), Problem.status != "test"))]
+        return passages, problems
+
+    def sources_report(s: Session, sub: Subject) -> dict[str, Any] | None:
+        passages, problems = sources_inputs(s, sub)
+        return sub.sources_report(runtime.subject_data(s, sub.id), passages, problems)
+
+    def low_sources(s: Session) -> list[dict[str, Any]]:
+        """あと作れる問題が少ない小単元（Subject.remaining_warn を下回るもの）と、資料が変わった本文の数。"""
+        out = []
+        for sub in all_subjects():
+            if not sub.remaining_warn:
+                continue
+            data = runtime.subject_data(s, sub.id)
+            for unit in sub.units():
+                for su in unit.subunits:
+                    topics = set(s.execute(select(Passage.topic).where(Passage.template == su.id,
+                                                                       Passage.status != "rejected")).scalars())
+                    n = sub.remaining(su.id, "", set(), topics, data=data)
+                    if n is not None and n < sub.remaining_warn:
+                        out.append({"subject": sub.name, "subject_id": sub.id, "label": su.label, "remaining": n})
+        return out
+
+    def changed_sources(s: Session) -> int:
+        n = 0
+        for p in s.execute(select(Passage).where(Passage.source_info_json.like('%"check"%'))).scalars():
+            if (p.source_info or {}).get("check") in ("changed", "missing"):
+                n += 1
+        return n
+
+    @app.get("/review/sources.json")
+    def review_sources_json(request: Request, subject: str = "civics") -> Response:
+        if not review_ok(request):
+            return redirect("/review/login")
+        sub = subject_or_404(subject)
+        with sessions() as s:
+            rep = sources_report(s, sub)
+        if rep is None:
+            raise HTTPException(404, "この科目には資料の一覧がありません")
+        return Response(json.dumps(rep, ensure_ascii=False, indent=1), media_type="application/json; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="sources_{subject}.json"'})
+
+    @app.get("/review/sources.md")
+    def review_sources_md(request: Request, subject: str = "civics", download: int = 0) -> Response:
+        if not review_ok(request):
+            return redirect("/review/login")
+        sub = subject_or_404(subject)
+        with sessions() as s:
+            rep = sources_report(s, sub)
+        if rep is None:
+            raise HTTPException(404, "この科目には資料の一覧がありません")
+        headers = {"Content-Disposition": f'attachment; filename="sources_{subject}.md"'} if download else {}
+        return PlainTextResponse(sub.sources_markdown(rep), media_type="text/markdown; charset=utf-8", headers=headers)
+
+    @app.post("/review/sources")
+    async def review_sources_import(request: Request) -> Response:
+        """取り込み用の JSON（ファイルか、貼り付けた文字）を確かめて取り込む。前の値は「元に戻す」で戻せる。"""
+        if not review_ok(request):
+            return redirect("/review/login")
+        form = await request.form()
+        sub = subject_or_404(str(form.get("subject", "civics")))
+        upload = form.get("file")
+        text = str(form.get("text", "") or "")
+        if upload is not None and hasattr(upload, "read"):
+            raw = await upload.read()
+            if raw:
+                text = raw.decode("utf-8-sig", errors="replace")
+        try:
+            payload = json.loads(text)
+        except ValueError as exc:
+            return redirect(f"/review?msg=sources_error&detail={quote_url('JSON を読めません：' + str(exc)[:200])}#sources")
+        with sessions.begin() as s:
+            try:
+                new, delete, notes = sub.apply_sources(runtime.subject_data(s, sub.id), payload)
+            except ValueError as exc:
+                return redirect(f"/review?msg=sources_error&detail={quote_url(str(exc)[:500])}#sources")
+            runtime.save_subject_data(s, sub.id, new)
+            deleted = []
+            for pid in dict.fromkeys(delete):
+                p = s.get(Problem, pid)
+                if p is not None and p.subject == sub.id and p.status == "ready":
+                    p.status = "deleted"
+                    p.verification_json = dumps(p.verification + [
+                        {"step": "資料の確かめで削除", "ok": False, "at": utcnow().isoformat(),
+                         "summary": "資料の一覧の取り込みで削除した（" + (str(new.get("note") or "")[:120] or "メモなし") + "）"}])
+                    deleted.append(pid)
+        notes.append(f"削除した問題 {len(deleted)} 問" + (f"（{', '.join(map(str, deleted[:20]))}）" if deleted else ""))
+        return redirect(f"/review?msg=sources_done&detail={quote_url('／'.join(notes))}#sources")
+
+    @app.post("/review/sources/undo")
+    async def review_sources_undo(request: Request) -> Response:
+        if not review_ok(request):
+            return redirect("/review/login")
+        form = await request.form()
+        sub = subject_or_404(str(form.get("subject", "civics")))
+        with sessions.begin() as s:
+            ok = runtime.restore_subject_data(s, sub.id)
+        detail = "資料の一覧を 1 つ前の取り込みに戻しました（削除した問題は戻りません。必要なら「ストックに戻す」で）" if ok \
+            else "戻せる前の取り込みがありません"
+        return redirect(f"/review?msg=sources_done&detail={quote_url(detail)}#sources")
 
     @app.get("/review/golden.json")
     def review_golden_json(request: Request, subject: str = "english") -> Response:

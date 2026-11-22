@@ -106,6 +106,36 @@ def save_overrides(session: Session, values: dict[str, str]) -> None:
             kv_set(session, f"setting_{key}", values[key].strip())
 
 
+def subject_data(session: Session, subject_id: str) -> dict:
+    """科目が持つ運用のデータ（kv の subject_data）。公共は資料の一覧の追加・外したもの・条文の自動選びの範囲
+    （開発者がクラウドの AI に確かめさせた結果を「資料の一覧」で取り込む。2026-11-22）。"""
+    data = kv_json(session, "subject_data", {}) or {}
+    mine = data.get(subject_id) if isinstance(data, dict) else None
+    return mine if isinstance(mine, dict) else {}
+
+
+def save_subject_data(session: Session, subject_id: str, value: dict) -> None:
+    """科目のデータを書き換える。前の値は subject_data_prev に 1 つだけ残す（「元に戻す」用）。"""
+    data = kv_json(session, "subject_data", {}) or {}
+    prev = kv_json(session, "subject_data_prev", {}) or {}
+    prev[subject_id] = data.get(subject_id, {})
+    data[subject_id] = value
+    kv_set(session, "subject_data_prev", dumps(prev))
+    kv_set(session, "subject_data", dumps(data))
+
+
+def restore_subject_data(session: Session, subject_id: str) -> bool:
+    """1 つ前の値に戻す（戻せたら True）。"""
+    prev = kv_json(session, "subject_data_prev", {}) or {}
+    if subject_id not in prev:
+        return False
+    data = kv_json(session, "subject_data", {}) or {}
+    data[subject_id] = prev.pop(subject_id)
+    kv_set(session, "subject_data", dumps(data))
+    kv_set(session, "subject_data_prev", dumps(prev))
+    return True
+
+
 def subject_settings(session: Session) -> dict[str, dict[str, str]]:
     """科目ごとの上書き {科目ID: {役割: モデル, "api_daily_usd": …}}。空の値は「全体の設定のまま」。"""
     data = kv_json(session, "subject_models", {}) or {}

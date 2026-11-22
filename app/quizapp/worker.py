@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from . import backup
+from . import backup, runtime
 from .config import Settings
 from .datadir import ensure_or_exit
 from .db import Job, Passage, Problem, dumps, init_db, kv_json, kv_set, utcnow
@@ -296,6 +296,10 @@ class Worker:
             same = [j for j in ready if j.subject == self.last_subject]
             return (same or ready)[0].id
 
+    def _subject_data(self, subject_id: str) -> dict[str, Any]:
+        with self.sessions() as s:
+            return runtime.subject_data(s, subject_id)
+
     def _job(self, job_id: int) -> Job:
         with self.sessions() as s:
             return s.get(Job, job_id)
@@ -543,7 +547,7 @@ class Worker:
             self._finish(job_id, "partial", f"{job.count} 問中 {made} 問だけ検証に合格しました（作り直しの上限に達しました）")
         elif set(templates) <= self.exhausted.get(job_id, set()):
             self._finish(job_id, "failed", "選んだ範囲の題材（資料・語・数値）をすべて使い切りました。作れる問題が残っていません"
-                                           "（公共は catalog.SOURCES に資料を足すと作れます）")
+                                           "（公共は問題検証モードの「資料の一覧」で資料を足すと作れます）")
         else:
             self._finish(job_id, "failed", "検証に合格した問題がありませんでした。/status の不合格の理由を確認してください")
 
@@ -742,7 +746,7 @@ class Worker:
         ctx = GenContext(llm=self.llm, sandbox=self.sandbox, gen_model=plan.gen_model, rng=self.rng,
                          is_test=job.is_test, existing_keys=self.existing_keys, models=plan.models,
                          review=plan.review and not job.is_test, passages=self.passages_for,
-                         update_passage=self.update_passage, options=job.options)
+                         update_passage=self.update_passage, options=job.options, data=self._subject_data(job.subject))
         order = list(templates)
         self.rng.shuffle(order)
         produced = 0

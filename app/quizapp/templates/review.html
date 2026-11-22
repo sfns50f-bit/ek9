@@ -10,6 +10,8 @@
 {% if msg == "rereview" %}<p class="notice">{{ n }} 問の見直しのやり直しを順番待ちに入れました。進み具合は「作る」の依頼の一覧に出ます。終わったら「状態」で「{{ options.statuses.reflagged }}」を選ぶか、Markdown で書き出して見てください。</p>{% endif %}
 {% if msg == "golden" %}<p class="notice">見本集の {{ n }} 問の測定を順番待ちに入れました。進み具合は「作る」の依頼の一覧に出ます。終わったら下の「見本集で測る」の比べる表で見てください。</p>{% endif %}
 {% if msg == "rereview_empty" %}<p class="notice warn">絞り込みに当てはまる問題がないので、見直しのやり直しは頼みませんでした。</p>{% endif %}
+{% if msg == "sources_done" %}<p class="notice">資料の一覧：{{ detail }}</p>{% endif %}
+{% if msg == "sources_error" %}<p class="notice warn">資料の一覧を取り込めませんでした（何も変えていません）：{{ detail }}</p>{% endif %}
 {% if msg == "deleted_ids" %}<p class="notice">{{ n }} 問を削除しました（今後出題しません。回答の記録は残ります）。足りない分は「作る」から作成を依頼してください。</p>{% endif %}
 {% set qs = "subject=" ~ (f.subject | urlencode) ~ "&unit=" ~ (f.unit | urlencode) ~ "&level=" ~ (f.level | urlencode) ~ "&gen_model=" ~ (f.gen_model | urlencode) ~ "&status=" ~ (f.status | urlencode) ~ "&date_from=" ~ f.date_from ~ "&date_to=" ~ f.date_to ~ "&id_from=" ~ f.id_from ~ "&id_to=" ~ f.id_to %}
 <form method="get" action="/review" class="card filters">
@@ -61,6 +63,34 @@
   <p class="small"><a href="/review/rereview.md?{{ qs }}" target="_blank">見直しのやり直しの比較表（Markdown）</a>：
     上の絞り込みの問題について、見直しのやり直しの結果を「問題 × 依頼（見直し役）」の表（○ 誤りなし・× 誤りあり・？ 読めなかった）で出します。</p>
 </details>
+{% for src in source_subjects %}
+<details class="card" id="sources" {{ 'open' if msg in ("sources_done", "sources_error") }}>
+  {% set low = src.templates | selectattr("remaining", "lt", src.warn) | list %}
+  <summary>資料の一覧（{{ src.name }}：書き出し・取り込み・残り）{% if low %} — <strong>残りが少ない小単元 {{ low | length }}</strong>{% endif %}{% if src.changed %} — <strong>資料が変わった問題 {{ src.changed }} 問</strong>{% endif %}</summary>
+  <p class="small">原文は作るときに e-Gov・Wikipedia から取ります。ここで決めるのは「どの資料を使うか」です。定期的に（月 1 回くらい）、次の手順で確かめてください。</p>
+  <ol class="small">
+    <li><a href="/review/sources.md?subject={{ src.id }}&download=1">資料の一覧（Markdown）を保存</a>（<a href="/review/sources.md?subject={{ src.id }}" target="_blank">開く</a>・<a href="/review/sources.json?subject={{ src.id }}">JSON</a>）して、開発のセッション（クラウドの AI）に渡し、「確かめて取り込み用の JSON を作って」と頼む</li>
+    <li>返ってきた JSON を下で取り込む（資料の追加・外す・条文の自動選びの範囲が丸ごと置き換わり、<code>delete_problems</code> の問題は削除になります）</li>
+  </ol>
+  <form method="post" action="/review/sources" enctype="multipart/form-data">
+    <input type="hidden" name="subject" value="{{ src.id }}">
+    <label>取り込み用の JSON のファイル <input type="file" name="file" accept=".json,application/json"></label>
+    <label>または貼り付け <textarea name="text" rows="4" placeholder='{"version": 1, "add": [], "remove": [], "auto": [], "delete_problems": []}'></textarea></label>
+    <button type="submit" class="primary">取り込む</button>
+  </form>
+  <form method="post" action="/review/sources/undo">
+    <input type="hidden" name="subject" value="{{ src.id }}">
+    <button type="submit" class="secondary">1 つ前の取り込みに戻す</button>
+  </form>
+  <p class="small">今の取り込み：{{ src.updated_at[:10] if src.updated_at else "まだ取り込んでいません（プログラムに書いた一覧と条文の範囲だけ）" }}{% if src.note %}（{{ src.note }}）{% endif %}</p>
+  <table class="small">
+    <tr><th>小単元</th><th>あと作れる問題（目安）</th><th>ストック</th></tr>
+    {% for t in src.templates %}
+    <tr><td>{{ t.label }}</td><td>{{ t.remaining }} 問{% if t.remaining < src.warn %} <strong>（少ない）</strong>{% endif %}</td><td>{{ t.ready }} 問</td></tr>
+    {% endfor %}
+  </table>
+</details>
+{% endfor %}
 {% for gs in goldens %}
 <details class="card">
   <summary>見本集で測る（{{ subject_name(gs.subject) }}：{{ gs.samples | length }} 問。検証役・見直し役の組み合わせを比べる）</summary>

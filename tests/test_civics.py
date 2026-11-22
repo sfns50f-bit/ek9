@@ -58,6 +58,7 @@ class FakeWeb:
         self.law_text = {}  # (法令 ID, 条) -> 条の XML（なければ ARTICLE_XML）
         self.wiki_rev = {}
         self.wiki_text = {}
+        self.missing_articles = set()  # (法令 ID, 条) のない条
         self.urls = []
 
     def __call__(self, url):
@@ -77,6 +78,8 @@ class FakeWeb:
             if law_id in self.missing:
                 return 404, json.dumps({"code": "404001", "message": "not found"})
             n = q["elm"].split("_", 1)[1]
+            if (law_id, n) in self.missing_articles:  # e-Gov は、ない条には 400 を返す
+                return 400, json.dumps({"code": "400021", "message": "要素（elm）に合致する要素が法令本文に存在しません。"})
             xml = self.law_text.get((law_id, n)) or ARTICLE_XML.format(n=n, title=article_label(n), law=law_id)
             return 200, json.dumps({
                 "law_info": {"law_id": law_id},
@@ -627,6 +630,7 @@ def test_changed_source_is_fetched_again_as_a_new_version(settings, sessions, sa
 
     only = [Source("law", KENPO, ("25",), law_title="日本国憲法")]
     monkeypatch.setitem(catalog.SOURCES, "cv-welfare", only)
+    monkeypatch.setattr(catalog, "AUTO_LAWS", [])  # 条文の自動選びもしない（一覧だけで使い切る）
     run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
     assert len(problems(sessions, status="ready")) == 2
     # 資料を使い切ったので、もう作れない
@@ -1224,3 +1228,131 @@ def test_law_sources_are_used_first(settings, sessions, sandbox, web):
         topics = [p.topic for p in s.execute(select(Passage).order_by(Passage.id)).scalars()]
     laws = [s.id for s in SOURCES["cv-welfare"] if s.kind == "law"]
     assert len(topics) >= 2 and set(topics[:2]) <= set(laws)
+
+
+# --- 資料の一覧の運用（2026-11-22：書き出し → クラウドの AI で確かめる → 取り込む、条文の自動選び、残りの警告） ---
+
+DELETED_XML = """<Article Num="{n}"><ArticleTitle>{title}</ArticleTitle>
+<Paragraph Num="1"><ParagraphNum/><ParagraphSentence><Sentence>削除</Sentence></ParagraphSentence></Paragraph></Article>"""
+
+
+def test_registry_lists_added_removed_and_auto_sources(monkeypatch):
+    from quizapp.subjects.civics import catalog, registry
+    from quizapp.subjects.civics.catalog import AutoLaw
+
+    monkeypatch.setitem(catalog.SOURCES, "cv-welfare", [Source("law", KENPO, ("25",), law_title="日本国憲法"),
+                                                       Source("wiki", "社会保障")])
+    monkeypatch.setattr(catalog, "AUTO_LAWS", [AutoLaw("cv-welfare", "325AC0000000144", "生活保護法", 1, 6)])
+    data = {"add": [{"template": "cv-welfare", "kind": "law", "key": "334AC0000000141", "parts": ["1"], "title": "国民年金法"}],
+            "remove": ["wiki:社会保障"]}
+    ids = [s.id for s in registry.listed("cv-welfare", data)]
+    assert ids == ["law:321CONSTITUTION:25", "law:334AC0000000141:1"]
+    # 自動選びの範囲の条は一覧になくても使ってよい。外した資料・範囲の外は使わない
+    assert registry.allowed_topic("cv-welfare", "law:325AC0000000144:3,4", data)
+    assert not registry.allowed_topic("cv-welfare", "law:325AC0000000144:7", data)
+    assert not registry.allowed_topic("cv-welfare", "wiki:社会保障", data)
+    # 残り：一覧の未使用 1 つ × 2 ＋ 自動選びの未使用 4 条 ÷ 2 条 × 2
+    assert registry.remaining("cv-welfare", {"law:321CONSTITUTION:25", "law:325AC0000000144:1,2"}, data) == 2 + 4
+    # 取り込んだ auto は既定（catalog.AUTO_LAWS）を置き換える
+    assert registry.auto_laws("cv-welfare", {"auto": []}) == []
+
+
+def test_registry_apply_checks_the_payload():
+    from quizapp.subjects.civics import registry
+
+    payload = {"note": "月の確かめ", "add": [{"template": "cv-labor", "kind": "law", "key": "322AC0000000049", "parts": ["24"],
+                                              "title": "労働基準法"},
+                                             {"template": "cv-ethics", "kind": "wiki", "key": "実存主義"}],
+               "remove": ["wiki:政党交付金", "変なもの"],
+               "auto": [{"template": "cv-labor", "law_id": "322AC0000000049", "title": "労働基準法", "from": 1, "to": 41}],
+               "delete_problems": [12, "34"]}
+    new, delete, notes = registry.apply({}, payload)
+    assert [a["key"] for a in new["add"]] == ["322AC0000000049", "実存主義"] and new["remove"] == ["wiki:政党交付金"]
+    assert new["auto"][0]["per"] == 2 and delete == [12, 34] and new["note"] == "月の確かめ" and notes
+    # 書き出しの JSON（data の中に入っている形）もそのまま取り込める
+    again, _d, _n = registry.apply({}, {"data": registry.current(new)})
+    assert again["add"] == new["add"]
+    for bad in ({"add": [{"template": "cv-xx", "kind": "law", "key": "1", "parts": ["1"]}]},
+                {"add": [{"template": "cv-labor", "kind": "law", "key": "322AC0000000049", "parts": ["第一条"]}]},
+                {"auto": [{"template": "cv-labor", "law_id": "322AC0000000049", "from": 10, "to": 1}]},
+                {"delete_problems": ["abc"]}, []):
+        with pytest.raises(ValueError):
+            registry.apply({}, bad)
+
+
+def test_fetch_auto_skips_deleted_and_missing_articles():
+    from quizapp.subjects.civics.sources import fetch_auto
+
+    fake = FakeWeb()
+    fake.law_text[("325AC0000000144", "1")] = DELETED_XML.format(n="1", title="第一条")
+    fake.missing_articles.add(("325AC0000000144", "2"))
+    src, got = fetch_auto(Fetcher(fake, min_interval=0), "325AC0000000144", "生活保護法", ["1", "2", "3", "4", "5"], 2)
+    assert src.parts == ("3", "4") and src.id == "law:325AC0000000144:3,4"
+    assert "第三条" in got.body and "削除" not in got.body and got.info["parts"] == ["3", "4"]
+    fake.law_text[("325AC0000000144", "3")] = DELETED_XML.format(n="3", title="第三条")
+    with pytest.raises(SourceMissing):
+        fetch_auto(Fetcher(fake, min_interval=0), "325AC0000000144", "生活保護法", ["1", "2", "3"], 2)
+
+
+def test_auto_laws_are_used_after_the_list_runs_out(settings, sessions, sandbox, web, monkeypatch):
+    from quizapp.subjects.civics import catalog
+    from quizapp.subjects.civics.catalog import AutoLaw
+
+    monkeypatch.setitem(catalog.SOURCES, "cv-welfare", [Source("law", KENPO, ("25",), law_title="日本国憲法")])
+    monkeypatch.setattr(catalog, "AUTO_LAWS", [AutoLaw("cv-welfare", "325AC0000000144", "生活保護法", 1, 4)])
+    web.law_text[("325AC0000000144", "1")] = DELETED_XML.format(n="1", title="第一条")
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
+    jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
+    assert job(sessions, jid).status == "done"
+    with sessions() as s:
+        rows = {p.topic: p for p in s.execute(select(Passage)).scalars()}
+    assert set(rows) == {"law:321CONSTITUTION:25", "law:325AC0000000144:2,3"}
+    assert rows["law:325AC0000000144:2,3"].source_info["auto"] is True
+    # 範囲の条を使い切ると使い切り
+    jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=4)
+    jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
+    assert "exhausted" in {r.reject_code for r in problems(sessions, job_id=jid)}
+
+
+def test_sources_export_import_undo_and_warning(settings, sessions, sandbox, web, monkeypatch):
+    from quizapp import runtime
+    from quizapp.subjects.civics import catalog
+
+    monkeypatch.setitem(catalog.SOURCES, "cv-welfare", [Source("law", KENPO, ("25",), law_title="日本国憲法")])
+    monkeypatch.setattr(catalog, "AUTO_LAWS", [])
+    run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=2)
+    ready = problems(sessions, status="ready")
+    client = TestClient(create_app(settings, sessions, sandbox))
+    # 残りが少ない小単元は「状態」と「作る」に出る
+    assert "資料の残りが少ない小単元" in client.get("/status").text
+    assert "社会保障（あと約 0 問）" in client.get("/generate").text
+    # 書き出し：確かめ方と取り込み用の JSON の形、小単元ごとの資料
+    md = client.get("/review/sources.md?subject=civics").text
+    assert "取り込み用の JSON の形" in md and "`law:321CONSTITUTION:25`" in md and "残りが少ない" in md
+    rep = client.get("/review/sources.json?subject=civics").json()
+    welfare = next(t for t in rep["templates"] if t["template"] == "cv-welfare")
+    assert welfare["ready"] == len(ready) and welfare["sources"][0]["problems"]["ready"] == len(ready)
+    assert "資料の一覧" in client.get("/review").text
+    # 取り込み：資料を足し、問題を 1 つ削除する
+    payload = {"note": "テスト", "add": [{"template": "cv-welfare", "kind": "law", "key": "325AC0000000144",
+                                         "parts": ["1", "2"], "title": "生活保護法"}],
+               "remove": [], "auto": [], "delete_problems": [ready[0].id]}
+    r = client.post("/review/sources", data={"subject": "civics", "text": json.dumps(payload)})
+    assert r.status_code == 200 and "削除した問題 1 問" in r.text
+    with sessions() as s:
+        assert runtime.subject_data(s, "civics")["add"][0]["key"] == "325AC0000000144"
+    deleted = problems(sessions, status="deleted")
+    assert [p.id for p in deleted] == [ready[0].id] and deleted[0].verification[-1]["step"] == "資料の確かめで削除"
+    # 取り込んだ資料で作れる（テスト用の LLM は設問を足すと同じ誤答を書くので、新しい資料だけで作る）
+    jid = run_job(settings, sessions, sandbox, CivicsOracle(), scope="tmpl:cv-welfare", count=1,
+                  options_json=dumps({"reuse_passages": "off"}))
+    assert job(sessions, jid).status == "done"
+    # 形の違う JSON は何も変えない
+    r = client.post("/review/sources", data={"subject": "civics", "text": '{"add": [{"template": "x"}]}'})
+    assert "取り込めませんでした" in r.text
+    with sessions() as s:
+        assert runtime.subject_data(s, "civics")["note"] == "テスト"
+    # 元に戻す
+    client.post("/review/sources/undo", data={"subject": "civics"})
+    with sessions() as s:
+        assert runtime.subject_data(s, "civics") == {}

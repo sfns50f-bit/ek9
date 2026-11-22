@@ -206,31 +206,38 @@ def article_text(xml: str) -> tuple[str, str]:
     return f"{title}{caption}", "\n".join(x for x in lines if x.strip())
 
 
-def fetch_law(f: Fetcher, src: Source) -> Fetched:
-    """法令の条文（src.parts の条）を取ってきて 1 つの本文にする。"""
-    pieces, info_rev, law_title, enforced = [], "", "", ""
-    for num in src.parts:
-        d = f.json(f"{EGOV_API}/law_data/{quote(src.key)}?law_full_text_format=xml"
-                   f"&elm=MainProvision-Article_{quote(num)}")
-        if not isinstance(d, dict):
-            raise SourceRefused(f"{src.label} の応答の形が違います")
-        rev = d.get("revision_info") or {}
-        if (rev.get("repeal_status") or "None") not in ("None", ""):
-            raise SourceMissing(f"{src.label} は廃止されています（{rev.get('repeal_status')}）")
-        info_rev = rev.get("law_revision_id") or info_rev
-        law_title = src.law_title or rev.get("law_title") or law_title
-        enforced = rev.get("amendment_enforcement_date") or enforced
-        raw = d.get("law_full_text") if isinstance(d, dict) else None
-        if not isinstance(raw, str) or not raw:
-            raise SourceRefused(f"{src.label} の条文が応答にありません")
-        try:
-            xml = base64.b64decode(raw).decode("utf-8") if not raw.lstrip().startswith("<") else raw
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise SourceRefused(f"{src.label} の条文を読めません") from exc
-        head, text = article_text(xml)
-        if not text:
-            raise SourceMissing(f"{src.label} の{article_label(num)}が空です")
-        pieces.append(f"{head}\n{text}")
+def _law_article(f: Fetcher, key: str, num: str, label: str) -> tuple[str, str, dict[str, Any]]:
+    """法令の 1 つの条（見出し, 本文, 版の情報）。"""
+    d = f.json(f"{EGOV_API}/law_data/{quote(key)}?law_full_text_format=xml"
+               f"&elm=MainProvision-Article_{quote(num)}")
+    if not isinstance(d, dict):
+        raise SourceRefused(f"{label} の応答の形が違います")
+    rev = d.get("revision_info") or {}
+    if (rev.get("repeal_status") or "None") not in ("None", ""):
+        raise SourceMissing(f"{label} は廃止されています（{rev.get('repeal_status')}）")
+    raw = d.get("law_full_text")
+    if not isinstance(raw, str) or not raw:
+        raise SourceRefused(f"{label} の条文が応答にありません")
+    try:
+        xml = base64.b64decode(raw).decode("utf-8") if not raw.lstrip().startswith("<") else raw
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise SourceRefused(f"{label} の条文を読めません") from exc
+    head, text = article_text(xml)
+    if not text:
+        raise SourceMissing(f"{label} の{article_label(num)}が空です")
+    return head, text, rev
+
+
+def _deleted(text: str) -> bool:
+    """「削除」とだけ書かれた条（法改正で中身がなくなった条）。"""
+    return re.sub(r"\s+", "", text) in ("削除", "削除。")
+
+
+def _compose_law(src: Source, pieces: list[str], revs: list[dict[str, Any]]) -> Fetched:
+    info_rev = next((r.get("law_revision_id") for r in reversed(revs) if r.get("law_revision_id")), "") or ""
+    law_title = src.law_title or next((r.get("law_title") for r in revs if r.get("law_title")), "") or ""
+    enforced = next((r.get("amendment_enforcement_date") for r in reversed(revs)
+                     if r.get("amendment_enforcement_date")), "") or ""
     body, cut = clip("\n\n".join(pieces))
     if cut:
         body += "\n（以下略）"
@@ -246,6 +253,50 @@ def fetch_law(f: Fetcher, src: Source) -> Fetched:
         info={"kind": "law", "key": src.key, "parts": list(src.parts), "revision": info_rev,
               "enforced": enforced, "fetched_at": now_iso(), "clipped": cut},
     )
+
+
+def fetch_law(f: Fetcher, src: Source) -> Fetched:
+    """法令の条文（src.parts の条）を取ってきて 1 つの本文にする。"""
+    pieces, revs = [], []
+    for num in src.parts:
+        head, text, rev = _law_article(f, src.key, num, src.label)
+        revs.append(rev)
+        pieces.append(f"{head}\n{text}")
+    return _compose_law(src, pieces, revs)
+
+
+class AutoExhausted(SourceMissing):
+    """条文の自動選びの範囲を使い切った（残りの条は「削除」の条・ない条だけ）。"""
+
+
+# 条文の自動選び（2026-11-22）：1 つの資料にまとめる条の数の上限と、本文の長さの目安
+AUTO_TARGET_CHARS = 500
+
+
+def fetch_auto(f: Fetcher, key: str, title: str, nums: list[str], per: int, *, max_tries: int = 8) -> tuple[Source, Fetched]:
+    """法令の条を nums の順に取り、「削除」の条と、ない条を飛ばして、per 条まで（本文が AUTO_TARGET_CHARS 字に
+    届いたらそこまで）を 1 つの資料にする。取った条で作った Source と本文を返す。1 つも取れなければ SourceMissing。"""
+    pieces, revs, parts = [], [], []
+    length = 0
+    for num in nums[:max_tries]:
+        try:
+            head, text, rev = _law_article(f, key, num, title)
+        except (SourceMissing, SourceRefused):  # ない条（範囲の外・枝番だけの条）は飛ばす
+            continue
+        if _deleted(text):
+            continue
+        parts.append(num)
+        revs.append(rev)
+        pieces.append(f"{head}\n{text}")
+        length += len(text)
+        if len(parts) >= per or length >= AUTO_TARGET_CHARS:
+            break
+    if not parts:
+        if len(nums) <= max_tries:  # 範囲の残りの条をすべて見て、使える条がなかった（「削除」の条・ない条だけ）
+            raise AutoExhausted(f"{title} の範囲に、まだ使っていない条が残っていません（残りは「削除」の条・ない条だけ）")
+        raise SourceMissing(f"{title} の第{nums[0] if nums else '?'}条から先に、使える条が見つかりませんでした")
+    src = Source("law", key, tuple(parts), label=f"{title} 第{'・'.join(parts)}条", law_title=title)
+    return src, _compose_law(src, pieces, revs)
 
 
 def law_revision(f: Fetcher, law_id: str) -> str:

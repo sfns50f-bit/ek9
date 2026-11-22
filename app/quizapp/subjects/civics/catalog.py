@@ -218,3 +218,58 @@ SOURCE_IDS: dict[str, set[str]] = {t: {s.id for s in srcs} for t, srcs in SOURCE
 def questions_for(body: str) -> int:
     """本文 1 つにつける設問の数（短い条文は 2 問、長い本文は 3 問）。"""
     return 3 if len(body) >= 700 else 2
+
+
+# 条文の自動選び（2026-11-22）：小単元の資料の一覧（SOURCES と取り込んだ追加）を使い切ったら、ここに書いた法令の
+# 条の範囲から、まだ使っていない条を前から順に取って資料にする（「削除」の条・ない条は飛ばす。per 条まで、
+# 本文が 500 字に届いたらそこまで）。範囲は総則・権利義務の章に絞り、罰則・附則は入れない。
+# 取り込んだ資料の一覧に "auto" があれば、そちらで置き換える（registry.auto_laws）。2026-11-22 に e-Gov で範囲の条を
+# すべて取って確かめた（使える条は約 440。skip は「削除」の条・ない条）
+@dataclass(frozen=True)
+class AutoLaw:
+    template: str
+    law_id: str
+    title: str
+    start: int
+    end: int
+    per: int = 2
+    skip: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {"template": self.template, "law_id": self.law_id, "title": self.title, "from": self.start,
+                "to": self.end, "per": self.per, "skip": list(self.skip)}
+
+
+AUTO_LAWS: list[AutoLaw] = [
+    AutoLaw("cv-rights", KENPO, "日本国憲法", 10, 40, per=3),
+    AutoLaw("cv-govern", KENPO, "日本国憲法", 41, 75, per=3),
+    AutoLaw("cv-justice", KENPO, "日本国憲法", 76, 82, per=3),
+    AutoLaw("cv-justice", "416AC0000000063", "裁判員の参加する刑事裁判に関する法律", 1, 20),
+    AutoLaw("cv-justice", "322AC0000000059", "裁判所法", 1, 12),
+    AutoLaw("cv-contract", "129AC0000000089", "民法", 3, 21),
+    AutoLaw("cv-contract", "129AC0000000089", "民法", 90, 98),
+    AutoLaw("cv-contract", "129AC0000000089", "民法", 521, 548, skip=("534", "535")),
+    AutoLaw("cv-contract", "412AC0000000061", "消費者契約法", 1, 12),
+    AutoLaw("cv-contract", "343AC1000000078", "消費者基本法", 1, 10),
+    AutoLaw("cv-contract", "406AC0000000085", "製造物責任法", 1, 6),
+    AutoLaw("cv-election", "325AC1000000100", "公職選挙法", 1, 11),
+    AutoLaw("cv-election", "406AC0000000005", "政党助成法", 1, 10),
+    AutoLaw("cv-local", KENPO, "日本国憲法", 92, 95, per=4),
+    AutoLaw("cv-local", "322AC0000000067", "地方自治法", 1, 14),
+    AutoLaw("cv-local", "322AC0000000067", "地方自治法", 74, 88),
+    AutoLaw("cv-local", "322AC0000000067", "地方自治法", 176, 180),
+    AutoLaw("cv-govern", "322AC1000000079", "国会法", 1, 14, skip=("4",)),
+    AutoLaw("cv-govern", "322AC0000000005", "内閣法", 1, 12),
+    AutoLaw("cv-market", "322AC0000000054", "独占禁止法（私的独占の禁止及び公正取引の確保に関する法律）", 1, 20,
+            skip=("4", "5", "12")),
+    AutoLaw("cv-finance", KENPO, "日本国憲法", 83, 91, per=3),
+    AutoLaw("cv-finance", "322AC0000000034", "財政法", 1, 15),
+    AutoLaw("cv-money", "409AC0000000089", "日本銀行法", 1, 6),
+    AutoLaw("cv-labor", "322AC0000000049", "労働基準法", 1, 41, skip=("8", "29", "30", "31")),
+    AutoLaw("cv-labor", "324AC0000000174", "労働組合法", 1, 18, skip=("4",)),
+    AutoLaw("cv-labor", "419AC0000000128", "労働契約法", 1, 20),
+    AutoLaw("cv-labor", "347AC0000000113", "男女雇用機会均等法（雇用の分野における男女の均等な機会及び待遇の確保等に関する法律）", 1, 14),
+    AutoLaw("cv-welfare", "325AC0000000144", "生活保護法", 1, 15),
+    AutoLaw("cv-welfare", "334AC0000000141", "国民年金法", 1, 10, skip=("10",)),
+    AutoLaw("cv-welfare", "409AC0000000123", "介護保険法", 1, 10),
+]

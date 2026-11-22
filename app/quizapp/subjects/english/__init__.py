@@ -781,7 +781,8 @@ class EnglishSubject(Subject):
             pool = [w for w in pool if not spelling_rivals(w)]
         return pool
 
-    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str]) -> int | None:
+    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str],
+                  data: dict[str, Any] | None = None) -> int | None:
         """読解：まだ使っていない題材 × 1 本文の設問の数。語彙・スペル：まだ問題にしていない語の数。"""
         if template in READINGS:
             spec = READINGS[template]

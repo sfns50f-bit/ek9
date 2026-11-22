@@ -2,8 +2,9 @@
 {% from "_macros.html" import level_picker, scope_picker %}
 {% block head %}{% if jobs | selectattr("status", "in", ["pending", "running", "waiting", "cancelling"]) | list %}<meta http-equiv="refresh" content="{{ 5 if jobs | selectattr("status", "equalto", "cancelling") | list else 20 }}">{% endif %}{% endblock %}
 {% block content %}
-{% if msg == "queued_low" %}<p class="notice warn">作成依頼を順番待ちに入れました。ただし、選んだ範囲でまだ作れる問題は約 {{ left }} 問で、頼んだ数より少なくなります（題材・単語を使い切ると、それ以上は作れません。英語は catalog.py の題材・words.py の語を足すと作れます）。</p>{% endif %}
+{% if msg == "queued_low" %}<p class="notice warn">作成依頼を順番待ちに入れました。ただし、選んだ範囲でまだ作れる問題は約 {{ left }} 問で、頼んだ数より少なくなります（題材・単語を使い切ると、それ以上は作れません。英語は catalog.py の題材・words.py の語を、公共は問題検証モードの「資料の一覧」で資料を足すと作れます）。</p>{% endif %}
 {% if msg == "queued_split" %}<p class="notice">小単元ごとに {{ left }} 件の作成依頼を順番待ちに入れました。始まっていない依頼は、下の一覧から 1 件ずつ取り消せます。</p>{% endif %}
+{% if low_sources %}<p class="notice warn small">資料の残りが少ない小単元：{% for row in low_sources %}{{ row.subject }}／{{ row.label }}（あと約 {{ row.remaining }} 問）{{ "、" if not loop.last }}{% endfor %}。問題検証モードの「資料の一覧」で資料を足せます。</p>{% endif %}
 {% if msg == "queued" %}<p class="notice">作成依頼を順番待ちに入れました。デスクトップの Ollama につながると、順に作成と検証が進みます。</p>{% endif %}
 <form method="post" action="/generate" class="card" id="generate-form">
   <h1>問題を作る</h1>
