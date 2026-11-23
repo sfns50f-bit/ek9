@@ -26,7 +26,8 @@ from typing import Any
 from .. import choicejudge
 from ..base import LLM, Draft, GenContext, Rejected, Sandbox, Subject, Subunit, Unit, VerifyResult
 from . import check, prompts
-from .catalog import MISTAKES, SOURCE_IDS, SOURCES, SPECS, UNITS, Source, questions_for
+from . import registry
+from .catalog import MISTAKES, SPECS, UNITS, Source, questions_for
 
 FIX_ROUNDS = 1  # 点検で落ちたとき、直しを頼む回数
 LETTERS = "ABCD"
@@ -79,11 +80,12 @@ def _key(template: str, topic: str, i: int, revision: str = "") -> str:
     return _params_key(template, {"topic": topic, "q": i, "rev": revision})
 
 
-def _old_extract(p: dict[str, Any], template: str) -> bool:
-    """設問を足さない本文（第 16 回のレビュー A-2・A-3）：資料の一覧から外した資料（エリクソンの経歴など）と、
-    前の版の取り込み（本文だけの API。見出しが落ちている）で取った Wikipedia の本文。"""
+def _old_extract(p: dict[str, Any], template: str, data: dict[str, Any] | None = None) -> bool:
+    """設問を足さない本文（第 16 回のレビュー A-2・A-3）：資料の一覧から外した資料（エリクソンの経歴など。取り込みの
+    remove も）と、前の版の取り込み（本文だけの API。見出しが落ちている）で取った Wikipedia の本文。条文の自動選びの
+    範囲の条は一覧になくても使う（registry.allowed_topic）。"""
     info = p.get("source_info") or {}
-    return p.get("topic") not in SOURCE_IDS.get(template, set()) or (
+    return not registry.allowed_topic(template, str(p.get("topic") or ""), data) or (
         info.get("kind") == "wiki" and info.get("format") != "html")
 
 
@@ -208,7 +210,10 @@ class CivicsSubject(Subject):
         # 既定は 26b（2026-11-16 に開発者が決めた。ローカルだけで完結させる。見本集で止めるべき 14 問のうち e4b 5 問・
         # 26b 8 問・Haiku 7 問。docs/civics.md の 8 章）。検証役が API のモデルの依頼（API 生成）では、ローカルのモデルを
         # 呼ばずに検証役のモデルで判定する（_fact_model）
-        "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL,
+        # "api": True＝「状態 → モデルと思考モード」の API 生成の欄で、API 生成のときだけの値を別に選べる（2026-11-20 に
+        # 開発者の依頼で足した。ローカル生成は 26b、API 生成は Haiku・Sonnet など）。API 生成でもローカルのモデルを
+        # 選んだままなら、検証役が API のモデルのときは検証役で判定する（_fact_model）
+        "fact_model": {"label": "事実の判定のモデル", "default": FACT_MODEL, "api": True,
                        "choices": {"verify": "検証役と同じ", "gemma4:12b-it-qat": "gemma4:12b-it-qat",
                                    "gemma4:26b-a4b-it-qat": "gemma4:26b-a4b-it-qat",
                                    "anthropic/claude-haiku-5-5": "anthropic/claude-haiku-5-5（API）",
@@ -269,10 +274,24 @@ class CivicsSubject(Subject):
 
     # --- 作成 ---------------------------------------------------------------
 
-    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str]) -> int | None:
-        """まだ使っていない資料 × 2 問（短い条文の設問の数。長い資料は 3 問になる）。資料が変わって取り直せるものは数えない。"""
-        left = [s for s in SOURCES.get(template, []) if s.id not in used_topics]
-        return len(left) * 2
+    remaining_warn = registry.WARN_REMAINING
+
+    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str],
+                  data: dict[str, Any] | None = None) -> int | None:
+        """一覧のまだ使っていない資料 × 2 問 ＋ 条文の自動選びの残り（registry.remaining）。"""
+        return registry.remaining(template, used_topics, data)
+
+    # --- 資料の一覧の書き出しと取り込み（registry。2026-11-22） ---------------
+
+    def sources_report(self, data: dict[str, Any], passages: list[dict[str, Any]],
+                       problems: list[dict[str, Any]]) -> dict[str, Any] | None:
+        return registry.report(data, passages, problems)
+
+    def sources_markdown(self, report: dict[str, Any]) -> str:
+        return registry.markdown(report)
+
+    def apply_sources(self, data: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], list[int], list[str]]:
+        return registry.apply(data, payload)
 
     def generate(self, ctx: GenContext, template: str, fmt: str) -> list[Draft]:
         spec = SPECS[template]
@@ -282,7 +301,7 @@ class CivicsSubject(Subject):
         reusable = [p for p in stored if p.get("status") == "ok" and p.get("topic")
                     and len(p["questions"]) < questions_for(p["body"])
                     and (p.get("source_info") or {}).get("check") not in ("changed", "missing")
-                    and not _old_extract(p, template)
+                    and not _old_extract(p, template, ctx.data)
                     and p.get("rejected_by", {}).get(ctx.gen_model, 0) < 2 * questions_for(p["body"])]
         law_first = ctx.options.get("law_first", "on") != "off"
         if law_first:  # 条文の資料に設問を足すのを先にする（sorted は安定なので、同じ種類の中の順は変えない）
@@ -362,31 +381,57 @@ class CivicsSubject(Subject):
                    existing: set[str]) -> tuple[Any, Source, list[dict[str, Any]]]:
         """まだ使っていない資料を取ってくる。見つからない資料は飛ばして次へ（MAX_FETCH_TRIES まで）。"""
         from ..base import WaitForSource
-        from .sources import SourceMissing, SourceUnavailable, fetch
+        from .sources import AutoExhausted, SourceMissing, SourceUnavailable, fetch, fetch_auto
 
         # 使った資料（落ちた本文と、鮮度の調査で変わったと分かった本文の資料は、また取ってきてよい。新しい版で作る）
         used = {p.get("topic") for p in stored if p.get("status") != "rejected" and not _stale(p)}
-        left = [s for s in SOURCES.get(template, []) if s.id not in used]
-        if not left:
-            raise Rejected("exhausted", "この小単元の資料をすべて使いました（catalog.SOURCES に資料を足すと作れます）")
+        left = [s for s in registry.listed(template, ctx.data) if s.id not in used]
+        # 一覧を使い切った後（と、条文を先にするとき）の条文の自動選び：範囲ごとに、まだ使っていない条の並び
+        taken = registry.used_articles({str(t) for t in used if t})
+        autos = [(r, c) for r in registry.auto_laws(template, ctx.data)
+                 for c in [registry.auto_candidates(r, taken)] if c]
+        if not left and not autos:
+            raise Rejected("exhausted", "この小単元の資料をすべて使いました（問題検証モードの「資料の一覧」で資料を足すと作れます）")
         ctx.rng.shuffle(left)
-        if ctx.options.get("law_first", "on") != "off":  # 条文の資料を先に取る（同じ種類の中は無作為のまま）
-            left.sort(key=lambda src: src.kind != "law")
+        ctx.rng.shuffle(autos)
+        laws = [("src", x) for x in left if x.kind == "law"]
+        wikis = [("src", x) for x in left if x.kind != "law"]
+        auto_items = [("auto", a) for a in autos]
+        if ctx.options.get("law_first", "on") != "off":
+            # 条文の資料（一覧 → 自動選び）を先に取る。ただし 1 回に試す数の最後の 1 つは Wikipedia の資料にする
+            # （見つからない条文が続いても、条文のない資料へ進めるように）
+            head = (laws + auto_items)[:MAX_FETCH_TRIES - 1]
+            plan = head + wikis[:1] + (laws + auto_items)[len(head):] + wikis[1:]
+        else:
+            plan = [("src", x) for x in left] + auto_items  # 一覧を使い切ってから自動選び
         log: list[dict[str, Any]] = []
-        for src in left[:MAX_FETCH_TRIES]:
+        spent = 0  # 範囲を使い切った自動選びの数
+        for kind, item in plan[:MAX_FETCH_TRIES]:
             try:
-                fetched = fetch(self.fetcher, src)
+                if kind == "auto":
+                    rule, cands = item
+                    src, fetched = fetch_auto(self.fetcher, str(rule["law_id"]), str(rule.get("title") or ""),
+                                              cands, int(rule.get("per") or 2))
+                    fetched.info["auto"] = True
+                else:
+                    src, fetched = item, fetch(self.fetcher, item)
             except SourceUnavailable as exc:  # つながらない・混んでいる：依頼を待たせてやり直す（回数を使わない）
                 raise WaitForSource(f"資料を取れません：{exc}") from exc
             except SourceMissing as exc:
-                log.append({"step": "資料の取得", "ok": False, "summary": f"{src.name}：{exc}（次の資料へ）"})
+                spent += isinstance(exc, AutoExhausted)
+                name = (f"{item[0].get('title')}（自動選び）" if kind == "auto" else item.name)
+                log.append({"step": "資料の取得", "ok": False, "summary": f"{name}：{exc}（次の資料へ）"})
                 continue
             log.append({"step": "資料の取得", "ok": True,
                         "summary": f"{fetched.source_title}（{len(fetched.body)} 字"
-                                   + ("、長いので段落で切った" if fetched.info.get("clipped") else "") + "）"
+                                   + ("、長いので段落で切った" if fetched.info.get("clipped") else "")
+                                   + ("、条文の自動選び" if kind == "auto" else "") + "）"
                                    + ("。検証のテストのため、正解の印を誤答に移します" if ctx.is_test else ""),
                         "detail": fetched.source_url})
             return fetched, src, log
+        if not left and spent == len(autos) and len(plan) <= MAX_FETCH_TRIES:
+            raise Rejected("exhausted", "この小単元の資料をすべて使いました（条文の自動選びの範囲も、残りは「削除」の条・"
+                                        "ない条だけ。問題検証モードの「資料の一覧」で資料を足すと作れます）", log)
         raise Rejected("cv_source", "資料を取れなかった：" + "／".join(e["summary"] for e in log), log,
                        {"unit": _unit_of(template), "template": template, "format": "choice",
                         "question": "（資料を取れなかった）", "explanation": ""})

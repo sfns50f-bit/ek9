@@ -28,6 +28,15 @@
   </table>
 </section>
 
+{% if low_sources %}
+<section class="card" id="low-sources">
+  <h2>資料の残りが少ない小単元</h2>
+  <p class="notice warn small">次の小単元は、あと作れる問題が少なくなっています。問題検証モードの「資料の一覧」を書き出して、開発のセッション（クラウドの AI）に資料を足してもらってください。</p>
+  <ul class="small">{% for row in low_sources %}<li>{{ row.subject }}／{{ row.label }}：あと約 {{ row.remaining }} 問</li>{% endfor %}</ul>
+  <p class="small"><a href="/review#sources">資料の一覧へ</a></p>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>ストック（まだ解いていない問題）</h2>
   <table class="compact">

@@ -163,6 +163,8 @@ class GenContext:
     update_passage: Callable[[int, dict[str, Any]], None] = lambda _id, _changes: None
     # 依頼に記録した科目のやり方（Subject.verify_options の値。作成で使うもの：英語の本文の使い回しなど）
     options: dict[str, str] = field(default_factory=dict)
+    # 科目の運用のデータ（runtime.subject_data。公共は取り込んだ資料の一覧）
+    data: dict[str, Any] = field(default_factory=dict)
 
     def model(self, role: str) -> str:
         """役割のモデル。設定がなければ作成役のモデル。"""
@@ -314,11 +316,33 @@ class Subject:
         found = self.subunit_map().get(template)
         return f"{found[0].label}／{found[1].label}" if found else template
 
-    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str]) -> int | None:
+    def remaining(self, template: str, fmt: str, existing: set[str], used_topics: set[str],
+                  data: dict[str, Any] | None = None) -> int | None:
         """まだ作れる問題の数の目安（題材・語を使い切る科目だけ。作る画面で「残りが少ない」と知らせる。
         第 11 回のレビュー 2-3）。existing：その小単元のストック・下書きの params_key、used_topics：本文の題材
-        （落ちた本文を除く）。None は数えない（数学など、使い切ることがまずない科目）。web から呼ぶので LLM を読まない。"""
+        （落ちた本文を除く）、data：科目の運用のデータ（runtime.subject_data）。None は数えない（数学など、
+        使い切ることがまずない科目）。web から呼ぶので LLM を読まない。"""
         return None
+
+    # 「状態」のまとめで、小単元ごとの remaining がこの数を下回ったら警告する（0 は警告しない）
+    remaining_warn: int = 0
+
+    # --- 資料の一覧の書き出しと取り込み（公共。2026-11-22。web から呼ぶ。LLM・ネットワークを使わない） ---
+
+    def sources_report(self, data: dict[str, Any], passages: list[dict[str, Any]],
+                       problems: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """資料の一覧の書き出し（JSON にできる dict）。passages：その科目の本文の行（id・template・topic・status・
+        title・source_title・source_url・source_info）、problems：問題（id・passage_id・template・status・question）。
+        None は書き出せない科目。"""
+        return None
+
+    def sources_markdown(self, report: dict[str, Any]) -> str:
+        """sources_report の Markdown（クラウドの AI に渡す。確かめ方と取り込み用の JSON の形を冒頭に書く）。"""
+        return ""
+
+    def apply_sources(self, data: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], list[int], list[str]]:
+        """取り込み用の JSON を確かめて、新しいデータ・削除する問題の番号・説明の行を返す。形が違えば ValueError。"""
+        raise ValueError("この科目は資料の一覧を取り込めません")
 
     def all_reject_codes(self) -> dict[str, str]:
         return {**REJECT_CODES, **self.reject_codes}

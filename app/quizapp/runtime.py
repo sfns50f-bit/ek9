@@ -106,6 +106,36 @@ def save_overrides(session: Session, values: dict[str, str]) -> None:
             kv_set(session, f"setting_{key}", values[key].strip())
 
 
+def subject_data(session: Session, subject_id: str) -> dict:
+    """科目が持つ運用のデータ（kv の subject_data）。公共は資料の一覧の追加・外したもの・条文の自動選びの範囲
+    （開発者がクラウドの AI に確かめさせた結果を「資料の一覧」で取り込む。2026-11-22）。"""
+    data = kv_json(session, "subject_data", {}) or {}
+    mine = data.get(subject_id) if isinstance(data, dict) else None
+    return mine if isinstance(mine, dict) else {}
+
+
+def save_subject_data(session: Session, subject_id: str, value: dict) -> None:
+    """科目のデータを書き換える。前の値は subject_data_prev に 1 つだけ残す（「元に戻す」用）。"""
+    data = kv_json(session, "subject_data", {}) or {}
+    prev = kv_json(session, "subject_data_prev", {}) or {}
+    prev[subject_id] = data.get(subject_id, {})
+    data[subject_id] = value
+    kv_set(session, "subject_data_prev", dumps(prev))
+    kv_set(session, "subject_data", dumps(data))
+
+
+def restore_subject_data(session: Session, subject_id: str) -> bool:
+    """1 つ前の値に戻す（戻せたら True）。"""
+    prev = kv_json(session, "subject_data_prev", {}) or {}
+    if subject_id not in prev:
+        return False
+    data = kv_json(session, "subject_data", {}) or {}
+    data[subject_id] = prev.pop(subject_id)
+    kv_set(session, "subject_data", dumps(data))
+    kv_set(session, "subject_data_prev", dumps(prev))
+    return True
+
+
 def subject_settings(session: Session) -> dict[str, dict[str, str]]:
     """科目ごとの上書き {科目ID: {役割: モデル, "api_daily_usd": …}}。空の値は「全体の設定のまま」。"""
     data = kv_json(session, "subject_models", {}) or {}
@@ -116,7 +146,8 @@ def subject_settings(session: Session) -> dict[str, dict[str, str]]:
 def has_api_preset(session: Session, subject: object) -> bool:
     """科目に API 生成の設定（どれかの役割）があるか。なければ作る画面に「API 生成」を出さない。"""
     mine = subject_settings(session).get(getattr(subject, "id", ""), {})
-    return any(k.startswith(API_PREFIX) for k in mine)
+    # 検証のやり方の API 生成だけの値（api:opt_…）だけでは、API 生成の設定とみなさない
+    return any(k.startswith(API_PREFIX) and not k.startswith(API_PREFIX + "opt_") for k in mine)
 
 
 def save_subject_settings(session: Session, subject_id: str, values: dict[str, str]) -> None:
@@ -128,15 +159,32 @@ def save_subject_settings(session: Session, subject_id: str, values: dict[str, s
     kv_set(session, "subject_models", dumps(data))
 
 
-def verify_options(session: Session, subject: object | None) -> dict[str, str]:
-    """科目の検証のやり方（Subject.verify_options の既定値に、科目ごとの設定 opt_<キー> を重ねたもの）。"""
+def verify_options(session: Session, subject: object | None, preset: str = "local") -> dict[str, str]:
+    """科目の検証のやり方（Subject.verify_options の既定値に、科目ごとの設定 opt_<キー> を重ねたもの）。
+
+    preset="api" は、API 生成だけの値（api:opt_<キー>）があればそれを使う。API 生成で別にできるのは、spec に
+    "api": True のあるものだけ（公共の事実の判定のモデル。2026-11-20 に開発者の依頼で足した：API 生成なのに
+    ローカルのモデルが残ると、デスクトップPCが止まっているときに依頼が終わらない）。"""
     opts = getattr(subject, "verify_options", {}) or {}
     mine = subject_settings(session).get(getattr(subject, "id", ""), {})
     out = {}
     for key, spec in opts.items():
         value = mine.get(f"opt_{key}", spec.get("default", ""))
+        if preset == "api" and spec.get("api") and mine.get(f"{API_PREFIX}opt_{key}") in spec.get("choices", {}):
+            value = mine[f"{API_PREFIX}opt_{key}"]
         out[key] = value if value in spec.get("choices", {}) else spec.get("default", "")
     return out
+
+
+def local_roles(plan: "ModelPlan", subject: object | None) -> list[tuple[str, str]]:
+    """Ollama のモデルを使う役割（(役割の名前, モデル)）。API 生成でもデスクトップPCが要る役割を知らせるため。"""
+    roles = [*((label, plan.model_for(role)) for role, label in (getattr(subject, "model_roles", {}) or {}).items()),
+             ("作成", plan.gen_model), ("検証", plan.verify_model)]
+    if plan.verify_model_2:
+        roles.append(("別系統の検証", plan.verify_model_2))
+    if plan.review:
+        roles.append(("見直し", plan.reviewer))
+    return [(label, m) for label, m in roles if m and provider_of(m)[0] == "ollama"]
 
 
 def option_label(subject: object | None, options: dict[str, str]) -> str:
