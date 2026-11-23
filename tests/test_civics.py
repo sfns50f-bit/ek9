@@ -1328,7 +1328,7 @@ def test_sources_export_import_undo_and_warning(settings, sessions, sandbox, web
     assert "社会保障（あと約 0 問）" in client.get("/generate").text
     # 書き出し：確かめ方と取り込み用の JSON の形、小単元ごとの資料
     md = client.get("/review/sources.md?subject=civics").text
-    assert "取り込み用の JSON の形" in md and "`law:321CONSTITUTION:25`" in md and "残りが少ない" in md
+    assert "取り込み用の JSON の形" in md and "`law:321CONSTITUTION:25` 日本国憲法 第25条" in md and "残りが少ない" in md
     rep = client.get("/review/sources.json?subject=civics").json()
     welfare = next(t for t in rep["templates"] if t["template"] == "cv-welfare")
     assert welfare["ready"] == len(ready) and welfare["sources"][0]["problems"]["ready"] == len(ready)

@@ -142,7 +142,7 @@ def report(data: dict[str, Any], passages: list[dict[str, Any]], problems: list[
         for s in listed(t, data):
             listed_ids.add(s.id)
             use = [p for p in mine if p.get("topic") == s.id]
-            rows.append(_row(t, s.id, "list", s.name, use, by_passage, source=_source_dict(t, s)))
+            rows.append(_row(t, s.id, "list", _name(s), use, by_passage, source=_source_dict(t, s)))
         # 一覧にない題材の本文（自動で選んだ条・外した資料・前の版の資料）
         for topic in sorted({p.get("topic") for p in mine if p.get("topic")} - listed_ids):
             use = [p for p in mine if p.get("topic") == topic]
@@ -159,6 +159,13 @@ def report(data: dict[str, Any], passages: list[dict[str, Any]], problems: list[
             "data": current(data),
             "templates": templates,
             "changed_problems": changed_problems}
+
+
+def _name(s: Source) -> str:
+    """書き出しに出す資料の名前（法令は法令名と条。label がなければ法令 ID しか出なかった）。"""
+    if s.kind == "law" and not s.label:
+        return f"{s.law_title or s.key} 第{'・'.join(p.replace('_', 'の') for p in s.parts)}条"
+    return s.name
 
 
 def _row(template: str, topic: str, origin: str, name: str, use: list[dict[str, Any]],

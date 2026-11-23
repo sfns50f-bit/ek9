@@ -1,0 +1,469 @@
+{
+ "version": 1,
+ "note": "2026-11-23 の確かめ：残りの少ない 5 小単元に資料を 21 個足した（法令 7 個は e-Gov で取れることを確認。Wikipedia 14 個は未確認で、見つからなければ飛ばす）。ストック 0 で不合格の多い Wikipedia の資料 6 個を外した。鮮度の調査で変わった資料はなし",
+ "add": [
+  {
+   "template": "cv-self",
+   "kind": "law",
+   "key": "504AC1000000077",
+   "parts": [
+    "1",
+    "2",
+    "3"
+   ],
+   "title": "こども基本法"
+  },
+  {
+   "template": "cv-self",
+   "kind": "wiki",
+   "key": "葛藤",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-self",
+   "kind": "wiki",
+   "key": "自我",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-self",
+   "kind": "wiki",
+   "key": "コンプレックス",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-self",
+   "kind": "wiki",
+   "key": "発達課題",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-self",
+   "kind": "wiki",
+   "key": "心理社会的発達理論",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-ethics",
+   "kind": "wiki",
+   "key": "イデア論",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-ethics",
+   "kind": "wiki",
+   "key": "定言命法",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-ethics",
+   "kind": "wiki",
+   "key": "自然法",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-ethics",
+   "kind": "wiki",
+   "key": "ケアの倫理",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-money",
+   "kind": "law",
+   "key": "329AC0000000195",
+   "parts": [
+    "5"
+   ],
+   "title": "出資法（出資の受入れ、預り金及び金利等の取締りに関する法律）"
+  },
+  {
+   "template": "cv-money",
+   "kind": "law",
+   "key": "323AC0000000025",
+   "parts": [
+    "1"
+   ],
+   "title": "金融商品取引法"
+  },
+  {
+   "template": "cv-money",
+   "kind": "law",
+   "key": "409AC0000000089",
+   "parts": [
+    "18",
+    "19"
+   ],
+   "title": "日本銀行法"
+  },
+  {
+   "template": "cv-intl-politics",
+   "kind": "law",
+   "key": "404AC0000000079",
+   "parts": [
+    "2",
+    "7"
+   ],
+   "title": "国際連合平和維持活動等に対する協力に関する法律"
+  },
+  {
+   "template": "cv-intl-politics",
+   "kind": "wiki",
+   "key": "国際人権規約",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-intl-politics",
+   "kind": "wiki",
+   "key": "核兵器禁止条約",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-intl-politics",
+   "kind": "wiki",
+   "key": "国際連合憲章",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-intl-economy",
+   "kind": "law",
+   "key": "324AC0000000228",
+   "parts": [
+    "7",
+    "8"
+   ],
+   "title": "外国為替及び外国貿易法"
+  },
+  {
+   "template": "cv-intl-economy",
+   "kind": "wiki",
+   "key": "欧州連合",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-intl-economy",
+   "kind": "wiki",
+   "key": "東南アジア諸国連合",
+   "section": "",
+   "drop": []
+  },
+  {
+   "template": "cv-intl-economy",
+   "kind": "wiki",
+   "key": "関税及び貿易に関する一般協定",
+   "section": "",
+   "drop": []
+  }
+ ],
+ "remove": [
+  "wiki:アイデンティティ",
+  "wiki:防衛機制",
+  "wiki:表現の自由",
+  "wiki:衆議院の優越",
+  "wiki:労働三権",
+  "wiki:世界貿易機関"
+ ],
+ "auto": [
+  {
+   "template": "cv-rights",
+   "law_id": "321CONSTITUTION",
+   "title": "日本国憲法",
+   "from": 10,
+   "to": 40,
+   "per": 3,
+   "skip": []
+  },
+  {
+   "template": "cv-govern",
+   "law_id": "321CONSTITUTION",
+   "title": "日本国憲法",
+   "from": 41,
+   "to": 75,
+   "per": 3,
+   "skip": []
+  },
+  {
+   "template": "cv-justice",
+   "law_id": "321CONSTITUTION",
+   "title": "日本国憲法",
+   "from": 76,
+   "to": 82,
+   "per": 3,
+   "skip": []
+  },
+  {
+   "template": "cv-justice",
+   "law_id": "416AC0000000063",
+   "title": "裁判員の参加する刑事裁判に関する法律",
+   "from": 1,
+   "to": 20,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-justice",
+   "law_id": "322AC0000000059",
+   "title": "裁判所法",
+   "from": 1,
+   "to": 12,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-contract",
+   "law_id": "129AC0000000089",
+   "title": "民法",
+   "from": 3,
+   "to": 21,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-contract",
+   "law_id": "129AC0000000089",
+   "title": "民法",
+   "from": 90,
+   "to": 98,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-contract",
+   "law_id": "129AC0000000089",
+   "title": "民法",
+   "from": 521,
+   "to": 548,
+   "per": 2,
+   "skip": [
+    "534",
+    "535"
+   ]
+  },
+  {
+   "template": "cv-contract",
+   "law_id": "412AC0000000061",
+   "title": "消費者契約法",
+   "from": 1,
+   "to": 12,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-contract",
+   "law_id": "343AC1000000078",
+   "title": "消費者基本法",
+   "from": 1,
+   "to": 10,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-contract",
+   "law_id": "406AC0000000085",
+   "title": "製造物責任法",
+   "from": 1,
+   "to": 6,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-election",
+   "law_id": "325AC1000000100",
+   "title": "公職選挙法",
+   "from": 1,
+   "to": 11,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-election",
+   "law_id": "406AC0000000005",
+   "title": "政党助成法",
+   "from": 1,
+   "to": 10,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-local",
+   "law_id": "321CONSTITUTION",
+   "title": "日本国憲法",
+   "from": 92,
+   "to": 95,
+   "per": 4,
+   "skip": []
+  },
+  {
+   "template": "cv-local",
+   "law_id": "322AC0000000067",
+   "title": "地方自治法",
+   "from": 1,
+   "to": 14,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-local",
+   "law_id": "322AC0000000067",
+   "title": "地方自治法",
+   "from": 74,
+   "to": 88,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-local",
+   "law_id": "322AC0000000067",
+   "title": "地方自治法",
+   "from": 176,
+   "to": 180,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-govern",
+   "law_id": "322AC1000000079",
+   "title": "国会法",
+   "from": 1,
+   "to": 14,
+   "per": 2,
+   "skip": [
+    "4"
+   ]
+  },
+  {
+   "template": "cv-govern",
+   "law_id": "322AC0000000005",
+   "title": "内閣法",
+   "from": 1,
+   "to": 12,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-market",
+   "law_id": "322AC0000000054",
+   "title": "独占禁止法（私的独占の禁止及び公正取引の確保に関する法律）",
+   "from": 1,
+   "to": 20,
+   "per": 2,
+   "skip": [
+    "4",
+    "5",
+    "12"
+   ]
+  },
+  {
+   "template": "cv-finance",
+   "law_id": "321CONSTITUTION",
+   "title": "日本国憲法",
+   "from": 83,
+   "to": 91,
+   "per": 3,
+   "skip": []
+  },
+  {
+   "template": "cv-finance",
+   "law_id": "322AC0000000034",
+   "title": "財政法",
+   "from": 1,
+   "to": 15,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-money",
+   "law_id": "409AC0000000089",
+   "title": "日本銀行法",
+   "from": 1,
+   "to": 6,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-labor",
+   "law_id": "322AC0000000049",
+   "title": "労働基準法",
+   "from": 1,
+   "to": 41,
+   "per": 2,
+   "skip": [
+    "8",
+    "29",
+    "30",
+    "31"
+   ]
+  },
+  {
+   "template": "cv-labor",
+   "law_id": "324AC0000000174",
+   "title": "労働組合法",
+   "from": 1,
+   "to": 18,
+   "per": 2,
+   "skip": [
+    "4"
+   ]
+  },
+  {
+   "template": "cv-labor",
+   "law_id": "419AC0000000128",
+   "title": "労働契約法",
+   "from": 1,
+   "to": 20,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-labor",
+   "law_id": "347AC0000000113",
+   "title": "男女雇用機会均等法（雇用の分野における男女の均等な機会及び待遇の確保等に関する法律）",
+   "from": 1,
+   "to": 14,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-welfare",
+   "law_id": "325AC0000000144",
+   "title": "生活保護法",
+   "from": 1,
+   "to": 15,
+   "per": 2,
+   "skip": []
+  },
+  {
+   "template": "cv-welfare",
+   "law_id": "334AC0000000141",
+   "title": "国民年金法",
+   "from": 1,
+   "to": 10,
+   "per": 2,
+   "skip": [
+    "10"
+   ]
+  },
+  {
+   "template": "cv-welfare",
+   "law_id": "409AC0000000123",
+   "title": "介護保険法",
+   "from": 1,
+   "to": 10,
+   "per": 2,
+   "skip": []
+  }
+ ],
+ "delete_problems": []
+}
